@@ -12,9 +12,10 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 # --- Configuration ---
 MODEL_NAME = "Qwen/Qwen2.5-1.5B"
-TOP_K_WORDS = 50
+TOP_K_WORDS = 1000
 
 # Exploration limits to prevent exponential explosion
+BATCH_SIZE = 32
 MAX_INITIAL_TOKENS = 50        # How many first tokens to explore
 MAX_CONTINUATIONS_PER_TOKEN = 50  # How many next tokens to try from each position
 MAX_TOKENS_PER_WORD = 5         # Maximum word length in tokens
@@ -22,9 +23,7 @@ MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below t
 MAX_CACHE_SIZE = 10000          # Maximum cache entries before clearing
 
 def has_leading_ascii_alpha(word: str) -> bool:
-    """Check if first character is alphabetic and word is non-empty."""
     return word and word[0].isascii() and word[0].isalpha()
-
 
 class WordProbabilityExplorer:
     """
@@ -36,6 +35,7 @@ class WordProbabilityExplorer:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.batch = []
         
         # Track best log probability for each unique word
         self.word_log_probs: Dict[str, float] = {}
@@ -61,7 +61,7 @@ class WordProbabilityExplorer:
         Returns log probabilities for numerical stability.
         """
         # More efficient cache key creation
-        cache_key = tuple(input_ids[0].cpu().numpy())
+        cache_key = tuple(input_ids[0].tolist()) # cpu().numpy())
         
         if cache_key in self.log_prob_cache:
             return self.log_prob_cache[cache_key]
@@ -74,7 +74,6 @@ class WordProbabilityExplorer:
         with torch.no_grad():
             outputs = self.model(input_ids)
             logits = outputs.logits[0, -1, :]
-            # Use log_softmax directly - no need to exp then log
             log_probs = torch.log_softmax(logits, dim=-1)
         
         self.forward_passes += 1
@@ -156,9 +155,17 @@ class WordProbabilityExplorer:
             # Decode this token using cache
             next_token_text = self.decode_token(token_id)
             
-            if not has_leading_ascii_alpha(next_token_text):
-                # TODO: word = strip_non_ascii_alph(current_text)
+            if not next_token_text:
+                continue
+            
+            if next_token_text[0] == ' ':
+                # Ignore non-word continuations as this promotes partial words (including single letters)
+                if not has_leading_ascii_alpha(next_token_text.strip()):
+                    continue
+
                 word = current_text.strip()
+                #print(f"  Adding '{word}' with next_token '{next_token_text}' prob {current_log_prob}")
+
                 # Update best log probability for current word
                 if word not in self.word_log_probs:
                     self.num_unique_words += 1
@@ -167,6 +174,9 @@ class WordProbabilityExplorer:
                     self.word_log_probs[word] = current_log_prob
                 continue
             
+            if not has_leading_ascii_alpha(next_token_text):
+                continue
+
             # Word is not complete - continue exploring
             new_tokens = current_tokens + [token_id]
             
@@ -223,35 +233,33 @@ class WordProbabilityExplorer:
                 continue
             
             # Decode this token using cache
-            token_text = self.decode_token(token_id)
-            token_text = token_text.strip()
-                
+            raw_token_text = self.decode_token(token_id)
+
+            # First check leading SPACE on raw text. This indicates a first-word
+            # continuation, something we're ignoring for now.
+            # TOOD: don't ignore.
+            if raw_token_text[0] != ' ':
+                continue
+            
+            token_text = raw_token_text.strip()
             if not has_leading_ascii_alpha(token_text):
                 print(f"  Skipping '{token_text}'")
                 continue
 
             num_valid_initial_tokens += 1
 
-            print(f"  Token {num_valid_initial_tokens}/{MAX_INITIAL_TOKENS} '{token_text}' - "
+            print(f"  Token {num_valid_initial_tokens}/{MAX_INITIAL_TOKENS} '{raw_token_text}' - "
                   f"{self.num_unique_words} words found")
             
             token_log_prob = log_prob.item()
 
-            # Check if this single token is already a complete word
-            if 0:
-                if word not in self.word_log_probs:
-                    self.num_unique_words += 1
-                    self.word_log_probs[word] = token_log_prob
-                elif token_log_prob > self.word_log_probs[word]:
-                    self.word_log_probs[word] = token_log_prob
-            else:
-                # Explore continuations of this token
-                self.explore_continuations(
-                    input_ids,
-                    [token_id],
-                    token_log_prob,
-                    depth=1
-                )
+            # Explore continuations of this token
+            self.explore_continuations(
+                input_ids,
+                [token_id],
+                token_log_prob,
+                depth=1
+            )
 
             if num_valid_initial_tokens == MAX_INITIAL_TOKENS:
                 break
@@ -310,8 +318,10 @@ if __name__ == "__main__":
         explorer = WordProbabilityExplorer(model, tokenizer, device)
         
         # Example context
-        CONTEXT = "Given a word, respond with the most meaningful word that follows it.\n" \
-            "## Here's the word:\n" \
+        CONTEXT = "" \
+            "Given an input word, respond with the most meaningful word that follows it.\n" \
+            "IMPORTANT: You are to respond with only a single word.\n" \
+            "## Input word:\n" \
             "aquatic"
 
         """
