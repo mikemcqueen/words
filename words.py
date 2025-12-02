@@ -1,11 +1,10 @@
-# optimized/bugfixed 7 - ITERATIVE WITH BATCHING
+# optimized/bugfixed 7 - ITERATIVE WITH BATCHING - OPTIMIZED
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import math
 import os
 from typing import Dict, List, Tuple
-from collections import defaultdict
 
 # Enable MPS fallback for unsupported operations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
@@ -18,7 +17,7 @@ TOP_K_WORDS = 1000
 BATCH_SIZE = 64
 MAX_INITIAL_TOKENS = 100        # How many first tokens to explore
 MAX_CONTINUATIONS_PER_TOKEN = 100  # How many next tokens to try from each position
-MAX_TOKENS_PER_WORD = 6         # Maximum word length in tokens
+MAX_TOKENS_PER_WORD = 5         # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
 def has_leading_ascii_alpha(word: str) -> bool:
@@ -38,7 +37,7 @@ class WordProbabilityExplorer:
         # Track best log probability for each unique word
         self.word_log_probs: Dict[str, float] = {}
         
-        # Cache for decoded token strings
+        # Cache for decoded token strings - decode each token ID only once
         self.token_text_cache: Dict[int, str] = {}
         
         # Statistics
@@ -48,6 +47,58 @@ class WordProbabilityExplorer:
         
         # Pre-compute special token IDs for faster checking
         self.special_token_ids = set(self.tokenizer.all_special_ids)
+        
+        # Pre-decode and categorize all tokens for faster filtering
+        print("Pre-analyzing vocabulary...")
+        self.token_info = self._precompute_token_info()
+        print(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
+        print(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
+        print(f"  Word boundary tokens: {len(self.token_info['word_boundary'])}")
+    
+    def _precompute_token_info(self) -> Dict:
+        """
+        Pre-decode and categorize all tokens in vocabulary for faster filtering.
+        Returns dict with sets of token IDs for different categories.
+        """
+        valid_first = set()  # Tokens that can start a word (space + alpha)
+        valid_continuation = set()  # Tokens that can continue a word (alpha, no space)
+        word_boundary = set()  # Tokens that indicate word boundary (space + alpha)
+        
+        vocab_size = len(self.tokenizer)
+        
+        for token_id in range(vocab_size):
+            # Skip special tokens
+            if token_id in self.special_token_ids:
+                continue
+            
+            # Decode and cache
+            token_text = self.tokenizer.decode([token_id])
+            self.token_text_cache[token_id] = token_text
+            
+            if not token_text:
+                continue
+            
+            # Check if starts with space
+            if token_text[0] == ' ':
+                stripped = token_text.strip()
+                if has_leading_ascii_alpha(stripped):
+                    valid_first.add(token_id)
+                    word_boundary.add(token_id)
+            # No space, starts with alpha - can continue a word
+            elif has_leading_ascii_alpha(token_text):
+                valid_continuation.add(token_id)
+        
+        return {
+            'valid_first': valid_first,
+            'valid_continuation': valid_continuation,
+            'word_boundary': word_boundary
+        }
+    
+    def decode_token(self, token_id: int) -> str:
+        """
+        Get decoded token text from cache (already pre-computed).
+        """
+        return self.token_text_cache.get(token_id, '')
     
     def get_batched_log_probs(self, input_ids_list: List[torch.Tensor]) -> torch.Tensor:
         """
@@ -60,7 +111,7 @@ class WordProbabilityExplorer:
             Tensor of shape [batch_size, vocab_size] with log probabilities
         """
         if not input_ids_list:
-            return torch.empty(0, self.tokenizer.vocab_size, device=self.device)
+            return torch.empty(0, len(self.tokenizer), device=self.device)
         
         # Find max length for padding
         max_len = max(ids.shape[1] for ids in input_ids_list)
@@ -69,13 +120,15 @@ class WordProbabilityExplorer:
         padded_inputs = []
         attention_masks = []
         
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+        
         for input_ids in input_ids_list:
             seq_len = input_ids.shape[1]
             if seq_len < max_len:
                 # Pad on the left
                 padding = torch.full(
                     (1, max_len - seq_len), 
-                    self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0,
+                    pad_token_id,
                     dtype=torch.long, 
                     device=self.device
                 )
@@ -109,14 +162,6 @@ class WordProbabilityExplorer:
         
         return log_probs
     
-    def decode_token(self, token_id: int) -> str:
-        """
-        Decode a single token to string with caching.
-        """
-        if token_id not in self.token_text_cache:
-            self.token_text_cache[token_id] = self.tokenizer.decode([token_id])
-        return self.token_text_cache[token_id]
-    
     def find_top_words(self, context: str, top_k: int) -> List[Tuple[str, float]]:
         """
         Find the top K most probable next words using iterative BFS with batching.
@@ -130,9 +175,8 @@ class WordProbabilityExplorer:
         """
         print(f"Context: '{context}'")
         
-        # Reset state
+        # Reset state (but keep pre-computed token info and cache)
         self.word_log_probs = {}
-        self.token_text_cache = {}
         self.forward_passes = 0
         self.paths_explored = 0
         self.num_unique_words = 0
@@ -144,48 +188,40 @@ class WordProbabilityExplorer:
         print("Computing first token probabilities...")
         first_token_log_probs = self.get_batched_log_probs([base_input_ids])[0]
         
-        # Get top N initial tokens to explore
+        # Get top N initial tokens, but only from valid first tokens
+        # Create a masked version that only includes valid first tokens
+        first_token_mask = torch.full_like(first_token_log_probs, float('-inf'))
+        for token_id in self.token_info['valid_first']:
+            first_token_mask[token_id] = first_token_log_probs[token_id]
+        
         top_initial = torch.topk(
-            first_token_log_probs, 
-            min(1000, len(first_token_log_probs))
+            first_token_mask, 
+            min(MAX_INITIAL_TOKENS, len(self.token_info['valid_first']))
         )
         
-        print(f"Filtering initial tokens...")
+        print(f"Starting exploration with {len(top_initial.values)} initial tokens...")
         
         # Initialize paths for first tokens
-        # Each path: {'tokens': [token_ids], 'log_prob': float}
+        # Each path: {'tokens': [token_ids], 'text': decoded_text, 'log_prob': float}
+        # Store text incrementally to avoid repeated decoding
         current_paths = []
-        num_valid_initial_tokens = 0
         
         for log_prob, token_id in zip(top_initial.values, top_initial.indices):
             token_id = token_id.item()
-            
-            # Skip special tokens
-            if token_id in self.special_token_ids:
-                continue
-            
-            # Decode this token using cache
-            raw_token_text = self.decode_token(token_id)
-            
-            # First token must have leading space (word boundary from context)
-            if not raw_token_text or raw_token_text[0] != ' ':
-                continue
-            
-            token_text = raw_token_text.strip()
-            if not has_leading_ascii_alpha(token_text):
-                continue
-            
-            num_valid_initial_tokens += 1
-            if num_valid_initial_tokens > MAX_INITIAL_TOKENS:
-                break
-            
             token_log_prob = log_prob.item()
+            
+            # Should always be valid due to masking, but double-check
+            if token_id not in self.token_info['valid_first']:
+                continue
+            
+            # Get pre-decoded text and strip the leading space
+            token_text = self.decode_token(token_id).strip()
+            
             current_paths.append({
                 'tokens': [token_id],
+                'text': token_text,  # Store decoded text to avoid re-decoding
                 'log_prob': token_log_prob
             })
-        
-        print(f"Starting exploration with {len(current_paths)} initial tokens...")
         
         # Iterative BFS: process all paths at each depth level
         depth = 1
@@ -215,7 +251,6 @@ class WordProbabilityExplorer:
                     self.paths_explored += 1
                     
                     log_probs = batch_log_probs[path_idx]
-                    current_text = self.tokenizer.decode(path['tokens'], skip_special_tokens=True)
                     
                     # Get top continuations for this path
                     top_k_next = torch.topk(
@@ -225,30 +260,18 @@ class WordProbabilityExplorer:
                     
                     for token_log_prob, token_id in zip(top_k_next.values, top_k_next.indices):
                         token_id = token_id.item()
-                        
-                        # Skip special tokens
-                        if token_id in self.special_token_ids:
-                            continue
-                        
                         token_log_prob = token_log_prob.item()
+                        
                         new_log_prob = path['log_prob'] + token_log_prob
                         
                         # Prune if log probability too low
                         if new_log_prob < MIN_LOG_PROBABILITY:
                             continue
                         
-                        next_token_text = self.decode_token(token_id)
-                        if not next_token_text:
-                            continue
-                        
-                        # Check for word boundary (space at start of next token)
-                        if next_token_text[0] == ' ':
-                            # This completes a word
-                            # Ignore non-word continuations
-                            if not has_leading_ascii_alpha(next_token_text.strip()):
-                                continue
-                            
-                            word = current_text.strip()
+                        # Check if this is a word boundary token
+                        if token_id in self.token_info['word_boundary']:
+                            # This completes a word - record it
+                            word = path['text']  # Already stripped, no decoding needed!
                             
                             # Update best log probability for this word
                             if word not in self.word_log_probs:
@@ -259,13 +282,16 @@ class WordProbabilityExplorer:
                             
                             continue
                         
-                        # Must continue with alphabetic character
-                        if not has_leading_ascii_alpha(next_token_text):
+                        # Check if this is a valid continuation token
+                        if token_id not in self.token_info['valid_continuation']:
                             continue
                         
-                        # Continue this path
+                        # Continue this path - append decoded token to text
+                        next_token_text = self.decode_token(token_id)
+                        
                         next_paths.append({
                             'tokens': path['tokens'] + [token_id],
+                            'text': path['text'] + next_token_text,  # Incremental build!
                             'log_prob': new_log_prob
                         })
                 
