@@ -1,4 +1,4 @@
-# optimized/bugfixed 7 - ITERATIVE WITH BATCHING - OPTIMIZED
+# claude.12 or so: memory management
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -14,10 +14,10 @@ MODEL_NAME = "Qwen/Qwen2.5-1.5B"
 TOP_K_WORDS = 1000
 
 # Exploration limits to prevent exponential explosion
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 MAX_INITIAL_TOKENS = 100        # How many first tokens to explore
 MAX_CONTINUATIONS_PER_TOKEN = 100  # How many next tokens to try from each position
-MAX_TOKENS_PER_WORD = 5         # Maximum word length in tokens
+MAX_TOKENS_PER_WORD = 6         # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
 def has_leading_ascii_alpha(word: str) -> bool:
@@ -100,6 +100,20 @@ class WordProbabilityExplorer:
         """
         return self.token_text_cache.get(token_id, '')
     
+    def get_memory_usage(self) -> str:
+        """
+        Get current GPU memory usage as a formatted string.
+        """
+        if self.device.type == "cuda":
+            allocated = torch.cuda.memory_allocated(self.device) / 1024**2  # MB
+            reserved = torch.cuda.memory_reserved(self.device) / 1024**2  # MB
+            return f"{allocated:.1f}MB allocated, {reserved:.1f}MB reserved"
+        elif self.device.type == "mps":
+            allocated = torch.mps.current_allocated_memory() / 1024**2  # MB
+            return f"{allocated:.1f}MB allocated"
+        else:
+            return "N/A (CPU)"
+    
     def get_batched_log_probs(self, input_ids_list: List[torch.Tensor]) -> torch.Tensor:
         """
         Get log probability distributions for next token for a batch of sequences.
@@ -159,6 +173,9 @@ class WordProbabilityExplorer:
             log_probs = torch.log_softmax(logits, dim=-1)
         
         self.forward_passes += 1
+        
+        # Clean up intermediate tensors
+        del batch_input_ids, batch_attention_mask, outputs, logits
         
         return log_probs
     
@@ -228,6 +245,7 @@ class WordProbabilityExplorer:
         
         while current_paths and depth < MAX_TOKENS_PER_WORD:
             print(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
+            print(f"    GPU Memory: {self.get_memory_usage()}")
             
             next_paths = []
             
@@ -246,11 +264,16 @@ class WordProbabilityExplorer:
                 # Get log probs for entire batch in one forward pass
                 batch_log_probs = self.get_batched_log_probs(batch_input_ids)
                 
+                # Move to CPU immediately to free GPU memory
+                # We only need this for comparison/sorting, not for further computation
+                batch_log_probs_cpu = batch_log_probs.cpu()
+                del batch_log_probs  # Explicitly delete GPU tensor
+                
                 # Process each path in the batch
                 for path_idx, path in enumerate(batch_paths):
                     self.paths_explored += 1
                     
-                    log_probs = batch_log_probs[path_idx]
+                    log_probs = batch_log_probs_cpu[path_idx]
                     
                     # Get top continuations for this path
                     top_k_next = torch.topk(
@@ -298,12 +321,22 @@ class WordProbabilityExplorer:
                 if (batch_start // BATCH_SIZE) % 10 == 0:
                     print(f"  Processed {batch_end}/{len(current_paths)} paths, "
                           f"{self.num_unique_words} unique words found")
+                
+                # Clean up batch tensors explicitly
+                del batch_input_ids, batch_log_probs_cpu
             
             # Move to next depth
             current_paths = next_paths
             depth += 1
             
+            # Explicitly free GPU memory between iterations
+            if self.device.type == "mps":
+                torch.mps.empty_cache()
+            elif self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            
             print(f"  -> {len(next_paths)} paths continue to depth {depth}")
+            print(f"     GPU Memory after cleanup: {self.get_memory_usage()}")
         
         print(f"\n--- Exploration Complete ---")
         print(f"Forward passes: {self.forward_passes}")
