@@ -1,5 +1,6 @@
 # claude.12 or so: memory management
 
+#from llmcompressor import load_awq_model
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import math
@@ -8,9 +9,16 @@ from typing import Dict, List, Tuple
 
 # Enable MPS fallback for unsupported operations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+os.environ['HF_HUB_DOWNLOAD_TIMEOUT'] = '300'
 
 # --- Configuration ---
-MODEL_NAME = "Qwen/Qwen2.5-1.5B"
+#MODEL_NAME = "Qwen/Qwen2.5-1.5B"
+
+#MODEL_NAME = "Qwen/Qwen3-1.7B"
+
+MODEL_NAME = "Qwen/Qwen3-4B" 
+#MODEL_NAME = "mistralai/Ministral-3-3B-Base-2512" # requires transformers 5?
+#MODEL_NAME = "RedHatAI/Qwen2.5-7B-quantized.w8a8"
 TOP_K_WORDS = 1000
 
 # Exploration limits to prevent exponential explosion
@@ -36,6 +44,7 @@ class WordProbabilityExplorer:
         
         # Track best log probability for each unique word
         self.word_log_probs: Dict[str, float] = {}
+        self.word_last_tokens: Dict[str, id] = {}
         
         # Cache for decoded token strings - decode each token ID only once
         self.token_text_cache: Dict[int, str] = {}
@@ -194,6 +203,7 @@ class WordProbabilityExplorer:
         
         # Reset state (but keep pre-computed token info and cache)
         self.word_log_probs = {}
+        self.word_last_tokens = {}
         self.forward_passes = 0
         self.paths_explored = 0
         self.num_unique_words = 0
@@ -243,6 +253,8 @@ class WordProbabilityExplorer:
         # Iterative BFS: process all paths at each depth level
         depth = 1
         
+        num_valid_next_tokens = len(self.token_info['valid_continuation']) + len(self.token_info['word_boundary'])
+
         while current_paths and depth < MAX_TOKENS_PER_WORD:
             print(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
             print(f"    GPU Memory: {self.get_memory_usage()}")
@@ -275,11 +287,29 @@ class WordProbabilityExplorer:
                     
                     log_probs = batch_log_probs_cpu[path_idx]
                     
+                    # MASK log_probs to only allow valid continuation and word boundary tokens
+                    continuation_mask = torch.full_like(log_probs, float('-inf'))
+    
+                    # Copy valid continuation tokens
+                    for token_id in self.token_info['valid_continuation']:
+                        continuation_mask[token_id] = log_probs[token_id]
+    
+                    # Copy word boundary tokens
+                    for token_id in self.token_info['word_boundary']:
+                        continuation_mask[token_id] = log_probs[token_id]
+    
+                    top_k_next = torch.topk(
+                        continuation_mask,
+                        min(MAX_CONTINUATIONS_PER_TOKEN, num_valid_next_tokens)
+                    )
+
+                    """
                     # Get top continuations for this path
                     top_k_next = torch.topk(
                         log_probs, 
                         min(MAX_CONTINUATIONS_PER_TOKEN, len(log_probs))
                     )
+                    """
                     
                     for token_log_prob, token_id in zip(top_k_next.values, top_k_next.indices):
                         token_id = token_id.item()
@@ -300,9 +330,11 @@ class WordProbabilityExplorer:
                             if word not in self.word_log_probs:
                                 self.num_unique_words += 1
                                 self.word_log_probs[word] = path['log_prob']
+                                self.word_last_tokens[word] = token_id
                             elif path['log_prob'] > self.word_log_probs[word]:
                                 self.word_log_probs[word] = path['log_prob']
-                            
+                                self.word_last_tokens[word] = token_id
+
                             continue
                         
                         # Check if this is a valid continuation token
@@ -345,13 +377,14 @@ class WordProbabilityExplorer:
         
         # Convert log probabilities back to probabilities and sort
         word_probabilities = {
-            word: math.exp(log_prob) 
-            for word, log_prob in self.word_log_probs.items()
+            word: (math.exp(log_prob), self.word_last_tokens[word])
+                   for word, log_prob in self.word_log_probs.items()
         }
         
         sorted_words = sorted(
             word_probabilities.items(),
-            key=lambda x: x[1],
+            #key=lambda word, (prob, last_token): prob,
+            key=lambda x: x[1][0],
             reverse=True
         )
         
@@ -375,7 +408,16 @@ if __name__ == "__main__":
         # Load model
         print(f"Loading {MODEL_NAME}...")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+        #model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+
+        # Load model with LLM Compressor
+        #model = load_awq_model(
+        model = AutoModelForCausalLM.from_pretrained( 
+            MODEL_NAME,
+            #device="auto",        # 'cuda', 'mps', or 'cpu'
+            dtype=torch.float16,    # BF16/FP16 recommended
+        )
+
         model = model.to(device)
         model.eval()
         
@@ -391,11 +433,13 @@ if __name__ == "__main__":
         explorer = WordProbabilityExplorer(model, tokenizer, device)
         
         # Example context
-        CONTEXT = "" \
+        CONTEXT = "aquatic" #\
+        """
             "Given an input word, respond with the most meaningful word that follows it.\n" \
             "IMPORTANT: You are to respond with only a single word.\n" \
             "## Input word:\n" \
             "aquatic"
+        """
         
         # Find top words
         top_words = explorer.find_top_words(CONTEXT, TOP_K_WORDS)
@@ -407,8 +451,8 @@ if __name__ == "__main__":
         print("{:<5} {:<25} {:<15}".format("Rank", "Word", "Probability"))
         print("-" * 60)
         
-        for i, (word, prob) in enumerate(top_words):
-            print("{:<5} {:<25} {:<15.8f}".format(i + 1, f'"{word}"', prob))
+        for i, (word, (prob, last_token_id)) in enumerate(top_words):
+            print("{:<5} {:<25} {:<15.8f}".format(i + 1, f'"{word}{explorer.decode_token(last_token_id)}"', prob))
         
     except ImportError:
         print("Error: The 'transformers' and 'torch' libraries are required.")
