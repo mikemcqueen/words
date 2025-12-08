@@ -14,99 +14,22 @@ MODEL_NAME = "Qwen/Qwen3-1.7B"
 TOP_K_WORDS = 1000
 
 # Exploration limits to prevent exponential explosion
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 MAX_INITIAL_TOKENS = 100        # How many first tokens to explore
 MAX_CONTINUATIONS_PER_TOKEN = 100  # How many next tokens to try from each position
 MAX_TOKENS_PER_WORD = 5         # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
+def is_all_ascii_alpha(word: str) -> bool:
+    return word and word.isascii() and word.isalpha()
+
 def has_leading_ascii_alpha(word: str) -> bool:
     return word and word[0].isascii() and word[0].isalpha()
 
-class WordProbabilityExplorer:
-    """
-    Explores all possible word completions using iterative breadth-first search
-    with batched log probability calculations for efficiency.
-    """
-    
-    """
-    def __init__(self, model, tokenizer, device):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.device = device
-        
-        # Track best log probability for each unique word
-        self.word_log_probs: Dict[str, float] = {}
-        
-        # Cache for decoded token strings - decode each token ID only once
-        self.token_text_cache: Dict[int, str] = {}
-        
-        # Statistics
-        self.forward_passes = 0
-        self.paths_explored = 0
-        self.num_unique_words = 0
-        
-        # Pre-compute special token IDs for faster checking
-        self.special_token_ids = set(self.tokenizer.all_special_ids)
-        
-        # Pre-decode and categorize all tokens for faster filtering
-        print("Pre-analyzing vocabulary...")
-        self.token_info = self._precompute_token_info()
-        print(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
-        print(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
-        print(f"  Word boundary tokens: {len(self.token_info['word_boundary'])}")
-        
-        # Move masks to device
-        self.token_info['first_token_mask'] = self.token_info['first_token_mask'].to(device)
-        self.token_info['continuation_mask'] = self.token_info['continuation_mask'].to(device)
-    
-    def _precompute_token_info(self) -> Dict:
-        valid_first = set()  # Tokens that can start a word (space + alpha)
-        valid_continuation = set()  # Tokens that can continue a word (alpha, no space)
-        word_boundary = set()  # Tokens that indicate word boundary (space + alpha)
-        
-        vocab_size = len(self.tokenizer)
-        
-        for token_id in range(vocab_size):
-            # Skip special tokens
-            if token_id in self.special_token_ids:
-                continue
-            
-            # Decode and cache
-            token_text = self.tokenizer.decode([token_id])
-            self.token_text_cache[token_id] = token_text
-            
-            if not token_text:
-                continue
-            
-            # Check if starts with space
-            if token_text[0] == ' ':
-                stripped = token_text.strip()
-                if has_leading_ascii_alpha(stripped):
-                    valid_first.add(token_id)
-                    word_boundary.add(token_id)
-            # No space, starts with alpha - can continue a word
-            elif has_leading_ascii_alpha(token_text):
-                valid_continuation.add(token_id)
-        
-        # Create static additive masks
-        first_token_mask = torch.full((vocab_size,), float('-inf'))
-        for token_id in valid_first:
-            first_token_mask[token_id] = 0.0
-        
-        continuation_mask = torch.full((vocab_size,), float('-inf'))
-        for token_id in valid_continuation | word_boundary:
-            continuation_mask[token_id] = 0.0
-        
-        return {
-            'valid_first': valid_first,
-            'valid_continuation': valid_continuation,
-            'word_boundary': word_boundary,
-            'first_token_mask': first_token_mask,
-            'continuation_mask': continuation_mask
-        }
-    """
+def has_trailing_ascii_alpha(word: str) -> bool:
+    return word and word[-1].isascii() and word[-1].isalpha()
 
+class WordProbabilityExplorer:
     def __init__(self, model, tokenizer, device):
         self.model = model
         self.tokenizer = tokenizer
@@ -132,6 +55,7 @@ class WordProbabilityExplorer:
         # Pre-decode and categorize all tokens for faster filtering
         print("Pre-analyzing vocabulary...")
         self.token_info = self._precompute_token_info()
+        print(f"  Vocab size: {self.vocab_size}")
         print(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
         print(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
         print(f"  Word boundary tokens: {len(self.token_info['word_boundary'])}")
@@ -148,7 +72,7 @@ class WordProbabilityExplorer:
         """
         valid_first = set()  # Tokens that can start a word (space + alpha)
         valid_continuation = set()  # Tokens that can continue a word (alpha, no space)
-        word_boundary = set()  # Tokens that indicate word boundary (space + alpha)
+        #word_boundary = set()  # Tokens that indicate word boundary (space + alpha)
 
         # Use the actual model vocab size, not len(tokenizer)
         vocab_size = self.vocab_size
@@ -167,12 +91,12 @@ class WordProbabilityExplorer:
 
             # Check if starts with space
             if token_text[0] == ' ':
-                stripped = token_text.strip()
-                if has_leading_ascii_alpha(stripped):
+                word = token_text[1:]
+                if is_all_ascii_alpha(word):
                     valid_first.add(token_id)
-                    word_boundary.add(token_id)
-                    # No space, starts with alpha - can continue a word
-            elif has_leading_ascii_alpha(token_text):
+                    valid_continuation.add(token_id)
+            # No space, contains all ascii alpha - can continue a word
+            elif is_all_ascii_alpha(token_text):
                 valid_continuation.add(token_id)
 
         # Create static additive masks with correct vocab size
@@ -181,13 +105,13 @@ class WordProbabilityExplorer:
             first_token_mask[token_id] = 0.0
 
         continuation_mask = torch.full((vocab_size,), float('-inf'))
-        for token_id in valid_continuation | word_boundary:
+        for token_id in valid_continuation:
             continuation_mask[token_id] = 0.0
 
         return {
             'valid_first': valid_first,
             'valid_continuation': valid_continuation,
-            'word_boundary': word_boundary,
+            'word_boundary': valid_first, # same as first token; starts with space, all ascii/alpha
             'first_token_mask': first_token_mask,
             'continuation_mask': continuation_mask
         }        
@@ -301,14 +225,16 @@ class WordProbabilityExplorer:
         
         # Get log probabilities for first token
         print("Computing first token probabilities...")
-        first_token_log_probs = self.get_batched_log_probs([base_input_ids])[0]
+        first_log_probs = self.get_batched_log_probs([base_input_ids])[0]
+        
+        k = 100
         
         # Apply first token mask
-        masked_first = first_token_log_probs + self.token_info['first_token_mask']
+        masked_first = first_log_probs + self.token_info['first_token_mask']
         
         top_initial = torch.topk(
             masked_first, 
-            min(MAX_INITIAL_TOKENS, len(self.token_info['valid_first']))
+            min(k, len(self.token_info['valid_first']))
         )
         
         print(f"Starting exploration with {len(top_initial.values)} initial tokens...")
@@ -323,6 +249,7 @@ class WordProbabilityExplorer:
             token_log_prob = log_prob.item()
             
             # Should always be valid due to masking, but double-check
+            # TODO: or not.
             if token_id not in self.token_info['valid_first']:
                 continue
             
@@ -359,22 +286,30 @@ class WordProbabilityExplorer:
                 # Get log probs for entire batch in one forward pass (keep on GPU)
                 batch_log_probs = self.get_batched_log_probs(batch_input_ids)
                 
+                # Apply mask to entire batch at once
+                masked_batch = batch_log_probs + self.token_info['continuation_mask']  # Broadcasting works!
+
+                # topk on 2D tensor - operates on last dimension (vocab_size)
+                top_k_batch = torch.topk(
+                    masked_batch,
+                    min(MAX_CONTINUATIONS_PER_TOKEN, len(self.token_info['valid_continuation']))
+                )
+
+                # Move results to CPU in one operation (much smaller than full log_probs!)
+                top_k_values = top_k_batch.values.cpu()  # [batch_size, k]
+                top_k_indices = top_k_batch.indices.cpu()  # [batch_size, k]
+
+                # Free GPU memory
+                del batch_input_ids, batch_log_probs, masked_batch, top_k_batch
+
                 # Process each path in the batch
                 for path_idx, path in enumerate(batch_paths):
                     self.paths_explored += 1
                     
-                    log_probs = batch_log_probs[path_idx]  # Keep on GPU
-                    
-                    # Apply continuation mask (GPU vector addition)
-                    masked_log_probs = log_probs + self.token_info['continuation_mask']
-                    
-                    # Get top continuations for this path (topk on GPU)
-                    top_k_next = torch.topk(
-                        masked_log_probs, 
-                        min(MAX_CONTINUATIONS_PER_TOKEN, len(self.token_info['valid_continuation']) + len(self.token_info['word_boundary']))
-                    )
-                    
-                    for token_log_prob, token_id in zip(top_k_next.values, top_k_next.indices):
+                    path_values = top_k_values[path_idx]
+                    path_indices = top_k_indices[path_idx]
+    
+                    for token_log_prob, token_id in zip(path_values, path_indices):
                         token_id = token_id.item()
                         token_log_prob = token_log_prob.item()
                         
@@ -412,7 +347,7 @@ class WordProbabilityExplorer:
                           f"{self.num_unique_words} unique words found")
                 
                 # Clean up batch tensors explicitly
-                del batch_input_ids, batch_log_probs
+                #del batch_input_ids #, batch_log_probs
             
             # Move to next depth
             current_paths = next_paths
@@ -464,7 +399,10 @@ if __name__ == "__main__":
         # Load model
         print(f"Loading {MODEL_NAME}...")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            dtype=torch.bfloat16
+        )
         model = model.to(device)
         model.eval()
         
@@ -480,7 +418,8 @@ if __name__ == "__main__":
         explorer = WordProbabilityExplorer(model, tokenizer, device)
         
         # Example context
-        CONTEXT = "aquatic" 
+        #CONTEXT = "volleyball"
+        CONTEXT = "aquatic"
         """
             "Given an input word, respond with the most meaningful word that follows it.\n" \
             "IMPORTANT: You are to respond with only a single word.\n" \
@@ -498,8 +437,15 @@ if __name__ == "__main__":
         print("{:<5} {:<25} {:<15}".format("Rank", "Word", "Probability"))
         print("-" * 60)
         
+        threshold = 0.95
+        prob_sum = 0.0
         for i, (word, prob) in enumerate(top_words):
+            prob_sum += prob
+            if threshold and prob_sum >= threshold:
+                print("--------threshold---------")
+                threshold = None
             print("{:<5} {:<25} {:<15.8f}".format(i + 1, f'"{word}"', prob))
+        print(f"prob_sum: {prob_sum}")
         
     except ImportError:
         print("Error: The 'transformers' and 'torch' libraries are required.")
