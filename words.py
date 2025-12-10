@@ -13,11 +13,10 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 MODEL_NAME = "Qwen/Qwen3-1.7B"
 TOP_K_WORDS = 1000
 
-# Exploration limits to prevent exponential explosion
 BATCH_SIZE = 128
-MAX_INITIAL_TOKENS = 100        # How many first tokens to explore
-MAX_CONTINUATIONS_PER_TOKEN = 100  # How many next tokens to try from each position
-MAX_TOKENS_PER_WORD = 5         # Maximum word length in tokens
+MAX_INITIAL_TOKENS = 100              # How many first tokens to explore
+MAX_CONTINUATIONS_PER_TOKEN = 100     # How many next tokens to try from each position
+MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
 def is_all_ascii_alpha(word: str) -> bool:
@@ -72,7 +71,6 @@ class WordProbabilityExplorer:
         """
         valid_first = set()  # Tokens that can start a word (space + alpha)
         valid_continuation = set()  # Tokens that can continue a word (alpha, no space)
-        #word_boundary = set()  # Tokens that indicate word boundary (space + alpha)
 
         # Use the actual model vocab size, not len(tokenizer)
         vocab_size = self.vocab_size
@@ -135,71 +133,6 @@ class WordProbabilityExplorer:
             return f"{allocated:.1f}MB allocated"
         else:
             return "N/A (CPU)"
-    
-    """
-    def get_batched_log_probs(self, input_ids_list: List[torch.Tensor]) -> torch.Tensor:
-        Get log probability distributions for next token for a batch of sequences.
-        
-        Args:
-            input_ids_list: List of input_id tensors of shape [1, seq_len]
-            
-        Returns:
-            Tensor of shape [batch_size, vocab_size] with log probabilities
-        if not input_ids_list:
-            return torch.empty(0, len(self.tokenizer), device=self.device)
-        
-        # Find max length for padding
-        max_len = max(ids.shape[1] for ids in input_ids_list)
-        
-        # Pad sequences to same length (pad on the left to preserve causality)
-        padded_inputs = []
-        attention_masks = []
-        
-        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
-        
-        for input_ids in input_ids_list:
-            seq_len = input_ids.shape[1]
-            if seq_len < max_len:
-                # Pad on the left
-                padding = torch.full(
-                    (1, max_len - seq_len), 
-                    pad_token_id,
-                    dtype=torch.long, 
-                    device=self.device
-                )
-                padded = torch.cat([padding, input_ids], dim=1)
-                # Attention mask: 0 for padding, 1 for real tokens
-                mask = torch.cat([
-                    torch.zeros(1, max_len - seq_len, dtype=torch.long, device=self.device),
-                    torch.ones(1, seq_len, dtype=torch.long, device=self.device)
-                ], dim=1)
-            else:
-                padded = input_ids
-                mask = torch.ones(1, seq_len, dtype=torch.long, device=self.device)
-            
-            padded_inputs.append(padded)
-            attention_masks.append(mask)
-        
-        # Stack into batch
-        batch_input_ids = torch.cat(padded_inputs, dim=0)  # [batch_size, max_len]
-        batch_attention_mask = torch.cat(attention_masks, dim=0)  # [batch_size, max_len]
-        
-        # Forward pass
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=batch_input_ids,
-                attention_mask=batch_attention_mask
-            )
-            logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
-            log_probs = torch.log_softmax(logits, dim=-1)
-        
-        self.forward_passes += 1
-        
-        # Clean up intermediate tensors
-        del batch_input_ids, batch_attention_mask, outputs, logits
-        
-        return log_probs
-    """
 
     def get_batched_log_probs(self, input_ids_list: List[torch.Tensor], 
                               mask: torch.Tensor, num_valid: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -265,31 +198,20 @@ class WordProbabilityExplorer:
             )
             logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
 
-            #print(f"      logits ({logits.shape[0]},{logits.shape[1]})")
-
             # Apply mask to filter out invalid tokens
             masked_logits = logits + mask  # [batch_size, vocab_size], invalid tokens are now -inf
-
-            #print(f"      masked_logits ({masked_logits.shape[0]},{masked_logits.shape[1]})")
 
             # Get top num_valid tokens
             top_k = torch.topk(masked_logits, k=num_valid, dim=-1)
 
-            #print(f"      top_k.values ({top_k.values.shape[0]},{top_k.values.shape[1]})")
-            #print(f"      top_k.indices ({top_k.indices.shape[0]},{top_k.indices.shape[1]})")
-
-            #top_k_values = top_k.values  # [batch_size, num_valid]
-            #top_k_indices = top_k.indices  # [batch_size, num_valid]
-
             # Apply log_softmax ONLY to the top-k valid tokens
             top_k_log_probs = torch.log_softmax(top_k.values, dim=-1)  # [batch_size, num_valid]
 
-            #print(f"      top_k_log_probs ({top_k_log_probs.shape[0]},{top_k_log_probs.shape[1]})")
 
         self.forward_passes += 1
 
         # Clean up intermediate tensors
-        del batch_input_ids, batch_attention_mask, outputs, logits, masked_logits #, top_k_values
+        del batch_input_ids, batch_attention_mask, outputs, logits, masked_logits
 
         return top_k_log_probs, top_k.indices
     
@@ -322,32 +244,17 @@ class WordProbabilityExplorer:
             self.token_info['first_token_mask'],
             len(self.token_info['valid_first'])
         )
-        #d_first_log_probs = d_first_log_probs[0]
+        #print(f"    d_first_log_probs ({d_first_log_probs.shape[0]},{d_first_log_probs.shape[1]})")
+        first_k = min(MAX_INITIAL_TOKENS, d_first_log_probs.shape[1])
 
-        print(f"    d_first_log_probs ({d_first_log_probs.shape[0]},{d_first_log_probs.shape[1]})")
-
-        first_k = 100
-
-        #d_first_k_log_probs = torch.topk(d_first_log_probs, min(k, d_first_log_probs.shape[1]))
-
+        #d_first_k_log_probs = torch.topk(d_first_log_probs, first_k)
+        
         # Map to actual token IDs using gather
         #d_first_indices = d_first_indices.gather(1, d_first_k_log_probs.indices)[0]
 
         # Move to CPU
         first_values = d_first_log_probs[0].cpu()
         first_indices = d_first_indices[0].cpu()
-        #first_indices = first_k_indices.cpu()
-
-        """
-        # Apply first token mask
-
-        masked_first = first_log_probs + self.token_info['first_token_mask']
-
-        top_initial = torch.topk(
-            masked_first, 
-            min(k, len(self.token_info['valid_first']))
-        )
-        """
 
         print(f"Starting exploration with ({first_k}/{len(first_indices)}) intial tokens...")
 
@@ -357,7 +264,6 @@ class WordProbabilityExplorer:
         current_paths = []
 
         for first_idx, (log_prob, token_id) in enumerate(zip(first_values, first_indices)):
-        #for log_prob, token_id in zip(top_initial.values, top_initial.indices):
             if first_idx >= first_k:
                 break
 
@@ -399,49 +305,22 @@ class WordProbabilityExplorer:
                     extended = torch.cat([base_input_ids, tokens_tensor], dim=1)
                     batch_input_ids.append(extended)
 
-                #print("    getting next log probs... ")
                 d_next_log_probs, d_next_indices = self.get_batched_log_probs(
                     batch_input_ids,
                     self.token_info['continuation_mask'],
                     len(self.token_info['valid_continuation'])
                 )
-
-                #print(f"    done. d_next_log_probs ({d_next_log_probs.shape[0]},{d_next_log_probs.shape[1]})")
-
                 next_k = min(MAX_CONTINUATIONS_PER_TOKEN, d_next_log_probs.shape[1])
-
                 d_next_k_log_probs = torch.topk(d_next_log_probs, next_k)
 
                 #Map to actual token IDs using gather
                 d_next_indices = d_next_indices.gather(1, d_next_k_log_probs.indices)
 
                 # Move to CPU
-                #next_log_probs = d_next_log_probs.cpu()
                 next_log_probs = d_next_k_log_probs.values.cpu()
                 next_indices = d_next_indices.cpu()
 
-                #print("    copy done")
-
-                """
-                # Get log probs for entire batch in one forward pass (keep on GPU)
-                batch_log_probs = self.get_batched_log_probs(batch_input_ids)
-                
-                # Apply mask to entire batch at once
-                masked_batch = batch_log_probs + self.token_info['continuation_mask']  # Broadcasting works!
-
-                # topk on 2D tensor - operates on last dimension (vocab_size)
-                top_k_batch = torch.topk(
-                    masked_batch,
-                    min(MAX_CONTINUATIONS_PER_TOKEN, len(self.token_info['valid_continuation']))
-                )
-
-                # Move results to CPU in one operation (much smaller than full log_probs!)
-                top_k_values = top_k_batch.values.cpu()  # [batch_size, k]
-                top_k_indices = top_k_batch.indices.cpu()  # [batch_size, k]
-                """
-
                 # Free GPU memory
-                #del batch_input_ids, batch_log_probs, masked_batch, top_k_batch
                 del d_next_log_probs, d_next_indices
 
                 # Process each path in the batch
@@ -451,10 +330,7 @@ class WordProbabilityExplorer:
                     path_values = next_log_probs[path_idx]
                     path_indices = next_indices[path_idx]
 
-                    for next_idx, (log_prob, token_id) in enumerate(zip(path_values, path_indices)):
-                        #if next_idx >= next_k:
-                        #    break
-
+                    for log_prob, token_id in zip(path_values, path_indices):
                         token_id = token_id.item()
                         token_log_prob = log_prob.item()
 
@@ -478,10 +354,8 @@ class WordProbabilityExplorer:
 
                             continue
 
-                        #print(f"    decoding path {path_idx} token {next_idx}...")
                         # Continue this path - append decoded token to text
                         next_token_text = self.decode_token(token_id)
-                        #print("    done.")
 
                         next_paths.append({
                             'tokens': path['tokens'] + [token_id],
@@ -492,9 +366,6 @@ class WordProbabilityExplorer:
                 if (batch_start // BATCH_SIZE) % 10 == 0:
                     print(f"  Processed {batch_end}/{len(current_paths)} paths, "
                           f"{self.num_unique_words} unique words found")
-
-                # Clean up batch tensors explicitly
-                #del batch_input_ids #, batch_log_probs
 
             # Move to next depth
             current_paths = next_paths
