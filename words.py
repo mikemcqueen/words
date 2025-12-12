@@ -1,5 +1,3 @@
-# optimized/bugfixed 7 - ITERATIVE WITH BATCHING - WITH ASYMMETRIC TYPICAL SAMPLING
-#
 # This version implements Asymmetric Typical Sampling based on standard deviation 
 # around entropy. Unlike symmetric approaches, this only filters surprisingly 
 # LOW-probability tokens while always keeping high-probability tokens.
@@ -31,14 +29,8 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 # --- Configuration ---
 MODEL_NAME = "Qwen/Qwen3-1.7B"
 TOP_K_WORDS = 1000
-
-BATCH_SIZE = 128
-TYPICALITY_SIGMA = 1.0                # Asymmetric filter: keep tokens within k-sigma above entropy
-                                       # Only filters surprisingly low-probability tokens
-                                       # High-probability tokens are always kept
-# Deprecated - now using typical sampling instead of fixed top-K:
-# MAX_INITIAL_TOKENS = 100            # How many first tokens to explore
-# MAX_CONTINUATIONS_PER_TOKEN = 100   # How many next tokens to try from each position
+BATCH_SIZE = 256
+TYPICALITY_SIGMA = 2.0                # Asymmetric filter: keep tokens within k-sigma above entropy
 MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
@@ -330,8 +322,6 @@ class WordProbabilityExplorer:
         self.paths_explored = 0
         self.num_unique_words = 0
 
-        t0_first = time.perf_counter()
-
         # Encode context
         base_input_ids = self.tokenizer.encode(context, return_tensors="pt").to(self.device)
 
@@ -383,25 +373,12 @@ class WordProbabilityExplorer:
                 'log_prob': token_log_prob
             })
 
-        t_first = time.perf_counter() - t0_first 
+        depth = 1
+        inner_loops = 0
+        t0_next = time.perf_counter()
+        t_forward = 0.0
 
         # Iterative BFS: process all paths at each depth level
-        depth = 1
-
-        t0_next = time.perf_counter()
-        t_batch = 0.0
-        t_forward = 0.0
-        t_sample = 0.0
-        t_copy = 0.0
-        t_index = 0.0
-        t_process = 0.0
-        t_cache = 0.0
-        t_append = 0.0
-        t_other = 0.0
-        t_item = 0.0
-
-        inner_loops = 0
-
         while current_paths and depth < MAX_TOKENS_PER_WORD:
             print(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
             print(f"    GPU Memory: {self.get_memory_usage()}")
@@ -415,36 +392,26 @@ class WordProbabilityExplorer:
 
                 # Prepare batch of extended inputs
                 batch_input_ids = []
-                t0 = time.perf_counter()
                 for path in batch_paths:
                     tokens_tensor = torch.tensor(path['tokens'], device=self.device).unsqueeze(0)
                     extended = torch.cat([base_input_ids, tokens_tensor], dim=1)
                     batch_input_ids.append(extended)
-                t1 = time.perf_counter()
-                t_batch += t1 - t0
 
-                sync()
-                t0 = time.perf_counter()
+                t0_forward = time.perf_counter()
                 d_next_log_probs, d_next_indices = self.get_batched_log_probs(
                     batch_input_ids,
                     self.token_info['continuation_mask'],
                     len(self.token_info['valid_continuation'])
                 )
                 sync()
-                t1 = time.perf_counter()
-                t_forward += t1 - t0
+                t_forward += time.perf_counter() - t0_forward
 
-                t0 = t1
                 # Apply typical sampling to dynamically select continuation tokens
                 d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected = self.typical_sampling_batch(
                     d_next_log_probs, d_next_indices
                 )
-                sync()
-                t1 = time.perf_counter()
-                t_sample += t1 - t0
 
                 # Move to CPU
-                t0 = t1
                 next_log_probs = d_next_log_probs_selected.cpu().numpy()
                 next_indices = d_next_indices_selected.cpu().numpy()
                 next_mask = d_next_mask_selected.cpu().numpy()
@@ -452,37 +419,24 @@ class WordProbabilityExplorer:
                 # Free GPU memory
                 del d_next_log_probs, d_next_indices
                 del d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected
-                sync()
-                t1 = time.perf_counter()
-                t_copy += t1 - t0
 
-                t0_process = t1
                 # Process each path in the batch
                 for path_idx, path in enumerate(batch_paths):
                     self.paths_explored += 1
 
                     # Use boolean indexing to get only valid tokens for this path
-                    t0_index = time.perf_counter()
                     path_mask = next_mask[path_idx]
                     path_values = next_log_probs[path_idx][path_mask]
                     path_indices = next_indices[path_idx][path_mask]
-                    t_index += time.perf_counter() - t0_index
                     
                     for token_log_prob, token_id in zip(path_values, path_indices):
                         inner_loops += 1 
-
-                        #t0_item = time.perf_counter()
-                        #token_id = token_id.item()
-                        #token_log_prob = log_prob.item()
-                        #t_item += time.perf_counter() - t0_item
-
                         new_log_prob = path['log_prob'] + token_log_prob
 
                         # Prune if log probability too low
                         if new_log_prob < MIN_LOG_PROBABILITY:
                             continue
 
-                        t0_other = time.perf_counter()
                         # Check if this is a word boundary token
                         if token_id in self.token_info['word_boundary']:
                             # This completes a word - record it
@@ -495,23 +449,17 @@ class WordProbabilityExplorer:
                             elif path['log_prob'] > self.word_log_probs[word]:
                                 self.word_log_probs[word] = path['log_prob']
 
-                            t_other += time.perf_counter() - t0_other
                             continue
 
                         # Continue this path - append decoded token to text
                         next_token_text = self.decode_token(token_id)
 
-                        t0_append = time.perf_counter()
                         next_paths.append({
                             'tokens': path['tokens'] + [token_id],
-                            'text': path['text'] + next_token_text,  # Incremental build!
+                            'text': path['text'] + next_token_text,
                             'log_prob': new_log_prob
                         })
-                        t_append += time.perf_counter() - t0_append
 
-
-                t_process += time.perf_counter() - t0_process
-                    
                 if (batch_start // BATCH_SIZE) % 10 == 0:
                     print(f"  Processed {batch_end}/{len(current_paths)} paths, "
                           f"{self.num_unique_words} unique words found")
@@ -520,14 +468,11 @@ class WordProbabilityExplorer:
             current_paths = next_paths
             depth += 1
 
-            t0_cache = time.perf_counter()
             # Explicitly free GPU memory between iterations
             if self.device.type == "mps":
                 torch.mps.empty_cache()
             elif self.device.type == "cuda":
                 torch.cuda.empty_cache()
-            sync()
-            t_cache += time.perf_counter() - t0_cache
 
             print(f"  -> {len(next_paths)} paths continue to depth {depth}")
             print(f"     GPU Memory after cleanup: {self.get_memory_usage()}")
@@ -554,10 +499,7 @@ class WordProbabilityExplorer:
         )
 
         return sorted_words[:top_k], {
-            "total": t_total, "first": t_first, "next": t_next, "batch": t_batch,
-            "forward":t_forward, "sample":t_sample, "copy":t_copy, "process":t_process,
-            "index": t_index, "cache": t_cache, "append": t_append,
-            "item": t_item, "other": t_other, "iters": inner_loops
+            "total": t_total, "next": t_next, "forward": t_forward, "iters": inner_loops
         }
 
 # --- Main Execution ---
@@ -581,6 +523,10 @@ if __name__ == "__main__":
             MODEL_NAME,
             dtype=torch.bfloat16
         )
+        
+        #torch.set_float32_matmul_precision('high')
+        #model = torch.compile(model, mode="max-autotune")
+
         model = model.to(device)
         model.eval()
         
@@ -626,10 +572,7 @@ if __name__ == "__main__":
             print("{:<5} {:<25} {:<15.8f}".format(i + 1, f'"{word}"', prob))
         print(f"prob_sum: {prob_sum}")
         
-        print(f"Time: total: {t['total']:.3f}s  first: {t['first']:.3f}s  next: {t['next']:.3f}s  batch: {t['batch']:.3f}s  " \
-              f"forward: {t['forward']:.3f}s  sample: {t['sample']:.3f}s  copy: {t['copy']:.3f}s  process: {t['process']:.3f}s  " \
-              f"index: {t['index']:.3f}s  cache: {t['cache']:.3f}s  append: {t['append']:.3f}s  " \
-              f"item: {t['item']:.3f}s  other: {t['other']:.3f}s  iters: {t['iters']}s")
+        print(f"Time: total: {t['total']:.3f}s  next: {t['next']:.3f}s  forward: {t['forward']:.3f}s  iters: {t['iters']}s")
 
     except ImportError:
         print("Error: The 'transformers' and 'torch' libraries are required.")
