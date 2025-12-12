@@ -1,4 +1,22 @@
-# optimized/bugfixed 7 - ITERATIVE WITH BATCHING - OPTIMIZED
+# optimized/bugfixed 7 - ITERATIVE WITH BATCHING - WITH ASYMMETRIC TYPICAL SAMPLING
+#
+# This version implements Asymmetric Typical Sampling based on standard deviation 
+# around entropy. Unlike symmetric approaches, this only filters surprisingly 
+# LOW-probability tokens while always keeping high-probability tokens.
+#
+# Asymmetric typical sampling algorithm:
+# 1. Compute entropy H = E[-log(p)] = Σ(p_i * -log(p_i))
+# 2. Compute standard deviation σ = sqrt(Σ(p_i * (-log(p_i) - H)²))
+# 3. Apply ONE-SIDED threshold: keep tokens where -log(p) <= H + k*σ
+# 4. High probability tokens (low -log p) always pass (no lower bound)
+# 5. Low probability tokens filtered only if too surprising (high -log p)
+#
+# Key advantages:
+# - Never excludes high-probability tokens just because they're "too predictable"
+# - Uses familiar statistical concept (standard deviation)
+# - Easy to tune: k=2.0 means "within 2 standard deviations above entropy"
+# - Adapts to distribution shape (peaked vs flat)
+# - No cumsum complexity, just hard threshold
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -14,8 +32,12 @@ MODEL_NAME = "Qwen/Qwen3-1.7B"
 TOP_K_WORDS = 1000
 
 BATCH_SIZE = 128
-MAX_INITIAL_TOKENS = 100              # How many first tokens to explore
-MAX_CONTINUATIONS_PER_TOKEN = 100     # How many next tokens to try from each position
+TYPICALITY_SIGMA = 1.0                # Asymmetric filter: keep tokens within k-sigma above entropy
+                                       # Only filters surprisingly low-probability tokens
+                                       # High-probability tokens are always kept
+# Deprecated - now using typical sampling instead of fixed top-K:
+# MAX_INITIAL_TOKENS = 100            # How many first tokens to explore
+# MAX_CONTINUATIONS_PER_TOKEN = 100   # How many next tokens to try from each position
 MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
@@ -29,10 +51,11 @@ def has_trailing_ascii_alpha(word: str) -> bool:
     return word and word[-1].isascii() and word[-1].isalpha()
 
 class WordProbabilityExplorer:
-    def __init__(self, model, tokenizer, device):
+    def __init__(self, model, tokenizer, device, typicality_sigma: float = 1.0):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
+        self.typicality_sigma = typicality_sigma  # Sigma threshold for asymmetric filtering
 
         # Track best log probability for each unique word
         self.word_log_probs: Dict[str, float] = {}
@@ -133,6 +156,70 @@ class WordProbabilityExplorer:
             return f"{allocated:.1f}MB allocated"
         else:
             return "N/A (CPU)"
+
+    def typical_sampling_batch(self, log_probs: torch.Tensor, 
+                              indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Apply asymmetric typical (entropy-based) sampling to select tokens for a batch.
+        
+        Uses standard deviation around entropy to filter tokens:
+        - Computes entropy H (expected surprisal) and std dev σ
+        - Keeps tokens where -log(p) <= H + k*σ (one-sided upper bound)
+        - High probability tokens are ALWAYS kept (no lower bound)
+        - Low probability tokens are filtered if too surprising
+        
+        This is asymmetric: we don't exclude tokens for being too probable,
+        only for being too improbable relative to the distribution's entropy.
+        
+        Args:
+            log_probs: Log probabilities of shape [batch_size, num_candidates]
+            indices: Corresponding token IDs of shape [batch_size, num_candidates]
+            
+        Returns:
+            Tuple of (selected_log_probs, selected_indices, selected_mask)
+            - selected_log_probs: [batch_size, max_selected]
+            - selected_indices: [batch_size, max_selected]
+            - selected_mask: [batch_size, max_selected] - True for valid tokens
+        """
+        batch_size, num_candidates = log_probs.shape
+        
+        # Convert to probabilities
+        probs = torch.exp(log_probs)
+        neg_log_probs = -log_probs
+        
+        # Compute entropy: H = E[-log(p)] = Σ(p_i * -log(p_i))
+        entropy = torch.sum(probs * neg_log_probs, dim=-1, keepdim=True)  # [batch_size, 1]
+        
+        # Compute standard deviation of surprisal around entropy
+        # σ = sqrt(E[(X - μ)²]) where X = -log(p), μ = H
+        variance = torch.sum(probs * (neg_log_probs - entropy)**2, dim=-1, keepdim=True)
+        std_dev = torch.sqrt(variance + 1e-10)  # Small epsilon for numerical stability
+        
+        # Asymmetric threshold: only filter tokens that are too surprising (high -log p)
+        # No lower bound: high probability tokens (low -log p) always pass
+        upper_bound = entropy + self.typicality_sigma * std_dev
+        typical_mask = neg_log_probs <= upper_bound  # [batch_size, num_candidates]
+        
+        # Sort by probability (descending) to keep highest probability tokens first
+        # This ensures we always get the most probable tokens
+        sorted_indices_by_prob = torch.argsort(log_probs, dim=-1, descending=True)
+        
+        # Apply sorting
+        sorted_mask = torch.gather(typical_mask, -1, sorted_indices_by_prob)
+        sorted_log_probs = torch.gather(log_probs, -1, sorted_indices_by_prob)
+        sorted_token_indices = torch.gather(indices, -1, sorted_indices_by_prob)
+        
+        # Find max number selected across batch for uniform tensor size
+        num_selected_per_item = sorted_mask.sum(dim=-1)
+        max_selected = num_selected_per_item.max().item()
+        max_selected = max(1, max_selected)  # Ensure at least one
+        
+        # Truncate to max_selected for uniform tensor shape
+        selected_log_probs = sorted_log_probs[:, :max_selected]
+        selected_indices = sorted_token_indices[:, :max_selected]
+        selected_mask = sorted_mask[:, :max_selected]
+        
+        return selected_log_probs, selected_indices, selected_mask
 
     def get_batched_log_probs(self, input_ids_list: List[torch.Tensor], 
                               mask: torch.Tensor, num_valid: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -244,34 +331,35 @@ class WordProbabilityExplorer:
             self.token_info['first_token_mask'],
             len(self.token_info['valid_first'])
         )
-        #print(f"    d_first_log_probs ({d_first_log_probs.shape[0]},{d_first_log_probs.shape[1]})")
-        first_k = min(MAX_INITIAL_TOKENS, d_first_log_probs.shape[1])
-
-        #d_first_k_log_probs = torch.topk(d_first_log_probs, first_k)
         
-        # Map to actual token IDs using gather
-        #d_first_indices = d_first_indices.gather(1, d_first_k_log_probs.indices)[0]
+        # Apply typical sampling to dynamically select first tokens
+        d_first_log_probs_selected, d_first_indices_selected, d_first_mask_selected = self.typical_sampling_batch(
+            d_first_log_probs, d_first_indices
+        )
 
         # Move to CPU
-        first_values = d_first_log_probs[0].cpu()
-        first_indices = d_first_indices[0].cpu()
+        first_values = d_first_log_probs_selected[0].cpu()
+        first_indices = d_first_indices_selected[0].cpu()
+        first_mask = d_first_mask_selected[0].cpu()
 
-        print(f"Starting exploration with ({first_k}/{len(first_indices)}) intial tokens...")
+        # Use boolean indexing to get only valid tokens
+        valid_first_values = first_values[first_mask]
+        valid_first_indices = first_indices[first_mask]
+        
+        num_first_tokens = len(valid_first_values)
+        print(f"Asymmetric typical sampling selected {num_first_tokens} initial tokens (out of {len(self.token_info['valid_first'])} valid)")
+        print(f"  Keeping tokens where -log(p) <= H + {self.typicality_sigma}σ")
 
         # Initialize paths for first tokens
         # Each path: {'tokens': [token_ids], 'text': decoded_text, 'log_prob': float}
         # Store text incrementally to avoid repeated decoding
         current_paths = []
 
-        for first_idx, (log_prob, token_id) in enumerate(zip(first_values, first_indices)):
-            if first_idx >= first_k:
-                break
-
+        for log_prob, token_id in zip(valid_first_values, valid_first_indices):
             token_id = token_id.item()
             token_log_prob = log_prob.item()
 
-            # Should always be valid due to masking, but double-check
-            # TODO: or not.
+            # Should always be valid due to masking
             if token_id not in self.token_info['valid_first']:
                 continue
 
@@ -310,25 +398,29 @@ class WordProbabilityExplorer:
                     self.token_info['continuation_mask'],
                     len(self.token_info['valid_continuation'])
                 )
-                next_k = min(MAX_CONTINUATIONS_PER_TOKEN, d_next_log_probs.shape[1])
-                d_next_k_log_probs = torch.topk(d_next_log_probs, next_k)
-
-                #Map to actual token IDs using gather
-                d_next_indices = d_next_indices.gather(1, d_next_k_log_probs.indices)
+                
+                # Apply typical sampling to dynamically select continuation tokens
+                d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected = self.typical_sampling_batch(
+                    d_next_log_probs, d_next_indices
+                )
 
                 # Move to CPU
-                next_log_probs = d_next_k_log_probs.values.cpu()
-                next_indices = d_next_indices.cpu()
+                next_log_probs = d_next_log_probs_selected.cpu()
+                next_indices = d_next_indices_selected.cpu()
+                next_mask = d_next_mask_selected.cpu()
 
                 # Free GPU memory
                 del d_next_log_probs, d_next_indices
+                del d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected
 
                 # Process each path in the batch
                 for path_idx, path in enumerate(batch_paths):
                     self.paths_explored += 1
 
-                    path_values = next_log_probs[path_idx]
-                    path_indices = next_indices[path_idx]
+                    # Use boolean indexing to get only valid tokens for this path
+                    path_mask = next_mask[path_idx]
+                    path_values = next_log_probs[path_idx][path_mask]
+                    path_indices = next_indices[path_idx][path_mask]
 
                     for log_prob, token_id in zip(path_values, path_indices):
                         token_id = token_id.item()
@@ -431,8 +523,9 @@ if __name__ == "__main__":
         
         print(f"Model loaded successfully on {device}")
         
-        # Create explorer
-        explorer = WordProbabilityExplorer(model, tokenizer, device)
+        # Create explorer with asymmetric typical sampling
+        print(f"Using Asymmetric Typical Sampling with sigma threshold: {TYPICALITY_SIGMA}")
+        explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=TYPICALITY_SIGMA)
         
         # Example context
         #CONTEXT = "volleyball"
