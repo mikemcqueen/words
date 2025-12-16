@@ -521,7 +521,7 @@ if __name__ == "__main__":
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
-            dtype=torch.bfloat16
+            dtype=torch.float16
         )
         
         #torch.set_float32_matmul_precision('high')
