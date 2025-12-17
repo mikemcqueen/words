@@ -1,10 +1,13 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-1.7B", torch_dtype=torch.float32)
+model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen3-1.7B",
+    dtype=torch.float32
+)
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
 
-inputs = tokenizer("Your test prompt here", return_tensors="pt").to(model.device)
+inputs = tokenizer("aquatic", return_tensors="pt").to(model.device)
 
 with torch.no_grad():
     outputs = model(**inputs)

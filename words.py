@@ -1,3 +1,5 @@
+# words.py
+#
 # This version implements Asymmetric Typical Sampling based on standard deviation 
 # around entropy. Unlike symmetric approaches, this only filters surprisingly 
 # LOW-probability tokens while always keeping high-probability tokens.
@@ -17,17 +19,18 @@
 # - No cumsum complexity, just hard threshold
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import math
 import os
 import time
 from typing import Dict, List, Tuple
 
+from info import info
+from model import load_model, clear_cache
+
 # Enable MPS fallback for unsupported operations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 # --- Configuration ---
-MODEL_NAME = "Qwen/Qwen3-1.7B"
 TOP_K_WORDS = 1000
 BATCH_SIZE = 256
 TYPICALITY_SIGMA = 2.0                # Asymmetric filter: keep tokens within k-sigma above entropy
@@ -43,14 +46,14 @@ def has_leading_ascii_alpha(word: str) -> bool:
 def has_trailing_ascii_alpha(word: str) -> bool:
     return word and word[-1].isascii() and word[-1].isalpha()
 
-def sync():
+def sync(device):
     if device.type == "mps":
         torch.mps.synchronize()
     elif device.type == "cuda":
         torch.cuda.synchronize()
 
 class WordProbabilityExplorer:
-    def __init__(self, model, tokenizer, device, typicality_sigma: float = 1.0):
+    def __init__(self, model, tokenizer, device, typicality_sigma: float):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -74,12 +77,12 @@ class WordProbabilityExplorer:
         self.vocab_size = model.config.vocab_size
 
         # Pre-decode and categorize all tokens for faster filtering
-        print("Pre-analyzing vocabulary...")
+        info("Pre-analyzing vocabulary...")
         self.token_info = self._precompute_token_info()
-        print(f"  Vocab size: {self.vocab_size}")
-        print(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
-        print(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
-        print(f"  Word boundary tokens: {len(self.token_info['word_boundary'])}")
+        info(f"  Vocab size: {self.vocab_size}")
+        info(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
+        info(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
+        info(f"  Word boundary tokens: {len(self.token_info['word_boundary'])}")
 
         # Move masks to device
         self.token_info['first_token_mask'] = self.token_info['first_token_mask'].to(device)
@@ -123,10 +126,12 @@ class WordProbabilityExplorer:
         first_token_mask = torch.full((vocab_size,), float('-inf'))
         for token_id in valid_first:
             first_token_mask[token_id] = 0.0
+        first_token_mask = (first_token_mask == 0.0)
 
         continuation_mask = torch.full((vocab_size,), float('-inf'))
         for token_id in valid_continuation:
             continuation_mask[token_id] = 0.0
+        continuation_mask = (continuation_mask == 0.0)
 
         return {
             'valid_first': valid_first,
@@ -156,8 +161,8 @@ class WordProbabilityExplorer:
         else:
             return "N/A (CPU)"
 
-    def typical_sampling_batch(self, log_probs: torch.Tensor, 
-                              indices: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def typical_sampling_batch(self, log_probs: torch.Tensor,
+                               valid_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Apply asymmetric typical (entropy-based) sampling to select tokens for a batch.
         
@@ -172,7 +177,7 @@ class WordProbabilityExplorer:
         
         Args:
             log_probs: Log probabilities of shape [batch_size, num_candidates]
-            indices: Corresponding token IDs of shape [batch_size, num_candidates]
+            valid_mask: Additive mask tensor of shape [vocab_size] with 0.0 for valid tokens, -inf for invalid
             
         Returns:
             Tuple of (selected_log_probs, selected_indices, selected_mask)
@@ -196,17 +201,21 @@ class WordProbabilityExplorer:
         
         # Asymmetric threshold: only filter tokens that are too surprising (high -log p)
         # No lower bound: high probability tokens (low -log p) always pass
-        upper_bound = entropy + self.typicality_sigma * std_dev
-        typical_mask = neg_log_probs <= upper_bound  # [batch_size, num_candidates]
+        upper_bound = entropy + self.typicality_sigma * std_dev  # [batch_size, 1]
+        typical_mask = neg_log_probs <= upper_bound  # [batch_size, vocab_size]   # OLD: [batch_size, num_candidates]
         
+        # Combine with validity mask (valid_mask is True for allowed tokens)
+        keep_mask = typical_mask & valid_mask  # [batch_size, vocab_size]
+
         # Sort by probability (descending) to keep highest probability tokens first
         # This ensures we always get the most probable tokens
-        sorted_indices_by_prob = torch.argsort(log_probs, dim=-1, descending=True)
+        prob_sorted_indices = torch.argsort(log_probs, dim=-1, descending=True)
         
         # Apply sorting
-        sorted_mask = torch.gather(typical_mask, -1, sorted_indices_by_prob)
-        sorted_log_probs = torch.gather(log_probs, -1, sorted_indices_by_prob)
-        sorted_token_indices = torch.gather(indices, -1, sorted_indices_by_prob)
+        sorted_mask = torch.gather(keep_mask, -1, prob_sorted_indices)
+        sorted_log_probs = torch.gather(log_probs, -1, prob_sorted_indices)
+
+        sorted_token_indices = prob_sorted_indices
         
         # Find max number selected across batch for uniform tensor size
         num_selected_per_item = sorted_mask.sum(dim=-1)
@@ -220,21 +229,16 @@ class WordProbabilityExplorer:
         
         return selected_log_probs, selected_indices, selected_mask
 
-    def get_batched_log_probs(self, input_ids_list: List[torch.Tensor], 
-                              mask: torch.Tensor, num_valid: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_batched_log_probs(self, input_ids_list: List[torch.Tensor]) -> torch.Tensor:
         """
         Get log probability distributions for next token for a batch of sequences.
         Only considers valid tokens (filtered by mask) when computing softmax.
         
         Args:
             input_ids_list: List of input_id tensors of shape [1, seq_len]
-            mask: Additive mask tensor of shape [vocab_size] with 0.0 for valid tokens, -inf for invalid
-            num_valid: Number of valid tokens (for topk)
         
         Returns:
-            Tuple of (log_probs, indices):
-            - log_probs: Tensor of shape [batch_size, num_valid] with log probabilities
-            - indices: Tensor of shape [batch_size, num_valid] with token IDs
+            log_probs: Tensor of shape [batch_size, vocab_size] with log probabilities
         """
         if not input_ids_list:
             return (torch.empty(0, num_valid, device=self.device), 
@@ -284,35 +288,36 @@ class WordProbabilityExplorer:
             )
             logits = outputs.logits[:, -1, :]  # [batch_size, vocab_size]
 
+
+            # NOTE: Removed filtering valid tokens first. It flattens the normalized distribution.
             # Apply mask to filter out invalid tokens
-            masked_logits = logits + mask  # [batch_size, vocab_size], invalid tokens are now -inf
-
+            #masked_logits = logits + mask  # [batch_size, vocab_size], invalid tokens are now -inf
             # Get top num_valid tokens
-            top_k = torch.topk(masked_logits, k=num_valid, dim=-1)
-
+            #top_k = torch.topk(masked_logits, k=num_valid, dim=-1)
             # Apply log_softmax ONLY to the top-k valid tokens
-            top_k_log_probs = torch.log_softmax(top_k.values, dim=-1)  # [batch_size, num_valid]
+            #log_probs = torch.log_softmax(top_k.values, dim=-1)  # [batch_size, num_valid]
 
+            # Apply log_softmax to entire vocabulary to 
+            log_probs = torch.log_softmax(logits, dim=-1)  # [batch_size, vocab_size]
 
         self.forward_passes += 1
 
         # Clean up intermediate tensors
-        del batch_input_ids, batch_attention_mask, outputs, logits, masked_logits
+        del batch_input_ids, batch_attention_mask, outputs, logits #, masked_logits
 
-        return top_k_log_probs, top_k.indices
+        return log_probs #, top_k.indices
     
-    def find_top_words(self, context: str, top_k: int) -> List[Tuple[str, float]]:
+    def find_top_words(self, context: str) -> List[Tuple[str, float]]:
         """
         Find the top K most probable next words using iterative BFS with batching.
         
         Args:
             context: The input text context
-            top_k: Number of top words to return
             
         Returns:
             List of (word, probability) tuples sorted by probability
         """
-        print(f"Context: '{context}'")
+        info(f"Context: '{context}'")
 
         t0_total = time.perf_counter()
 
@@ -326,16 +331,12 @@ class WordProbabilityExplorer:
         base_input_ids = self.tokenizer.encode(context, return_tensors="pt").to(self.device)
 
         # Get log probabilities for first token
-        print("Computing first token probabilities...")
-        d_first_log_probs, d_first_indices = self.get_batched_log_probs(
-            [base_input_ids],
-            self.token_info['first_token_mask'],
-            len(self.token_info['valid_first'])
-        )
+        info("Computing first token probabilities...")
+        d_first_log_probs = self.get_batched_log_probs([base_input_ids])
         
         # Apply typical sampling to dynamically select first tokens
         d_first_log_probs_selected, d_first_indices_selected, d_first_mask_selected = self.typical_sampling_batch(
-            d_first_log_probs, d_first_indices
+            d_first_log_probs, self.token_info['first_token_mask']
         )
 
         # Move to CPU
@@ -348,8 +349,8 @@ class WordProbabilityExplorer:
         valid_first_indices = first_indices[first_mask]
         
         num_first_tokens = len(valid_first_values)
-        print(f"Asymmetric typical sampling selected {num_first_tokens} initial tokens (out of {len(self.token_info['valid_first'])} valid)")
-        print(f"  Keeping tokens where -log(p) <= H + {self.typicality_sigma}σ")
+        info(f"Asymmetric typical sampling selected {num_first_tokens} initial tokens (out of {len(self.token_info['valid_first'])} valid)")
+        info(f"  Keeping tokens where -log(p) <= H + {self.typicality_sigma}σ")
 
         # Initialize paths for first tokens
         # Each path: {'tokens': [token_ids], 'text': decoded_text, 'log_prob': float}
@@ -380,8 +381,8 @@ class WordProbabilityExplorer:
 
         # Iterative BFS: process all paths at each depth level
         while current_paths and depth < MAX_TOKENS_PER_WORD:
-            print(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
-            print(f"    GPU Memory: {self.get_memory_usage()}")
+            info(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
+            info(f"    GPU Memory: {self.get_memory_usage()}")
 
             next_paths = []
 
@@ -398,26 +399,22 @@ class WordProbabilityExplorer:
                     batch_input_ids.append(extended)
 
                 t0_forward = time.perf_counter()
-                d_next_log_probs, d_next_indices = self.get_batched_log_probs(
-                    batch_input_ids,
-                    self.token_info['continuation_mask'],
-                    len(self.token_info['valid_continuation'])
-                )
-                sync()
+                d_next_log_probs = self.get_batched_log_probs(batch_input_ids)
+                sync(self.device)
                 t_forward += time.perf_counter() - t0_forward
 
                 # Apply typical sampling to dynamically select continuation tokens
                 d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected = self.typical_sampling_batch(
-                    d_next_log_probs, d_next_indices
+                    d_next_log_probs, self.token_info['continuation_mask']
                 )
 
                 # Move to CPU
-                next_log_probs = d_next_log_probs_selected.cpu().numpy()
+                next_log_probs = d_next_log_probs_selected.float().cpu().numpy()
                 next_indices = d_next_indices_selected.cpu().numpy()
                 next_mask = d_next_mask_selected.cpu().numpy()
 
                 # Free GPU memory
-                del d_next_log_probs, d_next_indices
+                del d_next_log_probs
                 del d_next_log_probs_selected, d_next_indices_selected, d_next_mask_selected
 
                 # Process each path in the batch
@@ -461,7 +458,7 @@ class WordProbabilityExplorer:
                         })
 
                 if (batch_start // BATCH_SIZE) % 10 == 0:
-                    print(f"  Processed {batch_end}/{len(current_paths)} paths, "
+                    info(f"  Processed {batch_end}/{len(current_paths)} paths, "
                           f"{self.num_unique_words} unique words found")
 
             # Move to next depth
@@ -469,22 +466,19 @@ class WordProbabilityExplorer:
             depth += 1
 
             # Explicitly free GPU memory between iterations
-            if self.device.type == "mps":
-                torch.mps.empty_cache()
-            elif self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            clear_cache(self.device)
 
-            print(f"  -> {len(next_paths)} paths continue to depth {depth}")
-            print(f"     GPU Memory after cleanup: {self.get_memory_usage()}")
+            info(f"  -> {len(next_paths)} paths continue to depth {depth}")
+            info(f"     GPU Memory after cleanup: {self.get_memory_usage()}")
 
         t1 = time.perf_counter()
         t_next = t1 - t0_next
         t_total = t1 - t0_total
 
-        print(f"\n--- Exploration Complete ---")
-        print(f"Forward passes: {self.forward_passes}")
-        print(f"Paths explored: {self.paths_explored}")
-        print(f"Unique words found: {self.num_unique_words}")
+        info(f"\n--- Exploration Complete ---")
+        info(f"Forward passes: {self.forward_passes}")
+        info(f"Paths explored: {self.paths_explored}")
+        info(f"Unique words found: {self.num_unique_words}")
 
         # Convert log probabilities back to probabilities and sort
         word_probabilities = {
@@ -498,48 +492,17 @@ class WordProbabilityExplorer:
             reverse=True
         )
 
-        return sorted_words[:top_k], {
+        return sorted_words, {
             "total": t_total, "next": t_next, "forward": t_forward, "iters": inner_loops
         }
 
 # --- Main Execution ---
 if __name__ == "__main__":
     try:
-        # Detect and set up device
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("Using Apple Silicon GPU (MPS)")
-        elif torch.cuda.is_available():
-            device = torch.device("cuda")
-            print("Using CUDA GPU")
-        else:
-            device = torch.device("cpu")
-            print("Using CPU")
-        
-        # Load model
-        print(f"Loading {MODEL_NAME}...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            dtype=torch.float16
-        )
-        
-        #torch.set_float32_matmul_precision('high')
-        #model = torch.compile(model, mode="max-autotune")
+        device, model, tokenizer = load_model()
 
-        model = model.to(device)
-        model.eval()
-        
-        # Clear cache
-        if device.type == "mps":
-            torch.mps.empty_cache()
-        elif device.type == "cuda":
-            torch.cuda.empty_cache()
-        
-        print(f"Model loaded successfully on {device}")
-        
         # Create explorer with asymmetric typical sampling
-        print(f"Using Asymmetric Typical Sampling with sigma threshold: {TYPICALITY_SIGMA}")
+        info(f"Using Asymmetric Typical Sampling with sigma threshold: {TYPICALITY_SIGMA}")
         explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=TYPICALITY_SIGMA)
         
         # Example context
@@ -552,9 +515,13 @@ if __name__ == "__main__":
             "aquatic"
         """
         
+        clear_cache(device)
+
         # Find top words
-        top_words, t = explorer.find_top_words(CONTEXT, TOP_K_WORDS)
+        top_words, t = explorer.find_top_words(CONTEXT)
         
+        top_words = top_words[:TOP_K_WORDS]
+
         # Print results
         print("\n" + "="*60)
         print(f"Top {TOP_K_WORDS} Most Probable Next Words")
