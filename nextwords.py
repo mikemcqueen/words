@@ -1,11 +1,13 @@
 import argparse
 
+from info import info
 from model import load_model, clear_cache
 from pathlib import Path
-from info import info
 from words import WordProbabilityExplorer
 
-TYPICALITY_SIGMA = 2.0
+DEFAULT_FIRST_K = 1000
+DEFAULT_SIGMA = 1.0
+
 DATA_DIR = './data'
 
 # Write tuples to file (already sorted by probability)
@@ -29,7 +31,9 @@ def dump_words(filename, word_probs, args):
 def do(explorer, word: str, args):
     info(f"Word: {word}")
     clear_cache(explorer.device)
-    top_words, t = explorer.find_top_words(word)
+
+    word_log_probs, t = explorer.find_word_log_probs(args.context + word, args)
+    top_words = explorer.to_word_probs(word_log_probs)
         
     dump_probs(f"{word}.probs", top_words, args)
     dump_words(f"{word}.all", top_words, args)
@@ -56,6 +60,12 @@ def word_generator(filepath: str):
 
 def main():
     parser = argparse.ArgumentParser(description='Process a word or file of words')
+    parser.add_argument("-c", "--context", type=str, default="", help="context prefix, e.g. <|en-us|>")
+    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help='select topk first tokens')
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='q3', help='select model')
+    parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=10, help='show N top probabilities')
+    parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA)
+
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-w', '--word', type=str, help='A single word')
     group.add_argument('-f', '--file', type=str, help='Path to a text file')
@@ -71,16 +81,15 @@ def main():
 
     args.data = path
 
-    device, model, tokenizer = load_model()
+    device, model, tokenizer = load_model(args)
 
     # Create explorer with asymmetric typical sampling
-    info(f"sigma: {TYPICALITY_SIGMA}")
-    explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=TYPICALITY_SIGMA)
+    explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
         
     if args.word:
         do(explorer, args.word, args)
     else:
-        info(f"File: {args.file} (not implemented)")
+        info(f"File: {args.file}")
         for word in word_generator(args.file):
             do(explorer, word, args)
 
