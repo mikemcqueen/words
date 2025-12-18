@@ -62,8 +62,8 @@ def main():
     parser = argparse.ArgumentParser(description='Process a word or file of words')
     parser.add_argument("-c", "--context", type=str, default="", help="context prefix, e.g. <|en-us|>")
     parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help='select topk first tokens')
-    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='q3', help='select model')
-    parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=10, help='show N top probabilities')
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='g2', help='select model')
+    parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=0, help='show N top probabilities')
     parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA)
 
     group = parser.add_mutually_exclusive_group(required=True)

@@ -593,6 +593,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('ctx', nargs='?', help='Optional context')
     parser.add_argument('-k', '--first-k', type=int, default=0, help='select topk first tokens')
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='g2', help='select model')
     parser.add_argument('-s', '--sigma', type=float, default=DEFAULT_TYPICALITY_SIGMA,
                         help='typicality sigma (default: 2.0; use 0.0 to select all)')
     return parser.parse_args()
@@ -605,7 +606,6 @@ def main():
     if not args.ctx:
         args.ctx = DEF_CONTEXT
 
-    args.model = 'g2'
     args.show_probs = False
 
     device, model, tokenizer = load_model(args)
