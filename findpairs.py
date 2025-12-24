@@ -58,7 +58,9 @@ def find_pairs(
                     parts = line.split(',')
                     if len(parts) >= 2:
                         potential_pair_word = parts[0].strip()
-                        # Discard probability (parts[1])
+                        if not potential_pair_word or potential_pair_word == word:
+                            continue
+                        
                         count += 1
                         
                         # Check if potential pair word is in the original wordlist
@@ -93,26 +95,11 @@ def main():
     )
     parser.add_argument('-w', '--words', required=True, help="Path to wordlist file (one word per line)")
     parser.add_argument('-p', '--pairs', required=True, help="Path to pair list file (comma-delimited pairs)")
-    parser.add_argument(
-        '-d', '--data-dir',
-        required=True,
-        help="Directory containing word-probability files")
-    parser.add_argument(
-        '-k',
-        type=int,
-        default=100,
-        help="Number of words to read from each word-prob file (default: 100)"
-    )
-    parser.add_argument(
-        '--no-existing',
-        action='store_true',
-        help="Don't print existing pairs"
-    )
-    parser.add_argument(
-        '--no-new',
-        action='store_true',
-        help="Don't print new pairs"
-    )
+    parser.add_argument('-d', '--data-dir', required=True, help="Directory containing word-probability files")
+    parser.add_argument('-k', type=int, default=100, help="Number of words to read from each word-prob file (default: 100)")
+    parser.add_argument('-c', '--show-match-count', action='store_true', help="Display match count (1 or 2)" )
+    parser.add_argument('--no-existing', action='store_true', help="Don't print existing pairs" )
+    parser.add_argument('--no-new', action='store_true', help="Don't print new pairs")
     
     args = parser.parse_args()
     
@@ -124,8 +111,9 @@ def main():
     found_pairs = find_pairs(word_list, word_set, pair_map, args)
 
     for pair, count in found_pairs.items():
-        check = "✓✓" if count == 2 else "✓"
-        print(f"{pair} {count}")
+        #check = "✓✓" if count == 2 else "✓"
+        suffix = f" {count}" if args.show_match_count else ""
+        print(f"{pair}{suffix}")
 
 
 if __name__ == "__main__":
