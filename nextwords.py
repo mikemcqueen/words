@@ -5,11 +5,6 @@ from model import load_model, clear_cache
 from pathlib import Path
 from words import WordProbabilityExplorer
 
-DEFAULT_FIRST_K = 1000
-DEFAULT_SIGMA = 1.0
-
-DATA_DIR = './data'
-
 # Write tuples to file (already sorted by probability)
 def dump_probs(filename, word_probs, args):
     path = args.data / filename
@@ -35,8 +30,9 @@ def do(explorer, word: str, args):
     word_log_probs, t = explorer.find_word_log_probs(args.context + word, args)
     top_words = explorer.to_word_probs(word_log_probs)
         
-    dump_probs(f"{word}.probs", top_words, args)
-    dump_words(f"{word}.all", top_words, args)
+    if not args.dry_run:
+        dump_probs(f"{word}.probs", top_words, args)
+        dump_words(f"{word}.all", top_words, args)
 
     """
     threshold = 0.95
@@ -59,12 +55,22 @@ def word_generator(filepath: str):
                 yield word
 
 def main():
+    DEFAULT_CONTEXT = "<|en-us|>"
+    DEFAULT_MODEL = "g2"
+    DEFAULT_FIRST_K = 1000
+    DEFAULT_SIGMA = 1.0
+    DEFAULT_DATA_DIR = "./data"
+
     parser = argparse.ArgumentParser(description='Process a word or file of words')
-    parser.add_argument("-c", "--context", type=str, default="", help="context prefix, e.g. <|en-us|>")
-    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help='select topk first tokens')
-    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='g2', help='select model')
+    parser.add_argument(      "--all", action="store_true", help=f"process all words in file; used with -f FILE")
+    parser.add_argument("-c", "--context", type=str, default=DEFAULT_CONTEXT, help=f"context prefix, default: {DEFAULT_CONTEXT}")
+    parser.add_argument("-d", "--data", type=str, default=DEFAULT_DATA_DIR, help=f"data directory, default: {DEFAULT_DATA_DIR}")    
+    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help=f"select topk first tokens, default: {DEFAULT_FIRST_K}")
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help=f"select model, default: {DEFAULT_MODEL}")
     parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=0, help='show N top probabilities')
-    parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA)
+    parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA, help=f"typicality sigma, default: {DEFAULT_SIGMA}")
+    parser.add_argument("-x", "--x-factor", action="store_true", help=f"alternate approach")
+    parser.add_argument("-y", "--dry-run", action="store_true", help=f"dry run (no data written to file)")
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('-w', '--word', type=str, help='A single word')
@@ -72,18 +78,14 @@ def main():
 
     args = parser.parse_args()
 
-    args.data = DATA_DIR
-
     path = Path(args.data)
     if not path.exists():
         print(f"Data dir '${args.data}' doesn't exist.")
         exit()
-
     args.data = path
 
     device, model, tokenizer = load_model(args)
 
-    # Create explorer with asymmetric typical sampling
     explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
         
     if args.word:
@@ -91,15 +93,17 @@ def main():
     else:
         info(f"File: {args.file}")
         for word in word_generator(args.file):
-            do(explorer, word, args)
+            probs_path = args.data / f"{word}.probs"
+            if args.all or not probs_path.exists():
+                do(explorer, word, args)
 
 
 if __name__ == '__main__':
     try:
         main()
     except ImportError:
-        print("Error: The 'transformers' and 'torch' libraries are required.")
-        print("Please install them using: pip install transformers torch")
+        print("ImportError. Could be missing 'transformers' and/or 'torch' libraries.")
+        print("Try installing them using: pip install transformers torch")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         import traceback

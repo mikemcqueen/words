@@ -34,7 +34,6 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 # --- Configuration ---
 TOP_K_WORDS = 1000
 BATCH_SIZE = 256
-DEFAULT_TYPICALITY_SIGMA = 2.0        # Asymmetric filter: keep tokens within k-sigma above entropy
 MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
@@ -82,6 +81,7 @@ class WordProbabilityExplorer:
         # Pre-decode and categorize all tokens for faster filtering
         info("Pre-analyzing vocabulary...")
         self.token_info = self._precompute_token_info()
+
         info(f"  Vocab size: {self.vocab_size}")
         info(f"  Valid first tokens: {len(self.token_info['valid_first'])}")
         info(f"  Valid continuation tokens: {len(self.token_info['valid_continuation'])}")
@@ -90,6 +90,8 @@ class WordProbabilityExplorer:
         # Move masks to device
         self.token_info['first_token_mask'] = self.token_info['first_token_mask'].to(device)
         self.token_info['continuation_mask'] = self.token_info['continuation_mask'].to(device)
+
+        self.word_boundary_mask = self.token_info['first_token_mask'].cpu().numpy()
 
     def _precompute_token_info(self) -> Dict:
         """
@@ -388,20 +390,10 @@ class WordProbabilityExplorer:
             # Map filtered indices back to actual token IDs
             valid_first_indices = valid_token_ids[top_first.indices].cpu()
 
-            """
-            # Apply first token mask
-            valid_first_log_probs = d_first_log_probs[0][self.token_info['first_token_mask']]
-            top_first = torch.topk(
-                valid_first_log_probs,
-                min(args.first_k, len(self.token_info['valid_first']))
-            )
-            valid_first_values = top_first.values
-            valid_first_indices = top_first.indices
-            """
-
         num_first_tokens = len(valid_first_values)
         info(f"{sampling_method} sampling selected {num_first_tokens} initial tokens (out of {len(self.token_info['valid_first'])} valid)")
-        info(f"  Keeping tokens where -log(p) <= H + {self.typicality_sigma}σ")
+        if sampling_method == "Asymmetric typical":
+            info(f"  Keeping tokens where -log(p) <= H + {self.typicality_sigma}σ")
 
         # Initialize paths for first tokens
         # Each path: {'tokens': [token_ids], 'text': decoded_text, 'log_prob': float}
@@ -438,6 +430,7 @@ class WordProbabilityExplorer:
             info(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
             info(f"    GPU Memory: {self.get_memory_usage()}")
 
+            #current_paths = self.process_depth_level_simple_pipeline(current_paths, base_input_ids)
             next_paths = []
 
             # Process paths in batches to avoid memory issues
@@ -522,12 +515,14 @@ class WordProbabilityExplorer:
 
             # Move to next depth
             current_paths = next_paths
+            #next_paths = current_paths
+            
             depth += 1
 
             # Explicitly free GPU memory between iterations
             clear_cache(self.device)
 
-            info(f"  -> {len(next_paths)} paths continue to depth {depth}")
+            info(f"  -> {len(current_paths)} paths continue to depth {depth}")
             info(f"     GPU Memory after cleanup: {self.get_memory_usage()}")
 
         t1 = time.perf_counter()
@@ -538,20 +533,6 @@ class WordProbabilityExplorer:
         info(f"Forward passes: {self.forward_passes}")
         info(f"Paths explored: {self.paths_explored}")
         info(f"Unique words found: {self.num_unique_words}")
-
-        """
-        # Convert log probabilities back to probabilities and sort
-        word_probabilities = {
-            word: math.exp(log_prob) 
-            for word, log_prob in self.word_log_probs.items()
-        }
-
-        sorted_words = sorted(
-            word_probabilities.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        """
 
         sorted_words = sorted(
             self.word_log_probs.items(),
@@ -590,12 +571,16 @@ def normalize_probs(word_log_probs: List[Tuple[str, float]]) -> List[float]:
     ]
 
 def parse_args():
+    DEFAULT_SIGMA = 1.0        # typicality sigma
+    DEFAULT_FIRST_K = 1000
+    DEFAULT_MODEL = "g2"
+
     parser = argparse.ArgumentParser()
     parser.add_argument('ctx', nargs='?', help='Optional context')
-    parser.add_argument('-k', '--first-k', type=int, default=0, help='select topk first tokens')
-    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default='g2', help='select model')
-    parser.add_argument('-s', '--sigma', type=float, default=DEFAULT_TYPICALITY_SIGMA,
-                        help='typicality sigma (default: 2.0; use 0.0 to select all)')
+    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help='select topk first tokens')
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help='select model')
+    parser.add_argument('-s', '--sigma', type=float, default=DEFAULT_SIGMA,
+                        help=f"typicality sigma (default: {DEFAULT_SIGMA}; use 0.0 to select all)")
     return parser.parse_args()
 
 def main():
@@ -628,6 +613,9 @@ def main():
     # Find top words
     word_log_probs, t = explorer.find_word_log_probs(args.ctx, args)
 
+    #from pipeline import find_word_log_probs_pipelined
+    #word_log_probs, t = find_word_log_probs_pipelined(explorer, args.ctx, args)
+
     top_words = explorer.to_word_probs(word_log_probs)
     top_words = top_words[:TOP_K_WORDS]
 
@@ -650,16 +638,19 @@ def main():
         print("{:<5} {:<25} {:<15.8f}".format(i + 1, f'"{word}"', prob))
     print(f"prob_sum: {prob_sum}")
 
-    print(f"Time: total: {t['total']:.3f}s  next: {t['next']:.3f}s  forward: {t['forward']:.3f}s  iters: {t['iters']}s  " \
-          f"paths: {t['paths']}s  mask: {t['mask']}s")
+    print(f"Time: total: {t['total']:.3f}s  " \
+          #f"bfs: {t['bfs']:.3f}s  " \
+          f"next: {t['next']:.3f}s  forward: {t['forward']:.3f}s  " \
+          f"iters: {t['iters']}s  paths: {t['paths']}s  mask: {t['mask']}s")
 
 # --- Main Execution ---
 if __name__ == "__main__":
     try:
         main()
     except ImportError:
-        print("Error: The 'transformers' and 'torch' libraries are required.")
-        print("Please install them using: pip install transformers torch")
+        print(f"ImportError: {e}\n" \
+              "Possibly due to missing 'transformers' and 'torch' libraries.")
+        print("To install them: pip install transformers torch")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         import traceback
