@@ -23,6 +23,7 @@ import torch
 import math
 import os
 import time
+import heapq
 from typing import Dict, List, Tuple
 
 from info import info
@@ -34,6 +35,7 @@ os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 # --- Configuration ---
 TOP_K_WORDS = 1000
 BATCH_SIZE = 256
+BATCH_UPDATE_INTERVAL = 1             # Update top-k threshold every N batches
 MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
@@ -343,6 +345,9 @@ class WordProbabilityExplorer:
         self.paths_explored = 0
         self.num_unique_words = 0
 
+        # Dynamic threshold for top-k pruning (k-th best log prob seen so far)
+        top_k_threshold = float('-inf')
+
         # Encode context
         base_input_ids = self.tokenizer.encode(context, return_tensors="pt").to(self.device)
 
@@ -430,13 +435,23 @@ class WordProbabilityExplorer:
             info(f"\n--- Depth {depth}: Processing {len(current_paths)} paths ---")
             info(f"    GPU Memory: {self.get_memory_usage()}")
 
-            #current_paths = self.process_depth_level_simple_pipeline(current_paths, base_input_ids)
             next_paths = []
 
-            # Process paths in batches to avoid memory issues
-            for batch_start in range(0, len(current_paths), BATCH_SIZE):
-                batch_end = min(batch_start + BATCH_SIZE, len(current_paths))
-                batch_paths = current_paths[batch_start:batch_end]
+            # Process paths in batches, pulling valid paths until BATCH_SIZE
+            path_idx = 0
+            batch_num = 0
+            paths_processed = 0
+            while path_idx < len(current_paths):
+                # Build a full batch by pulling valid paths (skip below-threshold)
+                batch_paths = []
+                while len(batch_paths) < BATCH_SIZE and path_idx < len(current_paths):
+                    path = current_paths[path_idx]
+                    path_idx += 1
+                    if path['log_prob'] >= top_k_threshold:
+                        batch_paths.append(path)
+
+                if not batch_paths:
+                    break  # No more valid paths
 
                 # Prepare batch of extended inputs
                 batch_input_ids = []
@@ -459,25 +474,25 @@ class WordProbabilityExplorer:
                 next_log_probs = d_next_values.float().cpu().numpy()
                 next_indices = d_next_indices.cpu().numpy()
                 next_mask = d_next_mask.cpu().numpy()
-                
+
                 # Free GPU memory
                 del d_next_log_probs
                 del d_next_values, d_next_indices, d_next_mask
 
                 # Process each path in the batch
                 t0_paths = time.perf_counter()
-                for path_idx, path in enumerate(batch_paths):
+                for path_batch_idx, path in enumerate(batch_paths):
                     self.paths_explored += 1
 
                     # Use boolean indexing to get only valid tokens for this path
                     t0_mask = time.perf_counter()
-                    path_mask = next_mask[path_idx]
-                    path_values = next_log_probs[path_idx][path_mask]
-                    path_indices = next_indices[path_idx][path_mask]
+                    path_mask = next_mask[path_batch_idx]
+                    path_values = next_log_probs[path_batch_idx][path_mask]
+                    path_indices = next_indices[path_batch_idx][path_mask]
                     t_mask += time.perf_counter() - t0_mask
-                    
+
                     for token_log_prob, token_id in zip(path_values, path_indices):
-                        inner_loops += 1 
+                        inner_loops += 1
                         new_log_prob = path['log_prob'] + token_log_prob
 
                         # Prune if log probability too low
@@ -487,6 +502,7 @@ class WordProbabilityExplorer:
                         # Check if this is a word boundary token
                         if token_id in self.token_info['word_boundary']:
                             # This completes a word - record it
+                            # Word's log_prob = path['log_prob'], already >= threshold from pre-filter
                             word = path['text'].lower()
 
                             # Update best log probability for this word
@@ -498,6 +514,10 @@ class WordProbabilityExplorer:
 
                             continue
 
+                        # Continuation - prune if can't make top-k
+                        if new_log_prob < top_k_threshold:
+                            continue
+
                         # Continue this path - append decoded token to text
                         next_token_text = self.decode_token(token_id)
 
@@ -506,17 +526,23 @@ class WordProbabilityExplorer:
                             'text': path['text'] + next_token_text,
                             'log_prob': new_log_prob
                         })
-                        
-                t_paths += time.perf_counter() - t0_paths
 
-                if (batch_start // BATCH_SIZE) % 10 == 0:
-                    info(f"  Processed {batch_end}/{len(current_paths)} paths, "
+                t_paths += time.perf_counter() - t0_paths
+                paths_processed += len(batch_paths)
+
+                # Update threshold every BATCH_UPDATE_INTERVAL batches
+                if batch_num % BATCH_UPDATE_INTERVAL == 0 and len(self.word_log_probs) >= TOP_K_WORDS:
+                    top_k = heapq.nlargest(TOP_K_WORDS, self.word_log_probs.values())
+                    top_k_threshold = top_k[-1]
+
+                if batch_num % 10 == 0:
+                    info(f"  Batch {batch_num}: processed {paths_processed}/{len(current_paths)} paths, "
                           f"{self.num_unique_words} unique words found")
+
+                batch_num += 1
 
             # Move to next depth
             current_paths = next_paths
-            #next_paths = current_paths
-            
             depth += 1
 
             # Explicitly free GPU memory between iterations
@@ -577,14 +603,14 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('ctx', nargs='?', help='Optional context')
-    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help='select topk first tokens')
-    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help='select model')
+    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help=f"select topk first tokens (default: {DEFAULT_FIRST_K})")
+    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help=f"select model (default: {DEFAULT_MODEL}")
     parser.add_argument('-s', '--sigma', type=float, default=DEFAULT_SIGMA,
                         help=f"typicality sigma (default: {DEFAULT_SIGMA}; use 0.0 to select all)")
     return parser.parse_args()
 
 def main():
-    DEF_CONTEXT = "aquatic"
+    DEF_CONTEXT = "<|en-us|>benedikt"
 
     args = parse_args()
 

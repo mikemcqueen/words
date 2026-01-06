@@ -61,7 +61,7 @@ def main():
     DEFAULT_SIGMA = 1.0
     DEFAULT_DATA_DIR = "./data"
 
-    parser = argparse.ArgumentParser(description='Process a word or file of words')
+    parser = argparse.ArgumentParser(description='Determine next-word probability for a word or all unprocessed words in a file')
     parser.add_argument(      "--all", action="store_true", help=f"process all words in file; used with -f FILE")
     parser.add_argument("-c", "--context", type=str, default=DEFAULT_CONTEXT, help=f"context prefix, default: {DEFAULT_CONTEXT}")
     parser.add_argument("-d", "--data", type=str, default=DEFAULT_DATA_DIR, help=f"data directory, default: {DEFAULT_DATA_DIR}")    

@@ -1,1 +1,6 @@
 ver/**
+__pycache__/**
+wt/**
+out/**
+out*
+data*/**
