@@ -2,16 +2,16 @@
   {
     "id": "prompt_001",
     "text": "Is '{PAIR}' a recognized historical, cultural, or linguistic reference?",
-    "score": 77.77777777777779,
-    "last_tested": "2026-01-22T21:37:57.778362",
-    "correct": 7,
+    "score": 88.88888888888889,
+    "last_tested": "2026-01-22T22:29:42.964069",
+    "correct": 8,
     "total": 9
   },
   {
     "id": "prompt_002",
     "text": "Is '{PAIR}', without additional context, a sensible, literal, English noun phrase?",
     "score": 88.88888888888889,
-    "last_tested": "2026-01-22T21:38:32.105170",
+    "last_tested": "2026-01-22T22:29:53.569469",
     "correct": 8,
     "total": 9
   }

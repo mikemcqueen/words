@@ -5,8 +5,12 @@
 import argparse
 import sys
 
+import requests
+
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt
+
+SERVER_URL = "http://localhost:8000"
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False)
@@ -22,6 +26,22 @@ def generate_response(model, tokenizer, prompt: str, skip_special = True, max_ne
     """
     response = tokenizer.decode(outputs[0], skip_special_tokens=skip_special)
     return response
+
+def generate_response_fast(prompt: str, max_new_tokens: int = 1000) -> str:
+    """Send prompt to server for generation. Server handles prompt specialization."""
+    url = f"{SERVER_URL}/yesno"
+    payload = {"text": prompt, "max_tokens": max_new_tokens}
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        return response.json()["response"]
+    except requests.exceptions.ConnectionError:
+        print(f"Error: Cannot connect to server at {SERVER_URL}", file=sys.stderr)
+        print("Start the server with: ./server", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error calling server: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def get_first_line(text: str) -> str:
     """Extract the first line from the text."""
@@ -52,7 +72,10 @@ def make_single_question_prompt(model, pair: str) -> str:
     #"Does reading it make you think of something?\n" \
     FOLLOWUP = "Why?"
 
-    return specialize_prompt(model, PROMPT+pair), FOLLOWUP
+    prompt = PROMPT + pair
+    if model is not None:
+        prompt = specialize_prompt(model, prompt)
+    return prompt, FOLLOWUP
 
 def make_prompt(model, pair: str, include_questions) -> str:
     prefix = "Answer the following questions about the given phrase. " 
@@ -104,14 +127,20 @@ def make_prompt(model, pair: str, include_questions) -> str:
     style = q_a if include_questions else yes_no
     prompt = prefix + style + questions + phrase + pair
 
+    if model is None:
+        return prompt
     return specialize_prompt(model, prompt)
 
 def custom_context(model, tokenizer, ctx: str, pair: str):
     if pair:
         ctx = ctx.replace("%p", pair)
-    prompt = specialize_prompt(model, ctx)
+    if model is None:
+        prompt = ctx  # Server handles specialization
+        response = generate_response_fast(prompt)
+    else:
+        prompt = specialize_prompt(model, ctx)
+        response = generate_response(model, tokenizer, prompt, False)
     #print(f"prompt: {prompt}")
-    response = generate_response(model, tokenizer, prompt, False)
     #print(f"{ctx}: {response.strip()}")
     return prompt, response
 
@@ -122,7 +151,10 @@ def single_question(model, tokenizer, pair: str):
 
     prompt, followup = make_single_question_prompt(model, pair)
     #print(f"prompt: {prompt}")
-    response = generate_response(model, tokenizer, prompt, False)
+    if model is None:
+        response = generate_response_fast(prompt)
+    else:
+        response = generate_response(model, tokenizer, prompt, False)
     print(f"{pair}: {response}")
     lines = response.split('\n')
     yes = lines[-2].strip() # NOTE: Gemma specific
@@ -141,7 +173,10 @@ def process_pair(model, tokenizer, pair: str, include_questions):
 
     prompt = make_prompt(model, pair, include_questions)
     #print(f"prompt: {prompt}")
-    response = generate_response(model, tokenizer, prompt)
+    if model is None:
+        response = generate_response_fast(prompt)
+    else:
+        response = generate_response(model, tokenizer, prompt)
     print(f"{pair}: {response}")
     """
     lines = parse_response(model, response)
@@ -155,8 +190,11 @@ def follow_up(model, tokenizer, response: str, prompt: str):
     p += prompt
     p += "<end_of_turn>\n"
     p += "<start_of_turn>model\n"
-    
-    response = generate_response(model, tokenizer, p)
+
+    if model is None:
+        response = generate_response_fast(p)
+    else:
+        response = generate_response(model, tokenizer, p)
     print(f"-----------\n{response}")
 
 def parse_args():
@@ -168,12 +206,16 @@ def parse_args():
     parser.add_argument('-q', '--questions', action="store_true", help='include questions in response')
     parser.add_argument('-p', '--pair', type=str, help='Single pair to evaluate (e.g., "foo,bar")')
     parser.add_argument('-f', '--file', type=str, help='File containing pairs (one per line)')
-    parser.add_argument('-m', '--model', metavar='g2it', type=str, default=DEFAULT_MODEL,
+
+    model_group = parser.add_mutually_exclusive_group()
+    model_group.add_argument('-m', '--model', metavar='g2it', type=str, default=DEFAULT_MODEL,
                         help=f"Select model (default: {DEFAULT_MODEL})")
+    model_group.add_argument('--fast', action="store_true",
+                        help=f"Use server at {SERVER_URL} instead of loading model")
 
     args = parser.parse_args()
 
-    if not is_instruct(args.model):
+    if not args.fast and not is_instruct(args.model):
         print(f"{get_model_name(args.model)} is not an instruct model")
         exit()
 
@@ -203,17 +245,25 @@ def file_pair_generator(filename):
             if pair:
                 yield pair
 
-def is_yes_response(response: str) -> bool:
-    lines = response.split('\n')
-    answer = lines[-2].strip() # NOTE: Gemma specific
-    return answer.lower().startswith("yes")
+def is_yes_response(model, response: str) -> bool:
+    if not model:
+        answer = response 
+    elif is_gemma_model(model):
+        lines = response.split('\n')
+        answer = lines[-2].strip() # NOTE: Gemma specific
+    else:
+        assert False, "is_yes_response not implemented for this model"
+    return answer.upper().startswith("YES")
 
 def main():
     args = parse_args()
 
-    device, model, tokenizer = load_model(args.model)
-    if is_gemma_model(model) and is_instruct_model(model):
-        print("gemma instruct: True")
+    if args.fast:
+        model, tokenizer = None, None
+    else:
+        _, model, tokenizer = load_model(args.model)
+        if is_gemma_model(model) and is_instruct_model(model):
+            print("gemma instruct: True")
 
     if args.ctx:
         # Use generators for common handling of --pair and --file
@@ -228,12 +278,12 @@ def main():
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
             prompt, response = custom_context(model, tokenizer, args.ctx, pair)
-            yes = is_yes_response(response)
+            yes = is_yes_response(model, response)
             as_txt = ""
             if not yes:
                 pair = flip(orig_pair).replace(',', ' ')
                 prompt, response = custom_context(model, tokenizer, args.ctx, pair)
-                yes = is_yes_response(response)
+                yes = is_yes_response(model, response)
                 if yes:
                     as_txt = f"as {pair}"
 

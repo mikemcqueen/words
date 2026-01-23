@@ -66,6 +66,7 @@ def eval_prompt_with_pair(prompt_text: str, pair: str, expected: str) -> bool:
     try:
         # Sending the POST request
         response = requests.post(url, json=payload)
+        response.raise_for_status()
     except Exception as e:
         print(f"  ERROR posting {prompt}: {e}")
         return False
