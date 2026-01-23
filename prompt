@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 \"some prompt\""
+    exit 1
+fi
+
+curl -X POST http://localhost:8000/generate \
+     -H "Content-Type: application/json" \
+     -d "{\"text\": \"$1\"}"

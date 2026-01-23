@@ -4,3 +4,6 @@ wt/**
 out/**
 out*
 data*/**
+eval/**
+words/**
+results/**

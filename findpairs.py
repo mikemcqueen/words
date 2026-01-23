@@ -1,14 +1,12 @@
 import argparse
 from collections import defaultdict
 
-
 def load_wordlist(filepath: str) -> tuple[list[str], set[str]]:
     """Load a wordlist file (one word per line) and return as both list and set."""
     with open(filepath, 'r') as f:
         word_list = [line.strip() for line in f if line.strip()]
     word_set = set(word_list)
     return word_list, word_set
-
 
 def load_pair_list(filepath: str) -> dict[str, set[str]]:
     """Load a pair list file (comma-delimited pairs) and create mapping."""
@@ -26,7 +24,6 @@ def load_pair_list(filepath: str) -> dict[str, set[str]]:
                 #pair_map[word2].add(word1)
     
     return dict(pair_map)
-
 
 def find_pairs(
     word_list: list[str],
@@ -87,7 +84,6 @@ def find_pairs(
             continue
 
     return dict(found_pairs)
-
 
 def main():
     parser = argparse.ArgumentParser(

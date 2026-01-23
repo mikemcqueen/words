@@ -27,19 +27,30 @@ import heapq
 from typing import Dict, List, Tuple
 
 from info import info
-from model import load_model, clear_cache
+from model import load_model, clear_cache, is_gemma_model, is_instruct_model, specialize_prompt
 
 # Enable MPS fallback for unsupported operations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 
 # --- Configuration ---
 TOP_K_WORDS = 1000
-BATCH_SIZE = 256
+BATCH_SIZE = 64
 BATCH_UPDATE_INTERVAL = 1             # Update top-k threshold every N batches
 MAX_TOKENS_PER_WORD = 5               # Maximum word length in tokens
 MIN_LOG_PROBABILITY = math.log(1e-8)  # Prune paths with log probability below this
 
-def is_all_ascii_alpha(word: str) -> bool:
+def has_trailing_period(word: str) -> bool:
+    return word[-1] == '.'
+
+def is_alpha_with_trailing_period(word: str) -> bool:
+    word = word.rstrip()
+    if word and has_trailing_period(word):
+        word = word[:-1]
+        if word and word.isalpha():
+            return True
+    return False
+
+def is_all_ascii_alpha(s: str) -> bool:
     return word and word.isascii() and word.isalpha()
 
 def has_leading_ascii_alpha(word: str) -> bool:
@@ -103,10 +114,12 @@ class WordProbabilityExplorer:
         """
         valid_first = set()  # Tokens that can start a word (space + alpha)
         valid_continuation = set()  # Tokens that can continue a word (alpha, no space)
+        valid_word_boundary = set() # Tokens that indicate a word boundary
 
         # Use the actual model vocab size, not len(tokenizer)
         vocab_size = self.vocab_size
 
+        eot_token_id = None
         for token_id in range(vocab_size):
             # Skip special tokens
             if token_id in self.special_token_ids:
@@ -116,17 +129,38 @@ class WordProbabilityExplorer:
             token_text = self.tokenizer.decode([token_id])
             self.token_text_cache[token_id] = token_text
 
-            if not token_text:
+            if not token_text or not token_text.isascii():
                 continue
 
-            # Check if starts with space
-            if token_text[0] == ' ':
-                word = token_text[1:]
-                if is_all_ascii_alpha(word):
+            if is_instruct_model(self.model):
+                # Check if starts with alpha character
+                if token_text[0].isalpha():
                     valid_first.add(token_id)
                     valid_continuation.add(token_id)
-            # No space, contains all ascii alpha - can continue a word
-            elif is_all_ascii_alpha(token_text):
+                elif token_text == '<end_of_turn>': # TODO gemma specific
+                    print("found eot_token")
+                    eot_token_id = token_id
+            else:
+                # Check if starts with space
+                if token_text[0] == ' ':
+                    word = token_text[1:]
+                    if word and word.is_alpha(): # is_all_ascii_alpha(word)
+                        valid_first.add(token_id)
+                        valid_word_boundary.add(token_id)
+                        valid_continuation.add(token_id)
+                # No space, contains all ascii alpha - can continue a word
+                elif token_text.is_alpha(): #is_all_ascii_alpha(token_text):
+                    valid_continuation.add(token_id)
+
+        if is_instruct_model(self.model):
+            if not eot_token_id:
+                print("eot_token_id not found")
+            eos = self.model.generation_config.eos_token_id
+            eos_list = [] if eos is None else [eos] if isinstance(eos, int) else eos
+            for token_id in eos_list:
+                if token_id == eot_token_id:
+                    print("found eot_token_id in eos_tokens")
+                valid_word_boundary.add(token_id)
                 valid_continuation.add(token_id)
 
         # Create static additive masks with correct vocab size
@@ -143,7 +177,7 @@ class WordProbabilityExplorer:
         return {
             'valid_first': valid_first,
             'valid_continuation': valid_continuation,
-            'word_boundary': valid_first, # same as first token; starts with space, all ascii/alpha
+            'word_boundary': valid_word_boundary,
             'first_token_mask': first_token_mask,
             'continuation_mask': continuation_mask
         }        
@@ -177,7 +211,7 @@ class WordProbabilityExplorer:
 
     def pne(self, log_probs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        pne = Probs, Peg_log_probs, Entropy
+        pne = Probs, Neg_log_probs, Entropy
         """
         # Convert to probabilities
         probs = torch.exp(log_probs)
@@ -325,17 +359,17 @@ class WordProbabilityExplorer:
 
         return log_probs
     
-    def find_word_log_probs(self, context: str, args) -> List[Tuple[str, float]]:
+    def find_word_log_probs(self, prompt: str, args) -> List[Tuple[str, float]]:
         """
         Find the top K most probable next words using iterative BFS with batching.
         
         Args:
-            context: The input text context
+            prompt: The input text prompt
             
         Returns:
             List of (word, probability) tuples sorted by probability
         """
-        info(f"Context: '{context}'")
+        info(f"Prompt: '{prompt}'")
 
         t0_total = time.perf_counter()
 
@@ -348,8 +382,15 @@ class WordProbabilityExplorer:
         # Dynamic threshold for top-k pruning (k-th best log prob seen so far)
         top_k_threshold = float('-inf')
 
-        # Encode context
-        base_input_ids = self.tokenizer.encode(context, return_tensors="pt").to(self.device)
+        # Encode prompt
+        base_input_ids = self.tokenizer.encode(
+            prompt, return_tensors="pt", add_special_tokens=True).to(self.device)
+
+        #"""
+        outputs = self.model.generate(input_ids=base_input_ids, max_new_tokens=1000)
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        print(f"response: {response}")
+        #"""
 
         # Get log probabilities for first token
         info("Computing first token probabilities...")
@@ -514,8 +555,9 @@ class WordProbabilityExplorer:
 
                             continue
 
+                        drop = new_log_prob < top_k_threshold
                         # Continuation - prune if can't make top-k
-                        if new_log_prob < top_k_threshold:
+                        if drop:
                             continue
 
                         # Continue this path - append decoded token to text
@@ -610,37 +652,50 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    DEF_CONTEXT = "<|en-us|>benedikt"
+    DEF_WORD = "aquatic"
+    DEF_BASE_CONTEXT = "<|en-us|>"
+    DEF_INST_CONTEXT = "Given an input word, respond with a single word only," \
+        " which represents the most meaningful word that follows it.\n"
+
+    DEF_INST_CONTEXT = "You are an expert at English phrase construction. You will be given an input word, and must choose a single " \
+        "word, which, when paired with the input word, results in a meaningful English phrase. Your response should consist of " \
+        "the single word you chose, without any type of 'response: ' prefix or trailing punctuation.\n"
+
+    INPUT_WORD = "Input word: "
+
+    """
+        " such that the .."
+
+    """
 
     args = parse_args()
 
-    if not args.ctx:
-        args.ctx = DEF_CONTEXT
-
     args.show_probs = False
 
-    device, model, tokenizer = load_model(args)
+    device, model, tokenizer = load_model(args.model)
+
+    if not args.ctx:
+        if is_instruct_model(model):
+            prompt = DEF_INST_CONTEXT + INPUT_WORD
+        else:
+            prompt = DEF_BASE_CONTEXT
+        prompt += DEF_WORD
+    else:
+        prompt = args.ctx
+
+    prompt = specialize_prompt(model, prompt)
 
     # Create explorer with asymmetric typical sampling
     info(f"Using Asymmetric Typical Sampling with sigma threshold: {args.sigma}")
     explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
 
-    # Example context
-    #CONTEXT = "volleyball"
-    """
-        "Given an input word, respond with the most meaningful word that follows it.\n" \
-        "IMPORTANT: You are to respond with only a single word.\n" \
-        "## Input word:\n" \
-        "aquatic"
-    """
-
     clear_cache(device)
 
     # Find top words
-    word_log_probs, t = explorer.find_word_log_probs(args.ctx, args)
+    word_log_probs, t = explorer.find_word_log_probs(prompt, args)
 
     #from pipeline import find_word_log_probs_pipelined
-    #word_log_probs, t = find_word_log_probs_pipelined(explorer, args.ctx, args)
+    #word_log_probs, t = find_word_log_probs_pipelined(explorer, prompt, args)
 
     top_words = explorer.to_word_probs(word_log_probs)
     top_words = top_words[:TOP_K_WORDS]

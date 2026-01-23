@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 <model-name>"
+    exit 1
+fi
+
+MODEL_NAME="$1"
+
+if pgrep -f "uvicorn .*server:app" > /dev/null; then
+    echo "The server is already running"
+    exit 0
+fi
+
+export MODEL_NAME
+
+echo "Starting server in background with model: $MODEL_NAME"
+
+#nohup
+python -m uvicorn server:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    > server.log 2>&1 #&
+
+#disown

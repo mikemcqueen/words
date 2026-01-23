@@ -84,7 +84,7 @@ def main():
         exit()
     args.data = path
 
-    device, model, tokenizer = load_model(args)
+    device, model, tokenizer = load_model(args.model)
 
     explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
         
