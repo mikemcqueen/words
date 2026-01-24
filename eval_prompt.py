@@ -4,13 +4,14 @@ eval_prompt.py - Evaluate prompts against test words
 
 Usage:
   python eval_prompt.py --all                    # Evaluate all prompts
-  python eval_prompt.py -p "Is {WORD} valid?"   # Evaluate new prompt
+  python eval_prompt.py -p "Is '{PAIR}' valid?"  # Evaluate new prompt
   python eval_prompt.py --pid prompt_042         # Evaluate by ID
 """
 
 import argparse
+import asyncio
 import json
-import requests
+import httpx
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,6 +21,8 @@ PAIRS_FILE = "pairs.json"
 PROMPTS_FILE = "prompts.json"
 RESULTS_DIR = Path("results")
 MODEL = "haiku"  # Model for testing
+NUM_HOSTS = 2
+MAX_CONCURRENT = NUM_HOSTS * 2  # Match number of backend uvicorn hosts
 
 def load_pairs() -> List[Dict]:
     """Load test words with expected YES/NO answers"""
@@ -51,34 +54,63 @@ def get_next_prompt_id(prompts: List[Dict]) -> str:
     )
     return f"prompt_{max_num + 1:03d}"
 
-def eval_prompt_with_pair(prompt_text: str, pair: str, expected: str) -> bool:
+async def eval_prompt_with_pair(client: httpx.AsyncClient,
+                                 prompt_text: str, pair: str, expected: str) -> dict:
     """
     Test a pair against a prompt.
-    Returns True if response matches expected YES/NO.
+    Returns dict with pair, expected, and correct fields.
     """
     prompt = prompt_text.replace("{PAIR}", pair)
-
-    url = "http://localhost:8000/yesno"
-    payload = {
-        "text": prompt
-    }
-
+    payload = {"text": prompt}
     try:
-        # Sending the POST request
-        response = requests.post(url, json=payload)
+        response = await client.post("http://localhost/yesno", json=payload)
         response.raise_for_status()
+        js = response.json()
+        actual = js['response']
+        return {"pair": pair, "expected": expected, "correct": actual == expected}
     except Exception as e:
-        print(f"  ERROR posting {prompt}: {e}")
-        return False
-        
-    js = response.json()
+        print(f"  ERROR posting {pair}: {e}")
+        return {"pair": pair, "expected": expected, "correct": False}
 
-    # Checking the results
-    print(f"Status Code: {response.status_code}")
-    print(f"Response Body: {js}")
 
-    actual = js['response']
-    return actual == expected
+async def eval_all_pairs(prompt_text: str, pairs: list) -> list:
+    """Run all pair evaluations with MAX_CONCURRENT in flight at once."""
+    limits = httpx.Limits(
+        max_connections=MAX_CONCURRENT,
+        max_keepalive_connections=MAX_CONCURRENT
+    )
+    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
+        results = []
+        pending = set()
+        pairs_iter = iter(pairs)
+
+        # Start initial batch
+        for _ in range(MAX_CONCURRENT):
+            p = next(pairs_iter, None)
+            if p is None:
+                break
+            task = asyncio.create_task(
+                eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"])
+            )
+            pending.add(task)
+
+        # As each completes, start the next
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                results.append(task.result())
+
+            # Refill to MAX_CONCURRENT
+            while len(pending) < MAX_CONCURRENT:
+                p = next(pairs_iter, None)
+                if p is None:
+                    break
+                task = asyncio.create_task(
+                    eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"])
+                )
+                pending.add(task)
+
+        return results
 
 def eval_prompt(prompt: str, source: str = "manual") -> Dict:
     """
@@ -102,26 +134,14 @@ def eval_prompt(prompt: str, source: str = "manual") -> Dict:
     # TODO load once; move to global or pass through
     pairs = load_pairs()
     
-    # Run tests
-    correct = 0
+    # Run tests concurrently
     total = len(pairs)
-    details = []
-    
-    for pair_data in pairs:
-        pair = pair_data["pair"]
-        expected = pair_data["expected"]
-        
-        is_correct = eval_prompt_with_pair(prompt, pair, expected)
-        if is_correct:
-            correct += 1
-        
-        details.append({
-            "pair": pair,
-            "expected": expected,
-            "correct": is_correct
-        })
-        
-        print(f"  {pair}: {'✓' if is_correct else '✗'}")
+    details = asyncio.run(eval_all_pairs(prompt, pairs))
+    correct = sum(1 for d in details if d["correct"])
+
+    # Print results
+    for d in details:
+        print(f"  {d['pair']}: {'✓' if d['correct'] else '✗'}")
     
     score = (correct / total) * 100
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
