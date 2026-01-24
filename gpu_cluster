@@ -1,0 +1,32 @@
+upstream gpu_cluster {
+     least_conn;
+     server 127.0.0.1:8000 max_conns=2;
+     server 192.168.0.111:8000 max_conns=2; # JUNIPER
+     server 192.168.0.112:8000 max_conns=2; # MINERVA
+     
+     #keepalive 6;  # Maintain persistent connections to backends
+
+     #server 192.168.0.110:8000 max_conns=2; # RAINBOW
+}
+
+server {
+    listen 80;
+
+    location /generate {
+        proxy_pass http://gpu_cluster/generate;
+        proxy_http_version 1.1;
+        #proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 30s;
+    }
+
+    location /yesno {
+         proxy_pass http://gpu_cluster/yesno;
+         proxy_http_version 1.1;
+         #proxy_set_header Connection "";
+         proxy_set_header Host $host;
+         proxy_set_header X-Real-IP $remote_addr;
+         proxy_read_timeout 30s;
+    }
+}
