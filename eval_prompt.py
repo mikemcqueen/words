@@ -16,13 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from client import MAX_CONCURRENT, run_concurrent
+
 # Configuration
 PAIRS_FILE = "pairs.json"
 PROMPTS_FILE = "prompts.json"
 RESULTS_DIR = Path("results")
 MODEL = "haiku"  # Model for testing
-NUM_HOSTS = 2
-MAX_CONCURRENT = NUM_HOSTS * 2  # Match number of backend uvicorn hosts
 
 def load_pairs() -> List[Dict]:
     """Load test words with expected YES/NO answers"""
@@ -75,42 +75,10 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient,
 
 async def eval_all_pairs(prompt_text: str, pairs: list) -> list:
     """Run all pair evaluations with MAX_CONCURRENT in flight at once."""
-    limits = httpx.Limits(
-        max_connections=MAX_CONCURRENT,
-        max_keepalive_connections=MAX_CONCURRENT
-    )
-    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
-        results = []
-        pending = set()
-        pairs_iter = iter(pairs)
+    async def process(client, p):
+        return await eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"])
 
-        # Start initial batch
-        for _ in range(MAX_CONCURRENT):
-            p = next(pairs_iter, None)
-            if p is None:
-                break
-            task = asyncio.create_task(
-                eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"])
-            )
-            pending.add(task)
-
-        # As each completes, start the next
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                results.append(task.result())
-
-            # Refill to MAX_CONCURRENT
-            while len(pending) < MAX_CONCURRENT:
-                p = next(pairs_iter, None)
-                if p is None:
-                    break
-                task = asyncio.create_task(
-                    eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"])
-                )
-                pending.add(task)
-
-        return results
+    return [r async for r in run_concurrent(pairs, process, MAX_CONCURRENT)]
 
 def eval_prompt(prompt: str, source: str = "manual") -> Dict:
     """

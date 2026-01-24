@@ -9,11 +9,9 @@ import sys
 import httpx
 import requests
 
+from client import MAX_CONCURRENT, SERVER_URL, run_concurrent
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt
-
-SERVER_URL = "http://localhost"
-MAX_CONCURRENT = 4  # Number of concurrent requests to server
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False)
@@ -75,42 +73,13 @@ async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str
     return orig_pair, yes, as_txt
 
 
-async def process_pairs_fast(ctx: str, pairs) -> list:
+async def process_pairs_fast(ctx: str, pairs):
     """Process all pairs with MAX_CONCURRENT in flight at once."""
-    limits = httpx.Limits(
-        max_connections=MAX_CONCURRENT,
-        max_keepalive_connections=MAX_CONCURRENT
-    )
-    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
-        results = []
-        pending = set()
-        pairs_iter = iter(pairs) if not hasattr(pairs, '__next__') else pairs
+    async def process(client, orig_pair):
+        return await process_pair_async(client, ctx, orig_pair)
 
-        # Start initial batch
-        for _ in range(MAX_CONCURRENT):
-            pair = next(pairs_iter, None)
-            if pair is None:
-                break
-            task = asyncio.create_task(process_pair_async(client, ctx, pair))
-            pending.add(task)
-
-        # As each completes, start the next
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                result = task.result()
-                results.append(result)
-                print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
-
-            # Refill to MAX_CONCURRENT
-            while len(pending) < MAX_CONCURRENT:
-                pair = next(pairs_iter, None)
-                if pair is None:
-                    break
-                task = asyncio.create_task(process_pair_async(client, ctx, pair))
-                pending.add(task)
-
-        return results
+    async for result in run_concurrent(pairs, process, MAX_CONCURRENT):
+        print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
 
 
 def get_first_line(text: str) -> str:
