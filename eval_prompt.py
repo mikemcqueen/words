@@ -12,7 +12,6 @@ import argparse
 import asyncio
 import json
 import httpx
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -123,7 +122,6 @@ def eval_prompt(prompt: str, source: str = "manual") -> Dict:
     if existing:
         prompt_id = existing["id"]
         existing["score"] = score
-        existing["last_tested"] = datetime.now().isoformat()
         existing["correct"] = correct
         existing["total"] = total
         print(f"Updated existing prompt: {prompt_id}")
@@ -135,8 +133,6 @@ def eval_prompt(prompt: str, source: str = "manual") -> Dict:
             "score": score,
             "correct": correct,
             "total": total,
-            "created": datetime.now().isoformat(),
-            "last_tested": datetime.now().isoformat(),
             "source": source
         }
         prompts.append(new_prompt)
@@ -144,18 +140,16 @@ def eval_prompt(prompt: str, source: str = "manual") -> Dict:
     
     save_prompts(prompts)
     
-    # Save timestamped result
+    # Save result
     RESULTS_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    result_file = RESULTS_DIR / f"eval_{prompt_id}_{timestamp}.json"
-    
+    result_file = RESULTS_DIR / f"eval_{prompt_id}.json"
+
     result_data = {
         "prompt_id": prompt_id,
         "prompt_text": prompt,
         "score": score,
         "correct": correct,
         "total": total,
-        "timestamp": datetime.now().isoformat(),
         "model": MODEL,
         "details": details
     }

@@ -2,27 +2,15 @@
   {
     "id": "prompt_001",
     "text": "Is '{PAIR}' a recognized historical, cultural, or linguistic reference?",
-    "score": 88.88888888888889,
-    "last_tested": "2026-01-22T22:29:42.964069",
+    "score": 80.0,
     "correct": 8,
-    "total": 9
+    "total": 10
   },
   {
     "id": "prompt_002",
     "text": "Is '{PAIR}', without additional context, a sensible, literal, English noun phrase?",
-    "score": 88.88888888888889,
-    "last_tested": "2026-01-22T22:29:53.569469",
+    "score": 80.0,
     "correct": 8,
-    "total": 9
-  },
-  {
-    "id": "prompt_003",
-    "text": "Is '{PAIR}' a valid pair?",
-    "score": 0.0,
-    "correct": 0,
-    "total": 12,
-    "created": "2026-01-28T00:26:29.957735",
-    "last_tested": "2026-01-28T00:26:29.957740",
-    "source": "manual"
+    "total": 10
   }
 ]
