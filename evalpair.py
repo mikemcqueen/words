@@ -3,14 +3,17 @@
 # Prompts a model with word pairs and outputs the first line of the response.
 
 import argparse
+import asyncio
 import sys
 
+import httpx
 import requests
 
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt
 
-SERVER_URL = "http://localhost:8000"
+SERVER_URL = "http://localhost"
+MAX_CONCURRENT = 4  # Number of concurrent requests to server
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False)
@@ -42,6 +45,73 @@ def generate_response_fast(prompt: str, max_new_tokens: int = 1000) -> str:
     except Exception as e:
         print(f"Error calling server: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+async def generate_response_fast_async(client: httpx.AsyncClient, prompt: str) -> str:
+    """Async version: send prompt to server for generation."""
+    url = f"{SERVER_URL}/yesno"
+    payload = {"text": prompt}
+    response = await client.post(url, json=payload)
+    response.raise_for_status()
+    return response.json()["response"]
+
+
+async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str) -> tuple:
+    """Process a single pair with retry on flipped pair if NO."""
+    pair = orig_pair.replace(',', ' ')
+    prompt = ctx.replace("%p", pair)
+    response = await generate_response_fast_async(client, prompt)
+    yes = response.upper().startswith("YES")
+    as_txt = ""
+
+    if not yes:
+        pair = flip(orig_pair).replace(',', ' ')
+        prompt = ctx.replace("%p", pair)
+        response = await generate_response_fast_async(client, prompt)
+        yes = response.upper().startswith("YES")
+        if yes:
+            as_txt = f"as {pair}"
+
+    return orig_pair, yes, as_txt
+
+
+async def process_pairs_fast(ctx: str, pairs) -> list:
+    """Process all pairs with MAX_CONCURRENT in flight at once."""
+    limits = httpx.Limits(
+        max_connections=MAX_CONCURRENT,
+        max_keepalive_connections=MAX_CONCURRENT
+    )
+    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
+        results = []
+        pending = set()
+        pairs_iter = iter(pairs) if not hasattr(pairs, '__next__') else pairs
+
+        # Start initial batch
+        for _ in range(MAX_CONCURRENT):
+            pair = next(pairs_iter, None)
+            if pair is None:
+                break
+            task = asyncio.create_task(process_pair_async(client, ctx, pair))
+            pending.add(task)
+
+        # As each completes, start the next
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                result = task.result()
+                results.append(result)
+                print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
+
+            # Refill to MAX_CONCURRENT
+            while len(pending) < MAX_CONCURRENT:
+                pair = next(pairs_iter, None)
+                if pair is None:
+                    break
+                task = asyncio.create_task(process_pair_async(client, ctx, pair))
+                pending.add(task)
+
+        return results
+
 
 def get_first_line(text: str) -> str:
     """Extract the first line from the text."""
@@ -274,6 +344,11 @@ def main():
             pairs = file_pair_generator(args.file)
         if not pairs:
             assert False, "TBD"
+
+        # Fast async path for file processing
+        if args.fast and args.file:
+            asyncio.run(process_pairs_fast(args.ctx, pairs))
+            return
 
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
