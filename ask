@@ -5,6 +5,6 @@ if [[ $# -ne 1 ]]; then
     exit 1
 fi
 
-curl -X POST http://localhost:8000/yesno \
+curl -X POST http://localhost/yesno \
      -H "Content-Type: application/json" \
      -d "{\"text\": \"$1\"}"
