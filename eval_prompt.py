@@ -39,12 +39,17 @@ def load_prompts_from_file(filepath: Path) -> List[Dict]:
     return prompts
 
 def load_all_prompts() -> List[Dict]:
-    """Load all prompts from all JSON files in the prompts directory."""
+    """Load all prompts from all JSON files in the prompts directory.
+
+    Skips files starting with 'bad_prompts'.
+    """
     if not PROMPTS_DIR.exists():
         return []
 
     all_prompts = []
     for filepath in sorted(PROMPTS_DIR.glob("*.json")):
+        if filepath.stem.startswith("bad_prompts"):
+            continue
         prompts = load_prompts_from_file(filepath)
         all_prompts.extend(prompts)
     return all_prompts
