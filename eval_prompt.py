@@ -90,7 +90,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict] = None) -> Dict:
     prompt_text = prompt_obj["text"]
     source_file = prompt_obj.get("_source_file", "manual")
 
-    print(f"\nEvaluating prompt: {prompt_text[:60]}...")
+    print(f"\nEvaluating prompt: {prompt_text}")
 
     # Validate prompt has placeholder
     if "{PAIR}" not in prompt_text:
@@ -118,6 +118,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict] = None) -> Dict:
 
     result_data = {
         "prompt_id": prompt_id,
+        "source_file": source_file,
         "prompt_text": prompt_text,
         "score": score,
         "correct": correct,
@@ -166,11 +167,13 @@ def eval_all_prompts() -> List[Dict]:
     sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
     for i, result in enumerate(sorted_results, 1):
-        print(f"{i}. {result['prompt_id']}: {result['score']:.1f}% ({result['correct']}/{result['total']})")
+        name = f"{result['source_file']}_{result['prompt_id']}"
+        print(f"{i}. {name}: {result['score']:.1f}% ({result['correct']}/{result['total']})")
 
     if results:
         best = sorted_results[0]
-        print(f"\nBest: {best['prompt_id']} with {best['score']:.1f}%")
+        best_name = f"{best['source_file']}_{best['prompt_id']}"
+        print(f"\nBest: {best_name} with {best['score']:.1f}%")
 
     return results
 

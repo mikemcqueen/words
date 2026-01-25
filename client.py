@@ -10,10 +10,10 @@ SERVER_URL = "http://localhost"
 
 def get_num_hosts():
     """Return number of backend uvicorn hosts. May later query nginx."""
-    return 2
+    return 3
 
 
-MAX_CONCURRENT = get_num_hosts() * 2
+MAX_CONCURRENT = get_num_hosts() + 1
 
 
 async def run_concurrent(items, process_fn, max_concurrent=4):

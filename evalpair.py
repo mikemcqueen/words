@@ -45,14 +45,14 @@ async def generate_response_fast_async(client: httpx.AsyncClient, prompt: str) -
 async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
-    prompt = ctx.replace("%p", pair)
+    prompt = ctx.replace("{PAIR}", pair)
     response = await generate_response_fast_async(client, prompt)
     yes = response.upper().startswith("YES")
     as_txt = ""
 
     if not yes:
         pair = flip(orig_pair).replace(',', ' ')
-        prompt = ctx.replace("%p", pair)
+        prompt = ctx.replace("{PAIR}", pair)
         response = await generate_response_fast_async(client, prompt)
         yes = response.upper().startswith("YES")
         if yes:
@@ -160,7 +160,7 @@ def make_prompt(model, tokenizer, pair: str, include_questions) -> str:
 
 def custom_context(model, tokenizer, ctx: str, pair: str):
     if pair:
-        ctx = ctx.replace("%p", pair)
+        ctx = ctx.replace("{PAIR}", pair)
     if model is None:
         prompt = ctx  # Server handles specialization
         response = generate_response_fast(prompt)
@@ -228,11 +228,19 @@ def parse_args():
     DEFAULT_MODEL = "g2it"
 
     parser = argparse.ArgumentParser(description="Evaluate word pairs with a language model")
-    parser.add_argument('ctx', nargs='?', help='Optional context')
     parser.add_argument('-s', '--single', action="store_true", help='ask single question with followup')
     parser.add_argument('-q', '--questions', action="store_true", help='include questions in response')
-    parser.add_argument('-p', '--pair', type=str, help='Single pair to evaluate (e.g., "foo,bar")')
-    parser.add_argument('-f', '--file', type=str, help='File containing pairs (one per line)')
+
+    # Pair input: either --pair or --pair-file (mutually exclusive)
+    pair_group = parser.add_mutually_exclusive_group()
+    pair_group.add_argument('--pair', type=str, help='Single pair to evaluate (e.g., "foo,bar")')
+    pair_group.add_argument('--pair-file', type=str, help='File containing pairs (one per line)')
+
+    # Prompt input: either --prompt or (--prompt-file + --pid) (mutually exclusive)
+    parser.add_argument('--prompt', type=str, help='Prompt context (use {PAIR} as placeholder)')
+    parser.add_argument('--prompt-file', type=str, help='JSON file containing prompts')
+    parser.add_argument('--pid', '--prompt-id', type=str, dest='prompt_id',
+                        help='Prompt ID to use from prompt file')
 
     model_group = parser.add_mutually_exclusive_group()
     model_group.add_argument('-m', '--model', metavar='g2it', type=str, default=DEFAULT_MODEL,
@@ -246,11 +254,23 @@ def parse_args():
         print(f"{get_model_name(args.model)} is not an instruct model")
         exit()
 
-    if not args.pair and not args.file and not args.ctx:
-        parser.error("Either --ctx, -p/--pair, or -f/--file is required")
+    # Validate --prompt-file and --pid must be used together
+    if args.prompt_file and not args.prompt_id:
+        parser.error("--prompt-file requires --pid/--prompt-id")
+    if args.prompt_id and not args.prompt_file:
+        parser.error("--pid/--prompt-id requires --prompt-file")
 
-    if args.pair and args.file:
-        parser.error("Cannot specify both -p/--pair and -f/--file")
+    # Validate --prompt and --prompt-file/--pid are mutually exclusive
+    if args.prompt and args.prompt_file:
+        parser.error("Cannot specify both --prompt and --prompt-file/--pid")
+
+    # Require at least one of pair or prompt input
+    if not args.pair and not args.pair_file and not args.prompt and not args.prompt_file:
+        parser.error("Either --pair, --pair-file, --prompt, or --prompt-file/--pid is required")
+
+    # If prompt is provided, pairs are required
+    if (args.prompt or args.prompt_file) and not (args.pair or args.pair_file):
+        parser.error("--prompt/--prompt-file requires --pair or --pair-file")
 
     return args
 
@@ -282,6 +302,17 @@ def is_yes_response(model, response: str) -> bool:
         assert False, "is_yes_response not implemented for this model"
     return answer.upper().startswith("YES")
 
+def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
+    """Load a prompt from a JSON prompt file by ID."""
+    import json
+    with open(prompt_file, 'r') as f:
+        prompts = json.load(f)
+    for p in prompts:
+        if p.get('id') == prompt_id:
+            return p.get('text')
+    raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
+
+
 def main():
     args = parse_args()
 
@@ -292,34 +323,39 @@ def main():
         if is_gemma_model(model) and is_instruct_model(model):
             print("gemma instruct: True")
 
-    if args.ctx:
-        # Use generators for common handling of --pair and --file
+    # Resolve prompt from --prompt or --prompt-file/--pid
+    ctx = args.prompt
+    if args.prompt_file:
+        ctx = load_prompt_from_file(args.prompt_file, args.prompt_id)
+
+    if ctx:
+        # Use generators for common handling of --pair and --pair-file
         pairs = None
         if args.pair:
             pairs = single_pair_generator(args.pair)
-        elif args.file:
-            pairs = file_pair_generator(args.file)
+        elif args.pair_file:
+            pairs = file_pair_generator(args.pair_file)
         if not pairs:
             assert False, "TBD"
 
         # Fast async path for file processing
-        if args.fast and args.file:
-            asyncio.run(process_pairs_fast(args.ctx, pairs))
+        if args.fast and args.pair_file:
+            asyncio.run(process_pairs_fast(ctx, pairs))
             return
 
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
-            prompt, response = custom_context(model, tokenizer, args.ctx, pair)
+            prompt, response = custom_context(model, tokenizer, ctx, pair)
             yes = is_yes_response(model, response)
             as_txt = ""
             if not yes:
                 pair = flip(orig_pair).replace(',', ' ')
-                prompt, response = custom_context(model, tokenizer, args.ctx, pair)
+                prompt, response = custom_context(model, tokenizer, ctx, pair)
                 yes = is_yes_response(model, response)
                 if yes:
                     as_txt = f"as {pair}"
 
-            if not args.file:
+            if not args.pair_file:
                 print(response)
             print(f"{orig_pair} {'YES' if yes else 'NO'} {as_txt}")
     elif args.pair:
@@ -332,13 +368,13 @@ def main():
 
         if yes:
             follow_up(model, tokenizer, response, followup)
-    else: # args.file without ctx
+    else: # args.pair_file without ctx
         # File mode
         try:
-            for pair in file_pair_generator(args.file):
+            for pair in file_pair_generator(args.pair_file):
                 process_pair(model, tokenizer, pair, args.questions)
         except FileNotFoundError:
-            print(f"Error: File not found: {args.file}", file=sys.stderr)
+            print(f"Error: File not found: {args.pair_file}", file=sys.stderr)
             sys.exit(1)
 
 if __name__ == "__main__":
