@@ -1,0 +1,17 @@
+[
+    {"pair": "aquatic bird", "expected": "YES"},
+    {"pair": "red bird", "expected": "YES"},
+    {"pair": "eden woman", "expected": "YES"},
+    {"pair": "one wood", "expected": "YES"},
+    
+    {"pair": "banana eighteen", "expected": "NO"},
+    {"pair": "aquatic yankee", "expected": "NO"},
+    {"pair": "abstract petrochemical", "expected": "NO"},
+    
+    {"pair": "alaska vacuum", "expected": "NO"},
+    {"pair": "cheese map", "expected": "NO"},
+    {"pair": "diamond throat", "expected": "NO"},
+
+    {"pair": "two tyson", "expected": "NO"},
+    {"pair": "four tyson", "expected": "NO"}
+]
