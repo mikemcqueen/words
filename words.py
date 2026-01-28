@@ -683,7 +683,7 @@ def main():
     else:
         prompt = args.ctx
 
-    prompt = specialize_prompt(model, prompt)
+    prompt = specialize_prompt(model, tokenizer, prompt)
 
     # Create explorer with asymmetric typical sampling
     info(f"Using Asymmetric Typical Sampling with sigma threshold: {args.sigma}")

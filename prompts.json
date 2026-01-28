@@ -14,5 +14,15 @@
     "last_tested": "2026-01-22T22:29:53.569469",
     "correct": 8,
     "total": 9
+  },
+  {
+    "id": "prompt_003",
+    "text": "Is '{PAIR}' a valid pair?",
+    "score": 0.0,
+    "correct": 0,
+    "total": 12,
+    "created": "2026-01-28T00:26:29.957735",
+    "last_tested": "2026-01-28T00:26:29.957740",
+    "source": "manual"
   }
 ]

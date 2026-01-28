@@ -11,22 +11,10 @@ import requests
 
 from client import MAX_CONCURRENT, SERVER_URL, run_concurrent
 from info import info
-from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt
+from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
-    inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False)
-    outputs = model.generate(input_ids=inputs.to(model.device), max_new_tokens=max_new_tokens)
-    """
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,
-        pad_token_id=tokenizer.eos_token_id
-    )
-    """
-    response = tokenizer.decode(outputs[0], skip_special_tokens=skip_special)
-    return response
+    return generate_text(model, tokenizer, prompt, max_new_tokens)
 
 def generate_response_fast(prompt: str, max_new_tokens: int = 1000) -> str:
     """Send prompt to server for generation. Server handles prompt specialization."""
@@ -95,7 +83,7 @@ def parse_response(model, text: str) -> list[str]:
 
     return None
 
-def make_single_question_prompt(model, pair: str) -> str:
+def make_single_question_prompt(model, tokenizer, pair: str) -> str:
     PROMPT = "Given a phrase, answer the following question. " \
         "Respond with a single YES or NO." \
         "Is the phrase unusual?\n" \
@@ -113,10 +101,10 @@ def make_single_question_prompt(model, pair: str) -> str:
 
     prompt = PROMPT + pair
     if model is not None:
-        prompt = specialize_prompt(model, prompt)
+        prompt = specialize_prompt(model, tokenizer, prompt)
     return prompt, FOLLOWUP
 
-def make_prompt(model, pair: str, include_questions) -> str:
+def make_prompt(model, tokenizer, pair: str, include_questions) -> str:
     prefix = "Answer the following questions about the given phrase. " 
 
     yes_no = "Provide your answer to each question as either YES or NO.\n\n"
@@ -168,7 +156,7 @@ def make_prompt(model, pair: str, include_questions) -> str:
 
     if model is None:
         return prompt
-    return specialize_prompt(model, prompt)
+    return specialize_prompt(model, tokenizer, prompt)
 
 def custom_context(model, tokenizer, ctx: str, pair: str):
     if pair:
@@ -177,7 +165,7 @@ def custom_context(model, tokenizer, ctx: str, pair: str):
         prompt = ctx  # Server handles specialization
         response = generate_response_fast(prompt)
     else:
-        prompt = specialize_prompt(model, ctx)
+        prompt = specialize_prompt(model, tokenizer, ctx)
         response = generate_response(model, tokenizer, prompt, False)
     #print(f"prompt: {prompt}")
     #print(f"{ctx}: {response.strip()}")
@@ -188,7 +176,7 @@ def single_question(model, tokenizer, pair: str):
     if not pair:
         return None
 
-    prompt, followup = make_single_question_prompt(model, pair)
+    prompt, followup = make_single_question_prompt(model, tokenizer, pair)
     #print(f"prompt: {prompt}")
     if model is None:
         response = generate_response_fast(prompt)
@@ -210,7 +198,7 @@ def process_pair(model, tokenizer, pair: str, include_questions):
     if not pair:
         return None
 
-    prompt = make_prompt(model, pair, include_questions)
+    prompt = make_prompt(model, tokenizer, pair, include_questions)
     #print(f"prompt: {prompt}")
     if model is None:
         response = generate_response_fast(prompt)

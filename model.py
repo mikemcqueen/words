@@ -5,11 +5,18 @@ L2 =       "meta-llama/Llama-2-7b-hf"
 G2_2 =     "google/gemma-2-2b"
 G2_2b_it = "google/gemma-2-2b-it"
 G3_4b_it = "google/gemma-3-4b-it"
+GLM47 =    "mlx-community/GLM-4.7-Flash-4bit"
 #G2_9 = "google/gemma-2-9b"
 
 from info import info
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM
 import torch
+
+try:
+    from mlx_lm import load as mlx_load, generate as mlx_generate
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
 
 """
 # Example usage
@@ -31,6 +38,8 @@ def get_model_name(abbrev_name: str) -> str:
         return G2_2b_it
     if name == 'g3it':
         return G3_4b_it
+    if name == 'glm47':
+        return GLM47
     print(f"get_model_name(): unknown model name: '{name}'")
     exit()
 
@@ -43,14 +52,27 @@ def is_gemma_3(name: str):
 def is_gemma(name: str):
     return name.startswith("google/gemma")
 
+def is_mlx_model(name: str) -> bool:
+    return name.startswith("mlx-community/")
+
 def is_gemma_model(model):
+    if getattr(model, 'is_mlx', False):
+        return False
     return is_gemma(model.name_or_path.lower())
+
+def is_glm_model(model):
+    if getattr(model, 'is_mlx', False):
+        name = getattr(model, 'model_name', '')
+        return 'glm' in name.lower()
+    return 'glm' in model.name_or_path.lower()
 
 def is_instruct(name: str):
     name = name.lower()
     return name.endswith("it") or name.endswith("instruct")
 
 def is_instruct_model(model):
+    if getattr(model, 'is_mlx', False):
+        return False
     return is_instruct(model.name_or_path.lower())
 
 def gemmify_prompt(prompt: str) -> str:
@@ -61,22 +83,39 @@ def gemmify_prompt(prompt: str) -> str:
     p += "<start_of_turn>model\n"
     return p
 
-def specialize_prompt(model, prompt: str) -> str:
+def specialize_prompt(model, tokenizer, prompt: str) -> str:
+    if getattr(model, 'is_mlx', False) and hasattr(tokenizer, 'apply_chat_template'):
+        messages = [{"role": "user", "content": prompt}]
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     gi = is_gemma_model(model) and is_instruct_model(model)
     return gemmify_prompt(prompt) if gi else prompt
 
 
 def get_yesno_answer(model, response: str) -> str:
-    gi = is_gemma_model(model)
-    if gi:
-        # hacky for gemma,
-        lines = response.split('\n')
+    lines = response.split('\n')
+
+    if is_glm_model(model):
+        # Walk lines from end, find '</think>' and return text after it
+        for line in reversed(lines):
+            if '</think>' in line:
+                idx = line.rfind('</think>')
+                return line[idx + len('</think>'):].strip().upper()
+        return "OTHER"
+
+    if is_gemma_model(model):
+        # hacky for gemma
         return lines[3].strip().upper()
-        if answer.startswith("YES"):
-            return "YES"
-        if answer.startswith("NO"):
-            return "NO"
+
     return "OTHER"
+
+def _load_model_mlx(name: str):
+    if not HAS_MLX:
+        print("MLX not available. Install with: pip install mlx-lm")
+        exit()
+    model, tokenizer = mlx_load(name)
+    model.is_mlx = True
+    model.model_name = name
+    return model, tokenizer
 
 def _load_model(name: str, device):
     if name == Q3 or is_gemma_2(name):
@@ -110,12 +149,21 @@ def _load_model(name: str, device):
             device_map={"": "cuda:0"}
         )
         return model, False
-        
+
     print(f"_load_model(): unknown model name: '{name}'")
     exit()
 
 def load_model(name):
-    # Detect and set up device
+    model_name = get_model_name(name)
+    info(f"Loading {model_name}...")
+
+    # MLX models use their own loading path
+    if is_mlx_model(model_name):
+        model, tokenizer = _load_model_mlx(model_name)
+        info(f"Model loaded successfully via MLX")
+        return None, model, tokenizer
+
+    # Detect and set up device for torch models
     if torch.backends.mps.is_available():
         device = torch.device("mps")
         info("Using Apple Silicon GPU (MPS)")
@@ -126,8 +174,6 @@ def load_model(name):
         device = torch.device("cpu")
         info("Using CPU")
 
-    model_name = get_model_name(name)
-    info(f"Loading {model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model, to = _load_model(model_name, device)
 
@@ -140,11 +186,24 @@ def load_model(name):
     model.eval()
 
     info(f"Model loaded successfully on {device}")
-        
+
     return device, model, tokenizer
 
 def clear_cache(device):
+    if device is None:
+        return
     if device.type == "mps":
         torch.mps.empty_cache()
     elif device.type == "cuda":
         torch.cuda.empty_cache()
+
+def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> str:
+    """Unified generation for torch and MLX models."""
+    if getattr(model, 'is_mlx', False):
+        return mlx_generate(model, tokenizer, prompt=prompt,
+                           sampler=sampler, max_tokens=max_tokens)
+    else:
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=max_tokens)
+        return tokenizer.decode(out[0], skip_special_tokens=True)
