@@ -9,9 +9,12 @@ Review the following file contents:
 These represent a set of already-tested prompts, the word pairs that were substituted within those prompts,
 and the results of testing those prompts with the substituted word-pairs.
 
-Each prmopt has a score, which represents the percentage of correct answers for all subsituted word-pairs.
+Each good prmopt has a score, which represents the percentage of correct answers for all subsituted word-pairs.
 
-Here's what you should do:
+Each bad prompt has a reason given for why it is a bad prompt - learn from those reasons when generating
+your own prompt.
+
+## What To Do
 
 Analyze the existing prompts, pairs, and results, and use that information to design a new prompt which you
 think will result in a high score.
@@ -21,6 +24,12 @@ more - tens of thousands - that I'd like your prompt to work with.
 
 Therefore, you should design a prompt in as general terms as possible - don't "cheat" by specifying any of
 the word pairs in your prompt.  It's fine if you specify any broad categories you can identify, though.
+
+Once you have a prompt, run the skill /validate-prompt and pass the prompt as an argument.
+
+If the validate-prompt skill fails, start over this task at What To Do.
+
+if the validate-prompt skill succeeds, continue.
 
 Write that prompt, including prompt_id and text fields, to a new test_prompts_N.json file in the prompts/
 directory, where N is one greater than the highest existing test_prompts filename.

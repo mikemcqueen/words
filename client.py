@@ -10,7 +10,7 @@ SERVER_URL = "http://localhost"
 
 def get_num_hosts():
     """Return number of backend uvicorn hosts. May later query nginx."""
-    return 3
+    return 1
 
 
 MAX_CONCURRENT = get_num_hosts() + 1

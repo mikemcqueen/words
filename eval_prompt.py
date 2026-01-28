@@ -139,6 +139,26 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict] = None) -> Dict:
 
     return result_data
 
+def print_summary(results: List[Dict]) -> None:
+    """Print a summary of evaluation results."""
+    if not results:
+        return
+
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+    for i, result in enumerate(sorted_results, 1):
+        name = f"{result['source_file']}_{result['prompt_id']}"
+        print(f"{i}. {name}: {result['score']:.1f}% ({result['correct']}/{result['total']})")
+
+    best = sorted_results[0]
+    best_name = f"{best['source_file']}_{best['prompt_id']}"
+    print(f"\nBest: {best_name} with {best['score']:.1f}%")
+
+
 def eval_all_prompts() -> List[Dict]:
     """
     Evaluate all prompts from all files in the prompts directory.
@@ -164,22 +184,7 @@ def eval_all_prompts() -> List[Dict]:
         results.append(result)
         print("=" * 70)
 
-    # Summary
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-
-    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
-
-    for i, result in enumerate(sorted_results, 1):
-        name = f"{result['source_file']}_{result['prompt_id']}"
-        print(f"{i}. {name}: {result['score']:.1f}% ({result['correct']}/{result['total']})")
-
-    if results:
-        best = sorted_results[0]
-        best_name = f"{best['source_file']}_{best['prompt_id']}"
-        print(f"\nBest: {best_name} with {best['score']:.1f}%")
-
+    print_summary(results)
     return results
 
 def main():
@@ -223,6 +228,7 @@ Examples:
                 result = eval_prompt_obj(prompt_obj, pairs)
                 results.append(result)
                 print("=" * 70)
+            print_summary(results)
         else:
             eval_all_prompts()
     elif args.prompt:

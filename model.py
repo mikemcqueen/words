@@ -1,12 +1,12 @@
 # model.py
 
-Q3 =       "Qwen/Qwen3-1.7B"
-L2 =       "meta-llama/Llama-2-7b-hf"
-G2_2 =     "google/gemma-2-2b"
-G2_2b_it = "google/gemma-2-2b-it"
-G3_4b_it = "google/gemma-3-4b-it"
+Q3 =        "Qwen/Qwen3-1.7B"
+L2 =        "meta-llama/Llama-2-7b-hf"
+G2_2 =      "google/gemma-2-2b"
+G2_2b_it =  "google/gemma-2-2b-it"
+G3_4b_it =  "google/gemma-3-4b-it"
+G3_12b_it = "google/gemma-3-12b-it"
 GLM47 =    "mlx-community/GLM-4.7-Flash-4bit"
-#G2_9 = "google/gemma-2-9b"
 
 from info import info
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM
@@ -38,6 +38,8 @@ def get_model_name(abbrev_name: str) -> str:
         return G2_2b_it
     if name == 'g3it':
         return G3_4b_it
+    if name == 'g312it':
+        return G3_12b_it
     if name == 'glm47':
         return GLM47
     print(f"get_model_name(): unknown model name: '{name}'")
@@ -47,7 +49,7 @@ def is_gemma_2(name: str):
     return name.startswith("google/gemma-2")
 
 def is_gemma_3(name: str):
-    return name.startswith("google/gemma-3")
+    return "gemma-3" in name #name.startswith("google/gemma-3")
 
 def is_gemma(name: str):
     return name.startswith("google/gemma")
@@ -68,12 +70,25 @@ def is_glm_model(model):
 
 def is_instruct(name: str):
     name = name.lower()
-    return name.endswith("it") or name.endswith("instruct")
+    return "-it" in name or "-instruct" in name
 
 def is_instruct_model(model):
     if getattr(model, 'is_mlx', False):
         return False
     return is_instruct(model.name_or_path.lower())
+
+def is_quantized(name: str):
+    name = name.lower()
+    return "-QAT" in name
+
+def is_quantized_model(model):
+    if getattr(model, 'is_mlx', False):
+        return False
+    return is_quantized(model.name_or_path)
+
+def needs_quantizing(name: str):
+    name = name.lower()
+    return "-12b" in name
 
 def gemmify_prompt(prompt: str) -> str:
     p = ""
@@ -89,7 +104,6 @@ def specialize_prompt(model, tokenizer, prompt: str) -> str:
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     gi = is_gemma_model(model) and is_instruct_model(model)
     return gemmify_prompt(prompt) if gi else prompt
-
 
 def get_yesno_answer(model, response: str) -> str:
     lines = response.split('\n')
@@ -127,11 +141,26 @@ def _load_model(name: str, device):
         return model, False
 
     if is_gemma_3(name):
-        model = Gemma3ForCausalLM.from_pretrained(
-            name,
-            dtype=torch.bfloat16,
-            device_map={"": "cuda:0"}
-        )
+        if needs_quantizing(name):
+            quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,  # Critical for Gemma 3
+                bnb_4bit_use_double_quant=True,
+            )
+            model = Gemma3ForCausalLM.from_pretrained(
+                name,
+                quantization_config=bnb_config,
+                dtype=torch.bfloat16,
+                device_map={"": "cuda:0"}
+            )
+        else:
+            model = Gemma3ForCausalLM.from_pretrained(
+                name,
+                dtype=torch.bfloat16,
+                device_map={"": "cuda:0"}
+            )
         return model, False
 
     if name == L2:
