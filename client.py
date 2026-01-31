@@ -3,6 +3,8 @@
 # Shared async HTTP client utilities for concurrent request processing.
 
 import asyncio
+import time
+
 import httpx
 
 SERVER_URL = "http://localhost"
@@ -10,7 +12,7 @@ SERVER_URL = "http://localhost"
 
 def get_num_hosts():
     """Return number of backend uvicorn hosts. May later query nginx."""
-    return 2
+    return 1
 
 
 MAX_CONCURRENT = get_num_hosts() # + 1
@@ -18,35 +20,39 @@ MAX_CONCURRENT = get_num_hosts() # + 1
 
 async def run_concurrent(items, process_fn, max_concurrent=4, timeout=30.0):
     """
-    Async generator that yields results as they complete.
-
-    Args:
-        items: Iterable of items to process
-        process_fn: Async function(client, item) -> result
-        max_concurrent: Max concurrent requests
-        timeout: Request timeout in seconds
-
-    Yields: Results as each request completes
+    Process items with bounded concurrency, yielding results as they complete.
+    At most max_concurrent requests in flight at any time.
     """
-    limits = httpx.Limits(
-        max_connections=max_concurrent,
-        max_keepalive_connections=max_concurrent
-    )
-    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         pending = set()
         items_iter = iter(items)
+        in_flight = 0
+
+        async def tracked(item):
+            nonlocal in_flight
+            in_flight += 1
+            ts = time.strftime("%H:%M:%S")
+            print(f"[{ts}] >>> REQUEST START {item['pair']} in_flight={in_flight} pending={len(pending)}")
+            if in_flight > max_concurrent:
+                print(f"[{ts}] !!! BUG: in_flight ({in_flight}) > max_concurrent ({max_concurrent})")
+            try:
+                return await process_fn(client, item)
+            finally:
+                in_flight -= 1
+                ts_end = time.strftime("%H:%M:%S")
+                print(f"[{ts_end}] <<< REQUEST END {item['pair']} in_flight={in_flight}")
 
         # Start initial batch
         for _ in range(max_concurrent):
             item = next(items_iter, None)
             if item is None:
                 break
-            task = asyncio.create_task(process_fn(client, item))
+            task = asyncio.create_task(tracked(item))
             pending.add(task)
 
-        # As each completes, start the next
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
             for task in done:
                 yield task.result()
 
@@ -55,5 +61,5 @@ async def run_concurrent(items, process_fn, max_concurrent=4, timeout=30.0):
                 item = next(items_iter, None)
                 if item is None:
                     break
-                task = asyncio.create_task(process_fn(client, item))
+                task = asyncio.create_task(tracked(item))
                 pending.add(task)

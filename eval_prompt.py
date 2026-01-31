@@ -12,11 +12,13 @@ Usage:
 import argparse
 import asyncio
 import json
+import time
+
 import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent
+from client import run_concurrent, get_num_hosts
 
 # Configuration
 PAIRS_FILE = "pairs.json"
@@ -76,6 +78,8 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str) -> t
         "temperature": args.temp,
         "top_p": args.top_p,
         "min_p": args.min_p,
+        "repeat_penalty": args.repeat_penalty,
+        "repeat_last_n": args.repeat_last_n,
     }
     response = await client.post(url, json=payload)
     response.raise_for_status()
@@ -98,6 +102,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
         finish_reason = None
         reasoning = None
         payload = None
+        start_time = time.time()
         if args.client == "yesno":
             actual, message, _ = await send_yesno_request(client, args, prompt)
         else:
@@ -105,6 +110,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             reasoning = message["reasoning_content"]
             del message["reasoning_content"]
             finish_reason = payload["finish_reason"]
+        seconds_elapsed = time.time() - start_time
         correct = actual.upper().startswith(expected.upper())
         if finish_reason:
             correct = correct and finish_reason == "stop"
@@ -117,10 +123,16 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                 print(f"  payload: {payload}")
             print(f"  message: {message}")
         return {"pair": pair, "expected": expected, "correct": correct,
-                "actual": actual, "message": message}
+                "actual": actual, "message": message, "reasoning": reasoning,
+                "finish_reason": finish_reason, "seconds_elapsed": seconds_elapsed}
     except Exception as e:
-        print(f"  ERROR posting {pair}: {repr(e)}")
-        return {"pair": pair, "expected": expected, "correct": False, "actual": None, "message": None}
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}]   ERROR posting {pair}: {repr(e)}")
+        if "504" in str(e):
+            await asyncio.sleep(5)
+        return {"pair": pair, "expected": expected, "correct": False, "actual": None,
+                "message": None, "reasoning": None, "finish_reason": repr(e),
+                "seconds_elapsed": time.time() - start_time}
 
 
 async def eval_all_pairs(prompt_text: str, pairs: list, args) -> list:
@@ -128,7 +140,7 @@ async def eval_all_pairs(prompt_text: str, pairs: list, args) -> list:
     async def process(client, p):
         return await eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"], args)
 
-    return [r async for r in run_concurrent(pairs, process, 2, args.timeout)]
+    return [r async for r in run_concurrent(pairs, process, get_num_hosts(), args.timeout)]
 
 
 def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
@@ -276,8 +288,12 @@ Examples:
                       help="Top-p sampling (default: 0.95)")
     parser.add_argument("--min_p", type=float, default=0.01,
                       help="Min-p sampling (default: 0.01)")
-    parser.add_argument("--timeout", type=float, default=120.0,
-                      help="Request timeout in seconds (default: 120)")
+    parser.add_argument("--repeat-penalty", "--rp", type=float, default=1.0,
+                      help="Repeat penalty (default: 1.0)")
+    parser.add_argument("--repeat-last-n", "--rln", type=int, default=32,
+                      help="Repeat last n tokens (default: 32)")
+    parser.add_argument("--timeout", type=float, default=300.0,
+                      help="Request timeout in seconds (default: 300)")
     parser.add_argument("--pairs", type=str, default=PAIRS_FILE,
                       help=f"Pairs file (default: {PAIRS_FILE})")
     parser.add_argument("-v", "--verbose", action="store_true",
