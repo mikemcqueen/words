@@ -10,13 +10,13 @@ SERVER_URL = "http://localhost"
 
 def get_num_hosts():
     """Return number of backend uvicorn hosts. May later query nginx."""
-    return 1
+    return 2
 
 
-MAX_CONCURRENT = get_num_hosts() + 1
+MAX_CONCURRENT = get_num_hosts() # + 1
 
 
-async def run_concurrent(items, process_fn, max_concurrent=4):
+async def run_concurrent(items, process_fn, max_concurrent=4, timeout=30.0):
     """
     Async generator that yields results as they complete.
 
@@ -24,6 +24,7 @@ async def run_concurrent(items, process_fn, max_concurrent=4):
         items: Iterable of items to process
         process_fn: Async function(client, item) -> result
         max_concurrent: Max concurrent requests
+        timeout: Request timeout in seconds
 
     Yields: Results as each request completes
     """
@@ -31,7 +32,7 @@ async def run_concurrent(items, process_fn, max_concurrent=4):
         max_connections=max_concurrent,
         max_keepalive_connections=max_concurrent
     )
-    async with httpx.AsyncClient(timeout=30.0, limits=limits) as client:
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         pending = set()
         items_iter = iter(items)
 
