@@ -18,7 +18,7 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_num_hosts
+from client import run_concurrent, get_num_hosts, get_inference_params, send_yesno_request, send_openai_request
 
 # Configuration
 PAIRS_FILE = "pairs.json"
@@ -59,38 +59,6 @@ def load_all_prompts() -> List[Dict]:
     return all_prompts
 
 
-async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
-    """POST {base_url}/yesno with {"text": prompt}"""
-    url = f"{args.host}:{args.port}/yesno"
-    response = await client.post(url, json={"text": prompt})
-    response.raise_for_status()
-    js = response.json()
-    return js["response"], js, js
-
-
-async def send_openai_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
-    """POST {base_url}/v1/chat/completions with OpenAI chat format"""
-    url = f"{args.host}:{args.port}/v1/chat/completions"
-    messages = [{"role": "user", "content": prompt}]
-    payload = {
-        "model": MODEL,
-        "messages": messages,
-        "temperature": args.temp,
-        "top_p": args.top_p,
-        "min_p": args.min_p,
-        "repeat_penalty": args.repeat_penalty,
-        "repeat_last_n": args.repeat_last_n,
-    }
-    response = await client.post(url, json=payload)
-    response.raise_for_status()
-    payload = response.json()["choices"][0]
-    message = payload["message"]
-    del payload["message"]
-    actual = message["content"]
-    del message["content"]
-    return actual, message, payload
-
-
 async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                                  pair: str, expected: str, args) -> dict:
     """
@@ -106,7 +74,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
         if args.client == "yesno":
             actual, message, _ = await send_yesno_request(client, args, prompt)
         else:
-            actual, message, payload = await send_openai_request(client, args, prompt)
+            actual, message, payload = await send_openai_request(client, args, prompt, MODEL)
             reasoning = message["reasoning_content"]
             del message["reasoning_content"]
             finish_reason = payload["finish_reason"]
@@ -168,12 +136,20 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     # Run tests concurrently
     total = len(pairs)
     details = asyncio.run(eval_all_pairs(prompt_text, pairs, args))
-    correct = sum(1 for d in details if d["correct"])
+    correct = sum(1 for d in details if d['correct'])
 
     # Print results
-    if not args.verbose:
-        for d in details:
-            print(f"  {d['pair']}: {'✓' if d['correct'] else '✗'}")
+    for d in details:
+        status = d["actual"] if d["actual"] else "None"
+        status += ' '
+        if d["correct"]:
+            status += '✓'
+        elif d["finish_reason"] == "stop":
+            status += '✗'
+        else:
+            status += f"[{d['finish_reason']}]"
+            
+        print(f"  {d['pair']}: {status}")
 
     score = (correct / total) * 100
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
@@ -190,6 +166,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "correct": correct,
         "total": total,
         "model": MODEL,
+        "inference_params": get_inference_params(args),
         "details": details
     }
 
@@ -253,6 +230,19 @@ def eval_all_prompts(args) -> List[Dict]:
     return results
 
 
+def make_prompts_file_path(prompt_file: str) -> Path:
+    """Make a full path to a prompts file.
+
+    - If no .json suffix, add it
+    - If no directory specified, use PROMPTS_DIR
+    """
+    if not prompt_file.endswith(".json"):
+        prompt_file += ".json"
+    if '/' not in prompt_file:
+        return PROMPTS_DIR / prompt_file
+    return Path(prompt_file)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate prompts against test pairs",
@@ -269,13 +259,14 @@ Examples:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--all", action="store_true",
                       help="Evaluate all prompts from prompts/ (or single file with -f)")
-    group.add_argument("-p", "--prompt", type=str,
-                      help="Evaluate a new prompt string")
-    group.add_argument("--pid", type=str,
-                      help="Evaluate existing prompt by ID (requires -f)")
+    group.add_argument("-p", "--prompt", type=str, help="Evaluate a new prompt string")
+    group.add_argument("--pid", type=str, help="Evaluate existing prompt by ID (requires -f)")
 
+    parser.add_argument("--key", type=str, help="API key")
     parser.add_argument("-f", "--prompt-file", type=str,
                       help="Prompt file name (without .json), e.g. 'good_prompts'")
+    parser.add_argument("-s", "--system-prompt", type=str,
+                      help="System prompt (optional)")
     parser.add_argument("-c", "--client", choices=["yesno", "openai"], default="openai",
                       help="Client type: 'yesno' or 'openai' (default)")
     parser.add_argument("--host", default="http://localhost",
@@ -305,7 +296,7 @@ Examples:
 
     if args.all:
         if args.prompt_file:
-            filepath = PROMPTS_DIR / f"{args.prompt_file}.json"
+            filepath = make_prompts_file_path(args.prompt_file)
             if not filepath.exists():
                 print(f"Error: File not found: {filepath}")
                 return
@@ -327,7 +318,7 @@ Examples:
         if not args.prompt_file:
             print("Error: --pid requires -f/--prompt-file to specify which file")
             return
-        filepath = PROMPTS_DIR / f"{args.prompt_file}.json"
+        filepath = make_prompts_file_path(args.prompt_file)
         if not filepath.exists():
             print(f"Error: File not found: {filepath}")
             return

@@ -7,25 +7,27 @@ import asyncio
 import sys
 
 import httpx
-import requests
 
-from client import MAX_CONCURRENT, SERVER_URL, run_concurrent
+from client import MAX_CONCURRENT, SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     return generate_text(model, tokenizer, prompt, max_new_tokens)
 
-def generate_response_fast(prompt: str, max_new_tokens: int = 1000) -> str:
-    """Send prompt to server for generation. Server handles prompt specialization."""
-    url = f"{SERVER_URL}/yesno"
-    payload = {"text": prompt, "max_tokens": max_new_tokens}
+def generate_response_fast(args, prompt: str) -> str:
+    """Send prompt to server for generation using shared request functions (sync wrapper)."""
+    async def _do():
+        async with httpx.AsyncClient(timeout=args.timeout) as client:
+            if args.client == "yesno":
+                actual, _, _ = await send_yesno_request(client, args, prompt)
+            else:
+                actual, _, _ = await send_openai_request(client, args, prompt)
+            return actual
     try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        return response.json()["response"]
-    except requests.exceptions.ConnectionError:
-        print(f"Error: Cannot connect to server at {SERVER_URL}", file=sys.stderr)
+        return asyncio.run(_do())
+    except httpx.ConnectError:
+        print(f"Error: Cannot connect to server at {args.host}:{args.port}", file=sys.stderr)
         print("Start the server with: ./server", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
@@ -33,27 +35,24 @@ def generate_response_fast(prompt: str, max_new_tokens: int = 1000) -> str:
         sys.exit(1)
 
 
-async def generate_response_fast_async(client: httpx.AsyncClient, prompt: str) -> str:
-    """Async version: send prompt to server for generation."""
-    url = f"{SERVER_URL}/yesno"
-    payload = {"text": prompt}
-    response = await client.post(url, json=payload)
-    response.raise_for_status()
-    return response.json()["response"]
-
-
-async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str) -> tuple:
+async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    response = await generate_response_fast_async(client, prompt)
+    if args.client == "yesno":
+        response, _, _ = await send_yesno_request(client, args, prompt)
+    else:
+        response, _, _ = await send_openai_request(client, args, prompt)
     yes = response.upper().startswith("YES")
     as_txt = ""
 
     if not yes:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        response = await generate_response_fast_async(client, prompt)
+        if args.client == "yesno":
+            response, _, _ = await send_yesno_request(client, args, prompt)
+        else:
+            response, _, _ = await send_openai_request(client, args, prompt)
         yes = response.upper().startswith("YES")
         if yes:
             as_txt = f"as {pair}"
@@ -61,12 +60,12 @@ async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str
     return orig_pair, yes, as_txt
 
 
-async def process_pairs_fast(ctx: str, pairs):
+async def process_pairs_fast(ctx: str, pairs, args):
     """Process all pairs with MAX_CONCURRENT in flight at once."""
     async def process(client, orig_pair):
-        return await process_pair_async(client, ctx, orig_pair)
+        return await process_pair_async(client, args, ctx, orig_pair)
 
-    async for result in run_concurrent(pairs, process, MAX_CONCURRENT):
+    async for result in run_concurrent(pairs, process, MAX_CONCURRENT, args.timeout):
         print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
 
 
@@ -158,12 +157,12 @@ def make_prompt(model, tokenizer, pair: str, include_questions) -> str:
         return prompt
     return specialize_prompt(model, tokenizer, prompt)
 
-def custom_context(model, tokenizer, ctx: str, pair: str):
+def custom_context(model, tokenizer, args, ctx: str, pair: str):
     if pair:
         ctx = ctx.replace("{PAIR}", pair)
     if model is None:
         prompt = ctx  # Server handles specialization
-        response = generate_response_fast(prompt)
+        response = generate_response_fast(args, prompt)
     else:
         prompt = specialize_prompt(model, tokenizer, ctx)
         response = generate_response(model, tokenizer, prompt, False)
@@ -171,7 +170,7 @@ def custom_context(model, tokenizer, ctx: str, pair: str):
     #print(f"{ctx}: {response.strip()}")
     return prompt, response
 
-def single_question(model, tokenizer, pair: str):
+def single_question(model, tokenizer, args, pair: str):
     pair = pair.strip()
     if not pair:
         return None
@@ -179,7 +178,7 @@ def single_question(model, tokenizer, pair: str):
     prompt, followup = make_single_question_prompt(model, tokenizer, pair)
     #print(f"prompt: {prompt}")
     if model is None:
-        response = generate_response_fast(prompt)
+        response = generate_response_fast(args, prompt)
     else:
         response = generate_response(model, tokenizer, prompt, False)
     print(f"{pair}: {response}")
@@ -193,7 +192,7 @@ def single_question(model, tokenizer, pair: str):
 
     return False, None
 
-def process_pair(model, tokenizer, pair: str, include_questions):
+def process_pair(model, tokenizer, args, pair: str, include_questions):
     pair = pair.strip()
     if not pair:
         return None
@@ -201,7 +200,7 @@ def process_pair(model, tokenizer, pair: str, include_questions):
     prompt = make_prompt(model, tokenizer, pair, include_questions)
     #print(f"prompt: {prompt}")
     if model is None:
-        response = generate_response_fast(prompt)
+        response = generate_response_fast(args, prompt)
     else:
         response = generate_response(model, tokenizer, prompt)
     print(f"{pair}: {response}")
@@ -211,7 +210,7 @@ def process_pair(model, tokenizer, pair: str, include_questions):
         print(f"{pair}: {lines[0]}")
     """
 
-def follow_up(model, tokenizer, response: str, prompt: str):
+def follow_up(model, tokenizer, args, response: str, prompt: str):
     p = response
     p += "<start_of_turn>user\n"
     p += prompt
@@ -219,7 +218,7 @@ def follow_up(model, tokenizer, response: str, prompt: str):
     p += "<start_of_turn>model\n"
 
     if model is None:
-        response = generate_response_fast(p)
+        response = generate_response_fast(args, p)
     else:
         response = generate_response(model, tokenizer, p)
     print(f"-----------\n{response}")
@@ -228,7 +227,7 @@ def parse_args():
     DEFAULT_MODEL = "g2it"
 
     parser = argparse.ArgumentParser(description="Evaluate word pairs with a language model")
-    parser.add_argument('-s', '--single', action="store_true", help='ask single question with followup')
+    parser.add_argument('--single', action="store_true", help='ask single question with followup')
     parser.add_argument('-q', '--questions', action="store_true", help='include questions in response')
 
     # Pair input: either --pair or --pair-file (mutually exclusive)
@@ -247,6 +246,29 @@ def parse_args():
                         help=f"Select model (default: {DEFAULT_MODEL})")
     model_group.add_argument('--fast', action="store_true",
                         help=f"Use server at {SERVER_URL} instead of loading model")
+
+    # Server/client options (used with --fast)
+    parser.add_argument('-s', '--system-prompt', type=str,
+                        help='System prompt (optional, used with --fast)')
+    parser.add_argument('-c', '--client', choices=["yesno", "openai"], default="openai",
+                        help="Client type: 'yesno' or 'openai' (default)")
+    parser.add_argument('--host', default="http://localhost",
+                        help="Server host (default: http://localhost)")
+    parser.add_argument('--port', type=int, default=8000,
+                        help="Server port (default: 8000)")
+    parser.add_argument('--key', type=str, help="API key")
+    parser.add_argument('--temp', type=float, default=1.0,
+                        help="Sampling temperature (default: 1.0)")
+    parser.add_argument('--top_p', type=float, default=0.95,
+                        help="Top-p sampling (default: 0.95)")
+    parser.add_argument('--min_p', type=float, default=0.01,
+                        help="Min-p sampling (default: 0.01)")
+    parser.add_argument('--repeat-penalty', '--rp', type=float, default=1.0,
+                        help="Repeat penalty (default: 1.0)")
+    parser.add_argument('--repeat-last-n', '--rln', type=int, default=32,
+                        help="Repeat last n tokens (default: 32)")
+    parser.add_argument('--timeout', type=float, default=300.0,
+                        help="Request timeout in seconds (default: 300)")
 
     args = parser.parse_args()
 
@@ -340,17 +362,17 @@ def main():
 
         # Fast async path for file processing
         if args.fast and args.pair_file:
-            asyncio.run(process_pairs_fast(ctx, pairs))
+            asyncio.run(process_pairs_fast(ctx, pairs, args))
             return
 
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
-            prompt, response = custom_context(model, tokenizer, ctx, pair)
+            prompt, response = custom_context(model, tokenizer, args, ctx, pair)
             yes = is_yes_response(model, response)
             as_txt = ""
             if not yes:
                 pair = flip(orig_pair).replace(',', ' ')
-                prompt, response = custom_context(model, tokenizer, ctx, pair)
+                prompt, response = custom_context(model, tokenizer, args, ctx, pair)
                 yes = is_yes_response(model, response)
                 if yes:
                     as_txt = f"as {pair}"
@@ -362,17 +384,17 @@ def main():
         # Single pair mode (no ctx)
         yes = False
         if args.single:
-            yes, response, followup = single_question(model, tokenizer, args.pair)
+            yes, response, followup = single_question(model, tokenizer, args, args.pair)
         else:
-            process_pair(model, tokenizer, args.pair, args.questions)
+            process_pair(model, tokenizer, args, args.pair, args.questions)
 
         if yes:
-            follow_up(model, tokenizer, response, followup)
+            follow_up(model, tokenizer, args, response, followup)
     else: # args.pair_file without ctx
         # File mode
         try:
             for pair in file_pair_generator(args.pair_file):
-                process_pair(model, tokenizer, pair, args.questions)
+                process_pair(model, tokenizer, args, pair, args.questions)
         except FileNotFoundError:
             print(f"Error: File not found: {args.pair_file}", file=sys.stderr)
             sys.exit(1)

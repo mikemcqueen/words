@@ -7,8 +7,8 @@ import argparse
 def main():
     parser = argparse.ArgumentParser(description='Call LLM API and extract reasoning')
     parser.add_argument('url', nargs='?', 
-                        default='http://localhost:8080/v1/chat/completions',
-                        help='API endpoint URL (default: http://localhost:8080/v1/chat/completions)')
+                        default='http://localhost:8000/v1/chat/completions',
+                        help='API endpoint URL (default: http://localhost:8000/v1/chat/completions)')
     parser.add_argument('--data', '-d', help='JSON payload', required=True)
     parser.add_argument('--header', '-H', action='append', help='HTTP headers')
     

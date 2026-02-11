@@ -5,8 +5,10 @@ upstream gpu_cluster {
      #server 127.0.0.1:8000 max_conns=2;
      #server 192.168.0.112:8000 max_conns=2; # MINERVA
      
-     server 192.168.0.111:8000 max_conns=1; # JUNIPER
-     server 192.168.0.198:8000 max_conns=1; # MINI
+     server 73.83.182.94:8001 max_conns=1; # JUNIPER VIA INTERNET
+     
+     #server 192.168.0.111:8000 max_conns=1; # JUNIPER
+     #server 192.168.0.198:8000 max_conns=1; # MINI
      #queue 2 timeout=5s;  # queue up to N requests, wait 5s for a slot
 
      #keepalive 6;  # Maintain persistent connections to backends
