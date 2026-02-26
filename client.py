@@ -67,6 +67,21 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
                 pending.add(task)
 
 
+async def _post_with_retry(client, *args, max_retries=3, **kwargs):
+    """Wrap client.post() with retry logic for transient errors."""
+    delays = [5, 20, 80]
+    for attempt in range(max_retries + 1):
+        try:
+            return await client.post(*args, **kwargs)
+        except (httpx.ReadTimeout, httpx.ConnectError) as e:
+            if attempt >= max_retries:
+                raise
+            delay = delays[attempt]
+            ts = time.strftime("%H:%M:%S")
+            print(f"[{ts}] RETRY {attempt+1}/{max_retries} after {type(e).__name__}, waiting {delay}s", file=sys.stderr)
+            await asyncio.sleep(delay)
+
+
 def get_inference_params(args) -> dict:
     """Extract inference parameters from args into a canonical dict."""
     return {
@@ -81,7 +96,7 @@ def get_inference_params(args) -> dict:
 async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
     """POST {base_url}/yesno with {"text": prompt}"""
     url = f"{args.host}:{args.port}/yesno"
-    response = await client.post(url, json={"text": prompt})
+    response = await _post_with_retry(client, url, json={"text": prompt})
     response.raise_for_status()
     js = response.json()
     return js["response"], js, js
@@ -104,7 +119,7 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
         "messages": messages,
         **get_inference_params(args),
     }
-    response = await client.post(url, headers=headers, json=payload)
+    response = await _post_with_retry(client, url, headers=headers, json=payload)
     response.raise_for_status()
     payload = response.json()["choices"][0]
     message = payload["message"]
