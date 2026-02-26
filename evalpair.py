@@ -62,11 +62,20 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
 
 async def process_pairs_fast(ctx: str, pairs, args):
     """Process all pairs with MAX_CONCURRENT in flight at once."""
+    yes_pairs = []
+    no_pairs = []
+
     async def process(client, orig_pair):
         return await process_pair_async(client, args, ctx, orig_pair)
 
     async for result in run_concurrent(pairs, process, MAX_CONCURRENT, args.timeout):
         print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
+        if result[1]:
+            yes_pairs.append(result[0])
+        else:
+            no_pairs.append(result[0])
+
+    return yes_pairs, no_pairs
 
 
 def get_first_line(text: str) -> str:
@@ -269,6 +278,8 @@ def parse_args():
                         help="Repeat last n tokens (default: 32)")
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
+    parser.add_argument('--save', type=str, metavar='TAG',
+                        help="Save YES/NO pairs to {pair-file}.{TAG}.yes and .no")
 
     args = parser.parse_args()
 
@@ -293,6 +304,10 @@ def parse_args():
     # If prompt is provided, pairs are required
     if (args.prompt or args.prompt_file) and not (args.pair or args.pair_file):
         parser.error("--prompt/--prompt-file requires --pair or --pair-file")
+
+    # --save requires --pair-file
+    if args.save and not args.pair_file:
+        parser.error("--save requires --pair-file")
 
     return args
 
@@ -335,6 +350,20 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
+def save_results(pair_file, tag, yes_pairs, no_pairs):
+    """Write YES/NO pairs to {pair_file}.{tag}.yes and .no files."""
+    yes_file = f"{pair_file}.{tag}.yes"
+    no_file = f"{pair_file}.{tag}.no"
+    with open(yes_file, 'w') as f:
+        for p in yes_pairs:
+            f.write(p + '\n')
+    with open(no_file, 'w') as f:
+        for p in no_pairs:
+            f.write(p + '\n')
+    print(f"Saved {len(yes_pairs)} YES pairs to {yes_file}")
+    print(f"Saved {len(no_pairs)} NO pairs to {no_file}")
+
+
 def main():
     args = parse_args()
 
@@ -362,9 +391,13 @@ def main():
 
         # Fast async path for file processing
         if args.fast and args.pair_file:
-            asyncio.run(process_pairs_fast(ctx, pairs, args))
+            yes_pairs, no_pairs = asyncio.run(process_pairs_fast(ctx, pairs, args))
+            if args.save:
+                save_results(args.pair_file, args.save, yes_pairs, no_pairs)
             return
 
+        yes_pairs = []
+        no_pairs = []
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
             prompt, response = custom_context(model, tokenizer, args, ctx, pair)
@@ -380,6 +413,13 @@ def main():
             if not args.pair_file:
                 print(response)
             print(f"{orig_pair} {'YES' if yes else 'NO'} {as_txt}")
+            if yes:
+                yes_pairs.append(orig_pair)
+            else:
+                no_pairs.append(orig_pair)
+
+        if args.save and args.pair_file:
+            save_results(args.pair_file, args.save, yes_pairs, no_pairs)
     elif args.pair:
         # Single pair mode (no ctx)
         yes = False
