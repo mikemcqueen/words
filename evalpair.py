@@ -4,6 +4,7 @@
 
 import argparse
 import asyncio
+import itertools
 import signal
 import sys
 
@@ -289,10 +290,12 @@ def parse_args():
                         help="Repeat last n tokens (default: 32)")
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
-    parser.add_argument('--save', type=str, metavar='TAG',
-                        help="Save YES/NO pairs to {pair-file}.{TAG}.yes and .no")
+    parser.add_argument('--save', nargs='?', const='', default=None, metavar='TAG',
+                        help="Save YES/NO pairs to {pair-file}[.TAG].yes and .no")
     parser.add_argument('--last-pair', type=str, metavar='TYPE,PAIR',
                         help="Skip pairs in --pair-file up to and including this pair, then resume processing")
+    parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
+                        help='Process only N pairs from pair-file')
 
     args = parser.parse_args()
 
@@ -319,12 +322,16 @@ def parse_args():
         parser.error("--prompt/--prompt-file requires --pair or --pair-file")
 
     # --save requires --pair-file
-    if args.save and not args.pair_file:
+    if args.save is not None and not args.pair_file:
         parser.error("--save requires --pair-file")
 
     # --last-pair requires --pair-file
     if args.last_pair and not args.pair_file:
         parser.error("--last-pair requires --pair-file")
+
+    # --num-pairs requires --pair-file
+    if args.num_pairs and not args.pair_file:
+        parser.error("--num-pairs requires --pair-file")
 
     return args
 
@@ -339,21 +346,30 @@ def single_pair_generator(pair_string):
     yield pair_string
 
 def file_pair_generator(filename, last_pair=None):
-    """Generator that yields pairs from a file. If last_pair is set, skip up to and including it, then yield the rest."""
-    with open(filename, 'r') as f:
-        if last_pair:
-            found = False
-            for line in f:
-                pair = line.strip()
-                if pair == last_pair:
-                    found = True
-                    break
-            if not found:
-                raise ValueError(f"--last-pair '{last_pair}' not found in {filename}")
+    """Generator that yields pairs from a file. If last_pair is set, skip up to and including it, then yield the rest.
+    Returns (generator, start_index) where start_index is the 0-based index of the first pair yielded."""
+    def _gen(f, start_index):
         for line in f:
             pair = line.strip()
             if pair:
                 yield pair
+
+    f = open(filename, 'r')
+    start_index = 0
+    if last_pair:
+        found = False
+        for line in f:
+            pair = line.strip()
+            if pair:
+                start_index += 1
+            if pair == last_pair:
+                found = True
+                break
+        if not found:
+            f.close()
+            raise ValueError(f"--last-pair '{last_pair}' not found in {filename}")
+
+    return _gen(f, start_index), start_index
 
 def is_yes_response(model, response: str) -> bool:
     if not model:
@@ -376,14 +392,15 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
-def save_results(pair_file, tag, yes_pairs, no_pairs):
-    """Write YES/NO pairs to results/{basename}.{tag}.yes and .no files."""
+def save_results(pair_file, tag, yes_pairs, no_pairs, start_pair=0):
+    """Write YES/NO pairs to results/{basename}.{tag}.{start_pair}.yes and .no files."""
     import os
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
     basename = os.path.basename(pair_file)
-    yes_file = f"{results_dir}/{basename}.{tag}.yes"
-    no_file = f"{results_dir}/{basename}.{tag}.no"
+    tag_part = f".{tag}" if tag else ""
+    yes_file = f"{results_dir}/{basename}{tag_part}.{start_pair}.yes"
+    no_file = f"{results_dir}/{basename}{tag_part}.{start_pair}.no"
     with open(yes_file, 'w') as f:
         for p in yes_pairs:
             f.write(p + '\n')
@@ -412,18 +429,21 @@ def main():
     if ctx:
         # Use generators for common handling of --pair and --pair-file
         pairs = None
+        start_pair = 0
         if args.pair:
             pairs = single_pair_generator(args.pair)
         elif args.pair_file:
-            pairs = file_pair_generator(args.pair_file, last_pair=args.last_pair)
+            pairs, start_pair = file_pair_generator(args.pair_file, last_pair=args.last_pair)
+            if args.num_pairs:
+                pairs = itertools.islice(pairs, args.num_pairs)
         if not pairs:
             assert False, "TBD"
 
         # Fast async path for file processing
         if args.fast and args.pair_file:
             yes_pairs, no_pairs = asyncio.run(process_pairs_fast(ctx, pairs, args))
-            if args.save:
-                save_results(args.pair_file, args.save, yes_pairs, no_pairs)
+            if args.save is not None:
+                save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
             return
 
         yes_pairs = []
@@ -449,7 +469,7 @@ def main():
                 no_pairs.append(orig_pair)
 
         if args.save and args.pair_file:
-            save_results(args.pair_file, args.save, yes_pairs, no_pairs)
+            save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
     elif args.pair:
         # Single pair mode (no ctx)
         yes = False
@@ -463,7 +483,8 @@ def main():
     else: # args.pair_file without ctx
         # File mode
         try:
-            for pair in file_pair_generator(args.pair_file):
+            pairs, _ = file_pair_generator(args.pair_file)
+            for pair in pairs:
                 process_pair(model, tokenizer, args, pair, args.questions)
         except FileNotFoundError:
             print(f"Error: File not found: {args.pair_file}", file=sys.stderr)
