@@ -4,9 +4,12 @@
 
 import argparse
 import asyncio
+import signal
 import sys
 
 import httpx
+
+signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import MAX_CONCURRENT, SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request
 from info import info
@@ -68,12 +71,20 @@ async def process_pairs_fast(ctx: str, pairs, args):
     async def process(client, orig_pair):
         return await process_pair_async(client, args, ctx, orig_pair)
 
-    async for result in run_concurrent(pairs, process, MAX_CONCURRENT, args.timeout):
-        print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
-        if result[1]:
-            yes_pairs.append(result[0])
-        else:
-            no_pairs.append(result[0])
+    last_processed = None
+    try:
+        async for result in run_concurrent(pairs, process, MAX_CONCURRENT, args.timeout):
+            last_processed = result[0]
+            print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
+            if result[1]:
+                yes_pairs.append(result[0])
+            else:
+                no_pairs.append(result[0])
+    except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
+        msg = f"\nInterrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO."
+        if last_processed:
+            msg += f" Resume with: --last-pair {last_processed}"
+        print(msg)
 
     return yes_pairs, no_pairs
 
@@ -280,6 +291,8 @@ def parse_args():
                         help="Request timeout in seconds (default: 300)")
     parser.add_argument('--save', type=str, metavar='TAG',
                         help="Save YES/NO pairs to {pair-file}.{TAG}.yes and .no")
+    parser.add_argument('--last-pair', type=str, metavar='TYPE,PAIR',
+                        help="Skip pairs in --pair-file up to and including this pair, then resume processing")
 
     args = parser.parse_args()
 
@@ -309,6 +322,10 @@ def parse_args():
     if args.save and not args.pair_file:
         parser.error("--save requires --pair-file")
 
+    # --last-pair requires --pair-file
+    if args.last_pair and not args.pair_file:
+        parser.error("--last-pair requires --pair-file")
+
     return args
 
 def flip(pair: str) -> str:
@@ -321,9 +338,18 @@ def single_pair_generator(pair_string):
     """Generator that yields a single pair string, then ends."""
     yield pair_string
 
-def file_pair_generator(filename):
-    """Generator that yields all pairs read from a file, one per line."""
+def file_pair_generator(filename, last_pair=None):
+    """Generator that yields pairs from a file. If last_pair is set, skip up to and including it, then yield the rest."""
     with open(filename, 'r') as f:
+        if last_pair:
+            found = False
+            for line in f:
+                pair = line.strip()
+                if pair == last_pair:
+                    found = True
+                    break
+            if not found:
+                raise ValueError(f"--last-pair '{last_pair}' not found in {filename}")
         for line in f:
             pair = line.strip()
             if pair:
@@ -351,9 +377,13 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
 
 
 def save_results(pair_file, tag, yes_pairs, no_pairs):
-    """Write YES/NO pairs to {pair_file}.{tag}.yes and .no files."""
-    yes_file = f"{pair_file}.{tag}.yes"
-    no_file = f"{pair_file}.{tag}.no"
+    """Write YES/NO pairs to results/{basename}.{tag}.yes and .no files."""
+    import os
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+    basename = os.path.basename(pair_file)
+    yes_file = f"{results_dir}/{basename}.{tag}.yes"
+    no_file = f"{results_dir}/{basename}.{tag}.no"
     with open(yes_file, 'w') as f:
         for p in yes_pairs:
             f.write(p + '\n')
@@ -385,7 +415,7 @@ def main():
         if args.pair:
             pairs = single_pair_generator(args.pair)
         elif args.pair_file:
-            pairs = file_pair_generator(args.pair_file)
+            pairs = file_pair_generator(args.pair_file, last_pair=args.last_pair)
         if not pairs:
             assert False, "TBD"
 
