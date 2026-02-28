@@ -87,7 +87,7 @@ async def process_pairs_fast(ctx: str, pairs, args):
             msg += f" Resume with: --last-pair {last_processed}"
         print(msg)
 
-    return yes_pairs, no_pairs
+    return yes_pairs, no_pairs, last_processed
 
 
 def get_first_line(text: str) -> str:
@@ -441,13 +441,16 @@ def main():
 
         # Fast async path for file processing
         if args.fast and args.pair_file:
-            yes_pairs, no_pairs = asyncio.run(process_pairs_fast(ctx, pairs, args))
+            yes_pairs, no_pairs, last_processed = asyncio.run(process_pairs_fast(ctx, pairs, args))
+            if args.num_pairs and last_processed and len(yes_pairs) + len(no_pairs) == args.num_pairs:
+                print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
             if args.save is not None:
                 save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
             return
 
         yes_pairs = []
         no_pairs = []
+        last_processed = None
         for orig_pair in pairs:
             pair = orig_pair.replace(',', ' ')
             prompt, response = custom_context(model, tokenizer, args, ctx, pair)
@@ -460,6 +463,7 @@ def main():
                 if yes:
                     as_txt = f"as {pair}"
 
+            last_processed = orig_pair
             if not args.pair_file:
                 print(response)
             print(f"{orig_pair} {'YES' if yes else 'NO'} {as_txt}")
@@ -467,6 +471,9 @@ def main():
                 yes_pairs.append(orig_pair)
             else:
                 no_pairs.append(orig_pair)
+
+        if args.num_pairs and last_processed and len(yes_pairs) + len(no_pairs) == args.num_pairs:
+            print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
 
         if args.save and args.pair_file:
             save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
