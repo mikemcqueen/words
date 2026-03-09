@@ -81,8 +81,10 @@ async def process_pairs_fast(ctx: str, pairs, args):
                 yes_pairs.append(result[0])
             else:
                 no_pairs.append(result[0])
-    except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
-        msg = f"\nInterrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO."
+    except BaseException as e:
+        if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
+            print(f"\n{type(e).__name__}: {e}")
+        msg = f"Interrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO."
         if last_processed:
             msg += f" Resume with: --last-pair {last_processed}"
         print(msg)
