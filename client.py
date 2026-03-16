@@ -8,7 +8,32 @@ import time
 
 import httpx
 
+from model import add_thinking
+
 SERVER_URL = "http://localhost"
+
+SERVERS = {
+    "juniper": "192.168.0.111",
+    "mini": "192.168.0.114",
+}
+SERVER_IPS = {ip: name for name, ip in SERVERS.items()}
+
+
+def resolve_host(host: str) -> str:
+    """If host is a known server name, return http://{ip}. Otherwise return as-is.
+    Raises SystemExit if it looks like a bare name but isn't recognized."""
+    if host in SERVERS:
+        return f"http://{SERVERS[host]}"
+    if "." not in host and "://" not in host and host != "localhost":
+        print(f"Error: unknown server name '{host}'")
+        sys.exit(1)
+    return host
+
+
+def get_server_name(host: str) -> str | None:
+    """Return a friendly server name for a host URL, or None if unknown."""
+    bare = host.split("://", 1)[-1]
+    return SERVER_IPS.get(bare)
 
 
 def get_num_hosts():
@@ -93,13 +118,16 @@ async def _post_with_retry(client, *args, max_retries=3, **kwargs):
 
 def get_inference_params(args) -> dict:
     """Extract inference parameters from args into a canonical dict."""
-    return {
+    params = {
         "temperature": args.temp,
         "top_p": args.top_p,
         "min_p": args.min_p,
         "repeat_penalty": args.repeat_penalty,
         "repeat_last_n": args.repeat_last_n,
     }
+    if args.think:
+        add_thinking(params, args.model_id)
+    return params
 
 
 async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
@@ -108,6 +136,20 @@ async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tu
     response = await _post_with_retry(client, url, json={"text": prompt})
     js = response.json()
     return js["response"], js, js
+
+
+def query_model_id(host: str, port: int, key: str = None) -> str:
+    """GET /v1/models and return the first model's ID."""
+    url = f"{host}:{port}/v1/models"
+    headers = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    response = httpx.get(url, headers=headers, timeout=10)
+    response.raise_for_status()
+    data = response.json().get("data", [])
+    if not data:
+        raise RuntimeError(f"No models returned from {url}")
+    return data[0]["id"]
 
 
 async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku") -> tuple[str, dict]:

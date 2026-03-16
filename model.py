@@ -226,6 +226,17 @@ def clear_cache(device):
     elif device.type == "cuda":
         torch.cuda.empty_cache()
 
+def supports_thinking(model_id: str) -> bool:
+    """Return True if the remote model supports thinking output."""
+    return model_id.upper().startswith("GLM")
+
+
+def add_thinking(payload: dict, model_id: str) -> None:
+    """Modify an OpenAI-style request payload to enable thinking for the given model."""
+    if model_id.upper().startswith("GLM"):
+        payload["think"] = True
+
+
 def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> str:
     """Unified generation for torch and MLX models."""
     if getattr(model, 'is_mlx', False):

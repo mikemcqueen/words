@@ -12,9 +12,9 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import MAX_CONCURRENT, SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request
+from client import MAX_CONCURRENT, SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id
 from info import info
-from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text
+from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text, supports_thinking
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     return generate_text(model, tokenizer, prompt, max_new_tokens)
@@ -290,6 +290,8 @@ def parse_args():
                         help="Repeat penalty (default: 1.0)")
     parser.add_argument('--repeat-last-n', '--rln', type=int, default=32,
                         help="Repeat last n tokens (default: 32)")
+    parser.add_argument('--think', action="store_true",
+                        help="Enable thinking output (for models that support it)")
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
     parser.add_argument('--save', nargs='?', const='', default=None, metavar='TAG',
@@ -418,6 +420,10 @@ def main():
 
     if args.fast:
         model, tokenizer = None, None
+        args.model_id = query_model_id(args.host, args.port, args.key)
+        if args.think and not supports_thinking(args.model_id):
+            print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)
+            sys.exit(1)
     else:
         _, model, tokenizer = load_model(args.model)
         if is_gemma_model(model) and is_instruct_model(model):

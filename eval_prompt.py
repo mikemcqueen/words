@@ -18,7 +18,8 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_num_hosts, get_inference_params, send_yesno_request, send_openai_request
+from client import run_concurrent, get_num_hosts, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name
+from model import supports_thinking
 
 # Configuration
 PAIRS_FILE = "pairs.json"
@@ -154,9 +155,15 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     score = (correct / total) * 100
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
 
-    # Save result with filename: {source_file}_{prompt_id}.json
+    # Save result with filename: {source_file}_{prompt_id}[_{server}].json
     RESULTS_DIR.mkdir(exist_ok=True)
-    result_file = RESULTS_DIR / f"{source_file}_{prompt_id}.json"
+    base_name = f"{source_file}_{prompt_id}"
+    server_name = get_server_name(args.host)
+    if server_name:
+        base_name += f"_{server_name}"
+    if args.tag:
+        base_name += f"_{args.tag}"
+    result_file = RESULTS_DIR / f"{base_name}.json"
 
     result_data = {
         "prompt_id": prompt_id,
@@ -165,7 +172,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "score": score,
         "correct": correct,
         "total": total,
-        "model": MODEL,
+        "model": args.model_id,
         "inference_params": get_inference_params(args),
         "details": details
     }
@@ -287,10 +294,20 @@ Examples:
                       help="Request timeout in seconds (default: 300)")
     parser.add_argument("--pairs", type=str, default=PAIRS_FILE,
                       help=f"Pairs file (default: {PAIRS_FILE})")
+    parser.add_argument("--think", action="store_true",
+                      help="Enable thinking output (for models that support it)")
     parser.add_argument("-v", "--verbose", action="store_true",
                       help="Show actual response and message")
+    parser.add_argument("--tag", type=str,
+                      help="Tag to append to result filename")
 
     args = parser.parse_args()
+    args.host = resolve_host(args.host)
+
+    args.model_id = query_model_id(args.host, args.port, args.key)
+    if args.think and not supports_thinking(args.model_id):
+        print(f"Error: --think not supported for model '{args.model_id}'")
+        return
 
     pairs = load_pairs(args.pairs)
 

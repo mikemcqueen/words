@@ -1,6 +1,6 @@
 [
     {
         "id": "prompt_1",
-        "text": "Does '{PAIR}' signify something? Answer YES if these words serve as a name, description, or clue pointing to an identifiable thing or concept. Answer NO if you cannot identify what they point to — do not speculate or guess. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist."
+        "text": "Does '{PAIR}' signify something? Answer YES if these words serve as a name, description, or clue pointing to an identifiable thing or concept. Answer NO if you cannot identify what they point to — do not speculate or guess. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist. Answer YES or NO only."
     }
 ]
