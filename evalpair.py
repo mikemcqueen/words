@@ -12,7 +12,7 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import MAX_CONCURRENT, SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id
+from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text, supports_thinking
 
@@ -65,7 +65,7 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
 
 
 async def process_pairs_fast(ctx: str, pairs, args):
-    """Process all pairs with MAX_CONCURRENT in flight at once."""
+    """Process all pairs with max_concurrent in flight at once."""
     yes_pairs = []
     no_pairs = []
 
@@ -74,7 +74,7 @@ async def process_pairs_fast(ctx: str, pairs, args):
 
     last_processed = None
     try:
-        async for result in run_concurrent(pairs, process, MAX_CONCURRENT, args.timeout):
+        async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
             last_processed = result[0]
             print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
             if result[1]:
@@ -298,6 +298,8 @@ def parse_args():
                         help="Save YES/NO pairs to {pair-file}[.TAG].yes and .no")
     parser.add_argument('--last-pair', type=str, metavar='TYPE,PAIR',
                         help="Skip pairs in --pair-file up to and including this pair, then resume processing")
+    parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
+                        help="Max concurrent requests (default: 1)")
     parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
                         help='Process only N pairs from pair-file')
 

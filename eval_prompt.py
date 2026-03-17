@@ -18,7 +18,7 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_num_hosts, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name
+from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name
 from model import supports_thinking
 
 # Configuration
@@ -105,11 +105,11 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
 
 
 async def eval_all_pairs(prompt_text: str, pairs: list, args) -> list:
-    """Run all pair evaluations with MAX_CONCURRENT in flight at once."""
+    """Run all pair evaluations with max_concurrent in flight at once."""
     async def process(client, p):
         return await eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"], args)
 
-    return [r async for r in run_concurrent(pairs, process, get_num_hosts(), args.timeout)]
+    return [r async for r in run_concurrent(pairs, process, args.max_concurrent, args.timeout)]
 
 
 def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
@@ -298,6 +298,8 @@ Examples:
                       help="Enable thinking output (for models that support it)")
     parser.add_argument("-v", "--verbose", action="store_true",
                       help="Show actual response and message")
+    parser.add_argument("--max-concurrent", "--mc", type=int, default=1,
+                      help="Max concurrent requests (default: 1)")
     parser.add_argument("--tag", type=str,
                       help="Tag to append to result filename")
 

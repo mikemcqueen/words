@@ -36,13 +36,6 @@ def get_server_name(host: str) -> str | None:
     return SERVER_IPS.get(bare)
 
 
-def get_num_hosts():
-    """Return number of backend uvicorn hosts. May later query nginx."""
-    return 1
-
-
-MAX_CONCURRENT = get_num_hosts() # + 1
-
 
 async def run_concurrent(items, process_fn, max_concurrent, timeout):
     """
