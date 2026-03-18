@@ -33,6 +33,22 @@ def load_pairs(filepath: str) -> List[Dict]:
         return json.load(f)
 
 
+def load_expected_pairs(filepath: str, expected: str) -> List[Dict]:
+    """Load pairs from a text file (one comma-separated pair per line), all with the same expected value."""
+    with open(filepath) as f:
+        return [{"pair": line.strip().replace(",", " "), "expected": expected}
+                for line in f if line.strip()]
+
+
+def load_pairs_from_args(args) -> List[Dict]:
+    if args.yes_pairs:
+        return load_expected_pairs(args.yes_pairs, "YES")
+    elif args.no_pairs:
+        return load_expected_pairs(args.no_pairs, "NO")
+    else:
+        return load_pairs(args.pairs)
+
+
 def load_prompts_from_file(filepath: Path) -> List[Dict]:
     """Load prompts from a single file, adding source_file to each prompt."""
     with open(filepath) as f:
@@ -157,14 +173,21 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     score = (correct / total) * 100
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
 
-    # Save result with filename: {source_file}_{prompt_id}[_{server}].json
+    # Save result with filename: {source_file}_{prompt_id}[_{server}][_{sys}].mc{N}.json
     RESULTS_DIR.mkdir(exist_ok=True)
     base_name = f"{source_file}_{prompt_id}"
+    if args.yes_pairs:
+        base_name += f"_{Path(args.yes_pairs).name}"
+    elif args.no_pairs:
+        base_name += f"_{Path(args.no_pairs).name}"
     server_name = get_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
+    if args.system_prompt_filename:
+        base_name += f"_{Path(args.system_prompt_filename).stem}"
+    base_name += f"_mc{args.max_concurrent}"
     if args.tag:
-        base_name += f"_{args.tag}"
+        base_name += f".{args.tag}"
     result_file = RESULTS_DIR / f"{base_name}.json"
 
     result_data = {
@@ -227,7 +250,7 @@ def eval_all_prompts(args) -> List[Dict]:
         return []
 
     # Load pairs once for efficiency
-    pairs = load_pairs(args.pairs)
+    pairs = load_pairs_from_args(args)
 
     print(f"\nEvaluating {len(prompts)} prompts...\n")
     print("=" * 70)
@@ -297,8 +320,13 @@ Examples:
                       help="Repeat last n tokens (default: 32)")
     parser.add_argument("--timeout", type=float, default=300.0,
                       help="Request timeout in seconds (default: 300)")
-    parser.add_argument("--pairs", type=str, default=PAIRS_FILE,
-                      help=f"Pairs file (default: {PAIRS_FILE})")
+    pairs_group = parser.add_mutually_exclusive_group()
+    pairs_group.add_argument("--pairs", type=str,
+                      help=f"Pairs JSON file with expected values (default: {PAIRS_FILE})")
+    pairs_group.add_argument("--yes-pairs", type=str,
+                      help="Pairs text file (one per line) — all expected YES")
+    pairs_group.add_argument("--no-pairs", type=str,
+                      help="Pairs text file (one per line) — all expected NO")
     parser.add_argument("--think", action="store_true",
                       help="Enable thinking output (for models that support it)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -309,6 +337,9 @@ Examples:
                       help="Tag to append to result filename")
 
     args = parser.parse_args()
+
+    if not args.pairs and not args.yes_pairs and not args.no_pairs:
+        args.pairs = PAIRS_FILE
 
     if args.system_prompt:
         p = Path(args.system_prompt)
@@ -327,7 +358,10 @@ Examples:
         print(f"Error: --think not supported for model '{args.model_id}'")
         return
 
-    pairs = load_pairs(args.pairs)
+    pairs = load_pairs_from_args(args)
+    if not pairs:
+        print("Error: no pairs loaded")
+        return
 
     if args.all:
         if args.prompt_file:
