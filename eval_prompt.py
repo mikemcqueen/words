@@ -136,7 +136,9 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
 
     # Run tests concurrently
     total = len(pairs)
+    wall_start = time.time()
     details = asyncio.run(eval_all_pairs(prompt_text, pairs, args))
+    wall_elapsed = time.time() - wall_start
     correct = sum(1 for d in details if d['correct'])
 
     # Print results
@@ -173,6 +175,8 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "correct": correct,
         "total": total,
         "model": args.model_id,
+        "max_concurrent": args.max_concurrent,
+        "seconds_elapsed": wall_elapsed,
         "inference_params": get_inference_params(args),
         "details": details
     }
