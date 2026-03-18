@@ -39,9 +39,7 @@ you were tasked with.
 
 ## Completion Condition
 
-If the score is 100%, run the same prompt up to 3 more times, adding the argument --tag N, where N is the iteration
-number (1-3), which will change the output filename. Read the results of each additional iteration, and if the score
-of each those is also 100%, output `<promise>DONE</promise>` and stop iterating.
+If the score is 100%, run tasks/verify_complete.
 
 Otherwise, analyze the results to understand why specific word pairs failed, and continue
 from **What To Do** above, using your analysis to design a better prompt.

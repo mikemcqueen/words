@@ -174,6 +174,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "score": score,
         "correct": correct,
         "total": total,
+        "system_prompt": args.system_prompt_filename,
         "model": args.model_id,
         "max_concurrent": args.max_concurrent,
         "seconds_elapsed": wall_elapsed,
@@ -277,7 +278,7 @@ Examples:
     parser.add_argument("-f", "--prompt-file", type=str,
                       help="Prompt file name (without .json), e.g. 'good_prompts'")
     parser.add_argument("-s", "--system-prompt", type=str,
-                      help="System prompt (optional)")
+                      help="System prompt file (optional)")
     parser.add_argument("-c", "--client", choices=["yesno", "openai"], default="openai",
                       help="Client type: 'yesno' or 'openai' (default)")
     parser.add_argument("--host", default="http://localhost",
@@ -308,6 +309,17 @@ Examples:
                       help="Tag to append to result filename")
 
     args = parser.parse_args()
+
+    if args.system_prompt:
+        p = Path(args.system_prompt)
+        if not p.is_file():
+            print(f"Error: system prompt file not found: {args.system_prompt}", file=sys.stderr)
+            sys.exit(1)
+        args.system_prompt_filename = p.name
+        args.system_prompt = p.read_text().strip()
+    else:
+        args.system_prompt_filename = None
+
     args.host = resolve_host(args.host)
 
     args.model_id = query_model_id(args.host, args.port, args.key)

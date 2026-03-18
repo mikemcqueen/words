@@ -7,12 +7,13 @@ import asyncio
 import itertools
 import signal
 import sys
+from pathlib import Path
 
 import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id
+from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host
 from info import info
 from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text, supports_thinking
 
@@ -272,7 +273,7 @@ def parse_args():
 
     # Server/client options (used with --fast)
     parser.add_argument('-s', '--system-prompt', type=str,
-                        help='System prompt (optional, used with --fast)')
+                        help='System prompt file (optional, used with --fast)')
     parser.add_argument('-c', '--client', choices=["yesno", "openai"], default="openai",
                         help="Client type: 'yesno' or 'openai' (default)")
     parser.add_argument('--host', default="http://localhost",
@@ -304,6 +305,13 @@ def parse_args():
                         help='Process only N pairs from pair-file')
 
     args = parser.parse_args()
+
+    if args.system_prompt:
+        p = Path(args.system_prompt)
+        if not p.is_file():
+            print(f"Error: system prompt file not found: {args.system_prompt}", file=sys.stderr)
+            sys.exit(1)
+        args.system_prompt = p.read_text().strip()
 
     if not args.fast and not is_instruct(args.model):
         print(f"{get_model_name(args.model)} is not an instruct model")
@@ -422,6 +430,7 @@ def main():
 
     if args.fast:
         model, tokenizer = None, None
+        args.host = resolve_host(args.host)
         args.model_id = query_model_id(args.host, args.port, args.key)
         if args.think and not supports_thinking(args.model_id):
             print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)

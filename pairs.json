@@ -2,7 +2,7 @@
     {"pair": "aquatic bird", "expected": "YES"},
     {"pair": "red bird", "expected": "YES"},
     {"pair": "eden woman", "expected": "YES"},
-    {"pair": "one wood", "expected": "YES"},
+    {"pair": "1 wood", "expected": "YES"},
     
     {"pair": "banana eighteen", "expected": "NO"},
     {"pair": "aquatic yankee", "expected": "NO"},
