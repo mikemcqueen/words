@@ -64,27 +64,32 @@ def format_result(orig_pair, yes, as_txt):
 
 
 async def async_request_and_classify(client, args, prompt):
-    """Send request and return YES/NO/None classification."""
+    """Send request and return (YES/NO/None, truncated) classification."""
     if args.client == "yesno":
         response, _, _ = await send_yesno_request(client, args, prompt)
-    else:
+        return is_yes_response(None, response), False
+
+    for attempt in range(3):
         response, _, payload = await send_openai_request(client, args, prompt)
         if payload.get("finish_reason") != "stop":
-            return None
-    return is_yes_response(None, response)
+            continue
+        result = is_yes_response(None, response)
+        if result is not None:
+            return result, False
+    return None, True
 
 
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    yes = await async_request_and_classify(client, args, prompt)
+    yes, bad_response = await async_request_and_classify(client, args, prompt)
     as_txt = ""
 
-    if yes is False:
+    if not yes:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        yes = await async_request_and_classify(client, args, prompt)
+        yes, bad_flip_response = await async_request_and_classify(client, args, prompt)
         if yes:
             as_txt = f"as {pair}"
 
@@ -95,6 +100,7 @@ async def process_pairs_async(ctx: str, pairs, args):
     """Process all pairs with max_concurrent in flight at once."""
     yes_pairs = []
     no_pairs = []
+    bad_pairs = []
 
     async def process(client, orig_pair):
         return await process_pair_async(client, args, ctx, orig_pair)
@@ -102,21 +108,24 @@ async def process_pairs_async(ctx: str, pairs, args):
     last_processed = None
     try:
         async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
-            last_processed = result[0]
             print(format_result(*result))
-            if result[1]:
-                yes_pairs.append(result[0])
+            pair, yes, _ = result
+            last_processed = pair
+            if yes is True:
+                yes_pairs.append(pair)
+            elif yes is False:
+                no_pairs.append(pair)
             else:
-                no_pairs.append(result[0])
+                bad_pairs.append(pair)
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
             print(f"\n{type(e).__name__}: {e}")
-        msg = f"Interrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO."
+        msg = f"Interrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO, {len(bad_pairs)} BAD."
         if last_processed:
             msg += f" Resume with: --last-pair {last_processed}"
         print(msg)
 
-    return yes_pairs, no_pairs, last_processed
+    return yes_pairs, no_pairs, bad_pairs, last_processed
 
 
 def get_first_line(text: str) -> str:
@@ -327,9 +336,9 @@ def get_pairs(args):
     return pairs, start_pair
 
 
-def handle_results(args, yes_pairs, no_pairs, last_processed, start_pair):
+def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair):
     """Print resume info and save results if requested."""
-    total = len(yes_pairs) + len(no_pairs)
+    total = len(yes_pairs) + len(no_pairs) + len(bad_pairs)
     if args.num_pairs and last_processed and total == args.num_pairs:
         print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
     if args.save is not None and args.pair_file:
@@ -358,11 +367,12 @@ def main():
     pairs, start_pair = get_pairs(args)
 
     if args.model is None and args.pair_file:
-        yes, no, last = asyncio.run(process_pairs_async(ctx, pairs, args))
+        yes, no, bad, last = asyncio.run(process_pairs_async(ctx, pairs, args))
     else:
         yes, no, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
+        bad = []
 
-    handle_results(args, yes, no, last, start_pair)
+    handle_results(args, yes, no, bad, last, start_pair)
 
 if __name__ == "__main__":
     main()
