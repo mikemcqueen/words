@@ -7,6 +7,8 @@ import asyncio
 import itertools
 import signal
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -57,25 +59,59 @@ def is_yes_response(model, response: str):
     return None
 
 
+def fmt_duration(s):
+    """Format seconds as compact duration: 5s, 3m30s, 2h03m04s, 1 day, 2h03m04s."""
+    td = str(timedelta(seconds=round(s)))
+    if ", " in td:
+        days, hms = td.split(", ")
+    else:
+        days, hms = None, td
+    h, m, sec = hms.split(":")
+    parts = []
+    if h != "0":
+        parts.append(f"{h}h")
+    if parts or m != "00":
+        parts.append(f"{int(m)}m")
+    parts.append(f"{sec}s")
+    result = "".join(parts)
+    if days:
+        result = f"{days}, {result}"
+    return result
+
+
+def get_retry_stats(retry_map):
+    """Return (total_retries, total_duration) across all pairs/hosts/reasons."""
+    total_retries = 0
+    total_duration = 0.0
+    for hosts in retry_map.values():
+        for reasons in hosts.values():
+            for durs in reasons.values():
+                total_retries += len(durs)
+                total_duration += sum(durs)
+    return total_retries, total_duration
+
+
 def print_retries(retry_map, file=sys.stdout):
-    """Print retry map as: pair  {host reason: N, ...},{host2 ...}"""
+    """Print retry map as: pair  {host reason: N @ duration, ...},{host2 ...}"""
     max_len = max(len(pair) for pair in retry_map)
     print("Retries:", file=file)
     for pair, hosts in retry_map.items():
         parts = []
         for host, reasons in hosts.items():
-            counts = ", ".join(f"{r}: {n}" for r, n in reasons.items())
+            counts = ", ".join(f"{r}: {len(durs)} @ {fmt_duration(sum(durs))}" for r, durs in reasons.items())
             parts.append(f"{{{host} {counts}}}")
         print(f"  {pair:<{max_len}}  {','.join(parts)}", file=file)
+    total_retries, total_duration = get_retry_stats(retry_map)
+    print(f"Total: {total_retries} retries @ {fmt_duration(total_duration)}", file=file)
 
 
 def merge_retries(a, b):
-    """Merge {host: {reason: count}} dicts, adding counts."""
+    """Merge {host: {reason: [durations]}} dicts, extending lists."""
     for host, reasons in b.items():
         if host not in a:
             a[host] = {}
-        for reason, count in reasons.items():
-            a[host][reason] = a[host].get(reason, 0) + count
+        for reason, durations in reasons.items():
+            a[host].setdefault(reason, []).extend(durations)
     return a
 
 
@@ -94,21 +130,23 @@ async def async_request_and_classify(client, args, prompt):
         return is_yes_response(None, response), meta.get('upstream'), {}
 
     retries = {}
-    def record_retry(payload):
+    def record_retry(payload, duration):
         host = payload.get('upstream') or get_server_name(args.host) or args.host
         reason = payload.get('finish_reason')
         retries.setdefault(host, {})
-        retries[host][reason] = retries[host].get(reason, 0) + 1
+        retries[host].setdefault(reason, []).append(duration)
 
     for attempt in range(3):
+        t0 = time.monotonic()
         response, _, payload = await send_openai_request(client, args, prompt)
+        duration = time.monotonic() - t0
         if payload.get("finish_reason") != "stop":
-            record_retry(payload)
+            record_retry(payload, duration)
             continue
         result = is_yes_response(None, response)
         if result is not None:
             return result, payload.get('upstream'), retries
-        record_retry(payload)
+        record_retry(payload, duration)
     return None, None, retries
 
 
