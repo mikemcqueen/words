@@ -18,7 +18,7 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name
+from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
 from model import supports_thinking
 
 # Configuration
@@ -352,6 +352,7 @@ Examples:
         args.system_prompt_filename = None
 
     args.host = resolve_host(args.host)
+    auto_detect_max_concurrent(args)
 
     args.model_id = query_model_id(args.host, args.port, args.key)
     if args.think and not supports_thinking(args.model_id):

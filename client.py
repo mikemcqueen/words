@@ -138,6 +138,33 @@ def get_max_concurrent(host: str, port: int, nginx_config=None):
 
 
 
+def auto_detect_max_concurrent(args):
+    """Auto-detect max-concurrent from nginx config, mutating args in place."""
+    nginx_config = getattr(args, 'nginx_config', None)
+    result = get_max_concurrent(args.host, args.port, nginx_config)
+    if not result:
+        return
+    mc, upstream = result
+    user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
+    if not user_set_mc:
+        args.max_concurrent = mc
+        server_name = get_server_name(args.host)
+        if server_name == "localhost":
+            server_desc = ", ".join(
+                f"{s['name'] or s['ip']}:{s['max_conns']}"
+                for s in upstream['servers']
+            )
+            print(f"nginx: auto-set --max-concurrent={mc} "
+                  f"({len(upstream['servers'])} servers: {server_desc}, "
+                  f"queue={upstream['queue_size']})")
+        else:
+            print(f"nginx: auto-set --max-concurrent={mc} "
+                  f"(from {server_name} max_conns)")
+    elif args.max_concurrent > upstream['total_capacity']:
+        print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
+              f"nginx capacity ({upstream['total_capacity']})")
+
+
 async def run_concurrent(items, process_fn, max_concurrent, timeout):
     """
     Process items with bounded concurrency, yielding results as they complete.

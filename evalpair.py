@@ -13,7 +13,7 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, parse_nginx_upstream, get_server_name, get_max_concurrent
+from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text, supports_thinking
 
@@ -374,28 +374,7 @@ def main():
         model, tokenizer = None, None
         args.host = resolve_host(args.host)
 
-        # Auto-detect max-concurrent from nginx config
-        result = get_max_concurrent(args.host, args.port, args.nginx_config)
-        if result:
-            mc, upstream = result
-            user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
-            if not user_set_mc:
-                args.max_concurrent = mc
-                server_name = get_server_name(args.host)
-                if server_name == "localhost":
-                    server_desc = ", ".join(
-                        f"{s['name'] or s['ip']}:{s['max_conns']}"
-                        for s in upstream['servers']
-                    )
-                    print(f"nginx: auto-set --max-concurrent={mc} "
-                          f"({len(upstream['servers'])} servers: {server_desc}, "
-                          f"queue={upstream['queue_size']})")
-                else:
-                    print(f"nginx: auto-set --max-concurrent={mc} "
-                          f"(from {server_name} max_conns)")
-            elif args.max_concurrent > upstream['total_capacity']:
-                print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
-                      f"nginx capacity ({upstream['total_capacity']})")
+        auto_detect_max_concurrent(args)
 
         args.model_id = query_model_id(args.host, args.port, args.key)
         if args.think and not supports_thinking(args.model_id):
