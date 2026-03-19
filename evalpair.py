@@ -63,25 +63,28 @@ def format_result(orig_pair, yes, as_txt):
     return f"{orig_pair} {label} {as_txt}"
 
 
+async def async_request_and_classify(client, args, prompt):
+    """Send request and return YES/NO/None classification."""
+    if args.client == "yesno":
+        response, _, _ = await send_yesno_request(client, args, prompt)
+    else:
+        response, _, payload = await send_openai_request(client, args, prompt)
+        if payload.get("finish_reason") != "stop":
+            return None
+    return is_yes_response(None, response)
+
+
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    if args.client == "yesno":
-        response, _, _ = await send_yesno_request(client, args, prompt)
-    else:
-        response, _, _ = await send_openai_request(client, args, prompt)
-    yes = is_yes_response(None, response)
+    yes = await async_request_and_classify(client, args, prompt)
     as_txt = ""
 
     if yes is False:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        if args.client == "yesno":
-            response, _, _ = await send_yesno_request(client, args, prompt)
-        else:
-            response, _, _ = await send_openai_request(client, args, prompt)
-        yes = is_yes_response(None, response)
+        yes = await async_request_and_classify(client, args, prompt)
         if yes:
             as_txt = f"as {pair}"
 
