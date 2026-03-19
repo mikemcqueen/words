@@ -170,7 +170,7 @@ async def _post_with_retry(client, *args, max_retries=3, **kwargs):
             response = await client.post(*args, **kwargs)
             response.raise_for_status()
             return response
-        except (httpx.ReadTimeout, httpx.ConnectError) as e:
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
             if attempt >= max_retries:
                 raise
             delay = delays[attempt]
