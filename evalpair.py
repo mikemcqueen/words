@@ -57,11 +57,12 @@ def is_yes_response(model, response: str):
     return None
 
 
-def format_result(orig_pair, yes, as_txt, upstream=None):
+def format_result(orig_pair, yes, flipped, upstream=None):
     """Format a result line for display."""
     label = 'YES' if yes else ('NO' if yes is False else 'None')
     prefix = f"[{upstream.upper()}] " if upstream else ""
-    return f"{prefix}{orig_pair} {label} {as_txt}"
+    as_txt = f" as {flip(orig_pair).replace(',', ' ')}" if flipped else ""
+    return f"{prefix}{orig_pair} {label}{as_txt}"
 
 
 async def async_request_and_classify(client, args, prompt):
@@ -85,16 +86,16 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
     yes, bad_response, upstream = await async_request_and_classify(client, args, prompt)
-    as_txt = ""
+    flipped = False
 
     if not yes:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
         yes, bad_flip_response, upstream = await async_request_and_classify(client, args, prompt)
         if yes:
-            as_txt = f"as {pair}"
+            flipped = True
 
-    return orig_pair, yes, as_txt, upstream
+    return orig_pair, yes, flipped, upstream
 
 
 async def process_pairs_async(ctx: str, pairs, args):
@@ -158,27 +159,29 @@ def evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair):
     pair = orig_pair.replace(',', ' ')
     _, response = custom_context(model, tokenizer, args, ctx, pair)
     yes = is_yes_response(model, response)
-    as_txt = ""
+    flipped = False
     if yes is False:
         pair = flip(orig_pair).replace(',', ' ')
         _, response = custom_context(model, tokenizer, args, ctx, pair)
         yes = is_yes_response(model, response)
         if yes:
-            as_txt = f"as {pair}"
-    return orig_pair, yes, as_txt
+            flipped = True
+    return orig_pair, yes, flipped
 
 def process_pairs_sync(ctx, pairs, model, tokenizer, args):
     """Process all pairs synchronously (local model path)."""
-    yes_pairs, no_pairs, last_processed = [], [], None
+    yes_pairs, no_pairs, bad_pairs, last_processed = [], [], [], None
     for orig_pair in pairs:
-        orig_pair, yes, as_txt = evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair)
+        orig_pair, yes, flipped = evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair)
         last_processed = orig_pair
-        print(format_result(orig_pair, yes, as_txt))
-        if yes:
+        print(format_result(orig_pair, yes, flipped))
+        if yes is True:
             yes_pairs.append(orig_pair)
-        else:
+        elif yes is False:
             no_pairs.append(orig_pair)
-    return yes_pairs, no_pairs, last_processed
+        else:
+            bad_pairs.append(orig_pair)
+    return yes_pairs, no_pairs, bad_pairs, last_processed
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate word pairs with a language model")
@@ -393,8 +396,7 @@ def main():
     if args.model is None and args.pair_file:
         yes, no, bad, last = asyncio.run(process_pairs_async(ctx, pairs, args))
     else:
-        yes, no, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
-        bad = []
+        yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
     handle_results(args, yes, no, bad, last, start_pair)
 
