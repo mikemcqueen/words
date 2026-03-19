@@ -15,7 +15,7 @@ signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host
 from info import info
-from model import load_model, get_model_name, is_gemma_model, is_instruct, is_instruct_model, specialize_prompt, generate_text, supports_thinking
+from model import load_model, is_gemma_model, specialize_prompt, generate_text, supports_thinking
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     return generate_text(model, tokenizer, prompt, max_new_tokens)
@@ -40,6 +40,29 @@ def generate_response_fast(args, prompt: str) -> str:
         sys.exit(1)
 
 
+def is_yes_response(model, response: str):
+    """Return True for YES, False for NO, None for garbage/unexpected."""
+    if not model:
+        answer = response
+    elif is_gemma_model(model):
+        lines = response.split('\n')
+        answer = lines[-2].strip() # NOTE: Gemma specific
+    else:
+        assert False, "is_yes_response not implemented for this model"
+    upper = answer.upper()
+    if upper.startswith("YES"):
+        return True
+    if upper.startswith("NO"):
+        return False
+    return None
+
+
+def format_result(orig_pair, yes, as_txt):
+    """Format a result line for display."""
+    label = 'YES' if yes else ('NO' if yes is False else 'None')
+    return f"{orig_pair} {label} {as_txt}"
+
+
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
@@ -48,24 +71,24 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
         response, _, _ = await send_yesno_request(client, args, prompt)
     else:
         response, _, _ = await send_openai_request(client, args, prompt)
-    yes = response.upper().startswith("YES")
+    yes = is_yes_response(None, response)
     as_txt = ""
 
-    if not yes:
+    if yes is False:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
         if args.client == "yesno":
             response, _, _ = await send_yesno_request(client, args, prompt)
         else:
             response, _, _ = await send_openai_request(client, args, prompt)
-        yes = response.upper().startswith("YES")
+        yes = is_yes_response(None, response)
         if yes:
             as_txt = f"as {pair}"
 
     return orig_pair, yes, as_txt
 
 
-async def process_pairs_fast(ctx: str, pairs, args):
+async def process_pairs_async(ctx: str, pairs, args):
     """Process all pairs with max_concurrent in flight at once."""
     yes_pairs = []
     no_pairs = []
@@ -77,7 +100,7 @@ async def process_pairs_fast(ctx: str, pairs, args):
     try:
         async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
             last_processed = result[0]
-            print(f"{result[0]} {'YES' if result[1] else 'NO'} {result[2]}")
+            print(format_result(*result))
             if result[1]:
                 yes_pairs.append(result[0])
             else:
@@ -106,81 +129,6 @@ def parse_response(model, text: str) -> list[str]:
 
     return None
 
-def make_single_question_prompt(model, tokenizer, pair: str) -> str:
-    PROMPT = "Given a phrase, answer the following question. " \
-        "Respond with a single YES or NO." \
-        "Is the phrase unusual?\n" \
-        "Phrase: "
-
-    PROMPT = "You are given a pair of English words in order." \
-        " Determine whether the pair could function as a sensible, literal English noun phrase" \
-        " without metaphor, wordplay, or special domain knowledge. " \
-        " Answer YES or NO only." \
-        "\nWord pair: "
-
-    #FOLLOWUP = "What?"
-    #"Does reading it make you think of something?\n" \
-    FOLLOWUP = "Why?"
-
-    prompt = PROMPT + pair
-    if model is not None:
-        prompt = specialize_prompt(model, tokenizer, prompt)
-    return prompt, FOLLOWUP
-
-def make_prompt(model, tokenizer, pair: str, include_questions) -> str:
-    prefix = "Answer the following questions about the given phrase. " 
-
-    yes_no = "Provide your answer to each question as either YES or NO.\n\n"
-    # "Respond with all answers on a single line, separated by commas.\n\n" \
-
-    yes_no_2 = "Respond with a single line of comma-separated YES or NO values, " \
-        "which represent the answers to each question, in order.\n\n" \
-
-    q_a = "Your response should **ONLY** include each question, " \
-        "followed by your answer to the question: either YES or NO.\n\n" \
-
-    questions = "Question: Is there any obvious connection between the words?\n" \
-        "Question: Is the combination of words unusual?\n" \
-        "Question: Is the phrase nonsensical?\n" \
-        
-    """
-        "Could someone say it and be understood?\n" \
-        "Could a person mean something by it?\n" \
-        "Would you know what someone was talking about if they said it?\n" \
-        "Could it be what something is called?\n" \
-        "Could it be the name of a person, place, or thing?\n" \
-        "Could you label something with it?\n" \
-        "Does it feel off?\n" \
-        "Is there something wrong with it?\n" \
-        "Does it make you wince?\n" \
-    """
-
-    # gemma-3-bad
-    #"Is it a trick question?\n" \
-
-
-    # gemma-2-bad
-    #"Does it bring anything to mind?\n" \
-    #"Does it conjure anything?\n" \
-
-    #"Respond by repeating each question, followed by YES or NO.\n\n" \
-    #"Respond as a single line of text with comma-separated YES or NO values, " \
-    #"which represent the answers to each question, in order.\n\n" \
-    #"Is this word combination meaningless or absurd?\n" 
-    #"Could these words appear adjacent in a grammatically correct English sentence?\n" \
-    #"Is there a coherent meaning when these words are combined?\n" \
-    #"Is there any context where a speaker might plausibly use this word combination?\n" \
-    #"Is this word combination nonsensical?\n" \
-
-    phrase = "Phrase: "
-
-    style = q_a if include_questions else yes_no
-    prompt = prefix + style + questions + phrase + pair
-
-    if model is None:
-        return prompt
-    return specialize_prompt(model, tokenizer, prompt)
-
 def custom_context(model, tokenizer, args, ctx: str, pair: str):
     if pair:
         ctx = ctx.replace("{PAIR}", pair)
@@ -190,90 +138,58 @@ def custom_context(model, tokenizer, args, ctx: str, pair: str):
     else:
         prompt = specialize_prompt(model, tokenizer, ctx)
         response = generate_response(model, tokenizer, prompt, False)
-    #print(f"prompt: {prompt}")
-    #print(f"{ctx}: {response.strip()}")
     return prompt, response
 
-def single_question(model, tokenizer, args, pair: str):
-    pair = pair.strip()
-    if not pair:
-        return None
+def evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair):
+    """Evaluate a single pair synchronously, retrying flipped if NO."""
+    pair = orig_pair.replace(',', ' ')
+    _, response = custom_context(model, tokenizer, args, ctx, pair)
+    yes = is_yes_response(model, response)
+    as_txt = ""
+    if yes is False:
+        pair = flip(orig_pair).replace(',', ' ')
+        _, response = custom_context(model, tokenizer, args, ctx, pair)
+        yes = is_yes_response(model, response)
+        if yes:
+            as_txt = f"as {pair}"
+    return orig_pair, yes, as_txt
 
-    prompt, followup = make_single_question_prompt(model, tokenizer, pair)
-    #print(f"prompt: {prompt}")
-    if model is None:
-        response = generate_response_fast(args, prompt)
-    else:
-        response = generate_response(model, tokenizer, prompt, False)
-    print(f"{pair}: {response}")
-    lines = response.split('\n')
-    yes = lines[-2].strip() # NOTE: Gemma specific
-    if lines:
-        yessir = yes.startswith("YES")
-        print(f"{pair}: {yes}: {yessir}")
-        yessir = True # always ask why
-        return yessir, response, followup
-
-    return False, None
-
-def process_pair(model, tokenizer, args, pair: str, include_questions):
-    pair = pair.strip()
-    if not pair:
-        return None
-
-    prompt = make_prompt(model, tokenizer, pair, include_questions)
-    #print(f"prompt: {prompt}")
-    if model is None:
-        response = generate_response_fast(args, prompt)
-    else:
-        response = generate_response(model, tokenizer, prompt)
-    print(f"{pair}: {response}")
-    """
-    lines = parse_response(model, response)
-    if lines:
-        print(f"{pair}: {lines[0]}")
-    """
-
-def follow_up(model, tokenizer, args, response: str, prompt: str):
-    p = response
-    p += "<start_of_turn>user\n"
-    p += prompt
-    p += "<end_of_turn>\n"
-    p += "<start_of_turn>model\n"
-
-    if model is None:
-        response = generate_response_fast(args, p)
-    else:
-        response = generate_response(model, tokenizer, p)
-    print(f"-----------\n{response}")
+def process_pairs_sync(ctx, pairs, model, tokenizer, args):
+    """Process all pairs synchronously (local model path)."""
+    yes_pairs, no_pairs, last_processed = [], [], None
+    for orig_pair in pairs:
+        orig_pair, yes, as_txt = evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair)
+        last_processed = orig_pair
+        print(format_result(orig_pair, yes, as_txt))
+        if yes:
+            yes_pairs.append(orig_pair)
+        else:
+            no_pairs.append(orig_pair)
+    return yes_pairs, no_pairs, last_processed
 
 def parse_args():
-    DEFAULT_MODEL = "g2it"
-
     parser = argparse.ArgumentParser(description="Evaluate word pairs with a language model")
-    parser.add_argument('--single', action="store_true", help='ask single question with followup')
-    parser.add_argument('-q', '--questions', action="store_true", help='include questions in response')
 
     # Pair input: either --pair or --pair-file (mutually exclusive)
-    pair_group = parser.add_mutually_exclusive_group()
+    pair_group = parser.add_mutually_exclusive_group(required=True)
     pair_group.add_argument('--pair', type=str, help='Single pair to evaluate (e.g., "foo,bar")')
     pair_group.add_argument('--pair-file', type=str, help='File containing pairs (one per line)')
 
-    # Prompt input: either --prompt or (--prompt-file + --pid) (mutually exclusive)
-    parser.add_argument('--prompt', type=str, help='Prompt context (use {PAIR} as placeholder)')
-    parser.add_argument('--prompt-file', type=str, help='JSON file containing prompts')
+    # Prompt input: either --prompt or (--prompt-file + --pid)
+    prompt_group = parser.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument('--prompt', type=str, help='Prompt context (use {PAIR} as placeholder)')
+    prompt_group.add_argument('--prompt-file', type=str, help='JSON file containing prompts')
+
     parser.add_argument('--pid', '--prompt-id', type=str, dest='prompt_id',
                         help='Prompt ID to use from prompt file')
 
-    model_group = parser.add_mutually_exclusive_group()
-    model_group.add_argument('-m', '--model', metavar='g2it', type=str, default=DEFAULT_MODEL,
-                        help=f"Select model (default: {DEFAULT_MODEL})")
-    model_group.add_argument('--fast', action="store_true",
-                        help=f"Use server at {SERVER_URL} instead of loading model")
+    # Model: omit for server (default), provide for local model
+    parser.add_argument('-m', '--model', metavar='MODEL', type=str, default=None,
+                        help='Local model to load (omit to use server)')
 
-    # Server/client options (used with --fast)
+    # Server/client options
     parser.add_argument('-s', '--system-prompt', type=str,
-                        help='System prompt file (optional, used with --fast)')
+                        help='System prompt file (optional)')
     parser.add_argument('-c', '--client', choices=["yesno", "openai"], default="openai",
                         help="Client type: 'yesno' or 'openai' (default)")
     parser.add_argument('--host', default="http://localhost",
@@ -313,27 +229,9 @@ def parse_args():
             sys.exit(1)
         args.system_prompt = p.read_text().strip()
 
-    if not args.fast and not is_instruct(args.model):
-        print(f"{get_model_name(args.model)} is not an instruct model")
-        exit()
-
-    # Validate --prompt-file and --pid must be used together
+    # Validate --prompt-file requires --pid
     if args.prompt_file and not args.prompt_id:
         parser.error("--prompt-file requires --pid/--prompt-id")
-    if args.prompt_id and not args.prompt_file:
-        parser.error("--pid/--prompt-id requires --prompt-file")
-
-    # Validate --prompt and --prompt-file/--pid are mutually exclusive
-    if args.prompt and args.prompt_file:
-        parser.error("Cannot specify both --prompt and --prompt-file/--pid")
-
-    # Require at least one of pair or prompt input
-    if not args.pair and not args.pair_file and not args.prompt and not args.prompt_file:
-        parser.error("Either --pair, --pair-file, --prompt, or --prompt-file/--pid is required")
-
-    # If prompt is provided, pairs are required
-    if (args.prompt or args.prompt_file) and not (args.pair or args.pair_file):
-        parser.error("--prompt/--prompt-file requires --pair or --pair-file")
 
     # --save requires --pair-file
     if args.save is not None and not args.pair_file:
@@ -385,16 +283,6 @@ def file_pair_generator(filename, last_pair=None):
 
     return _gen(f, start_index), start_index
 
-def is_yes_response(model, response: str) -> bool:
-    if not model:
-        answer = response 
-    elif is_gemma_model(model):
-        lines = response.split('\n')
-        answer = lines[-2].strip() # NOTE: Gemma specific
-    else:
-        assert False, "is_yes_response not implemented for this model"
-    return answer.upper().startswith("YES")
-
 def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     """Load a prompt from a JSON prompt file by ID."""
     import json
@@ -425,10 +313,31 @@ def save_results(pair_file, tag, yes_pairs, no_pairs, start_pair=0):
     print(f"Saved {len(no_pairs)} NO pairs to {no_file}")
 
 
+def get_pairs(args):
+    """Return (pairs_generator, start_pair_index) from args."""
+    start_pair = 0
+    if args.pair:
+        return single_pair_generator(args.pair), start_pair
+    pairs, start_pair = file_pair_generator(args.pair_file, last_pair=args.last_pair)
+    if args.num_pairs:
+        pairs = itertools.islice(pairs, args.num_pairs)
+    return pairs, start_pair
+
+
+def handle_results(args, yes_pairs, no_pairs, last_processed, start_pair):
+    """Print resume info and save results if requested."""
+    total = len(yes_pairs) + len(no_pairs)
+    if args.num_pairs and last_processed and total == args.num_pairs:
+        print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
+    if args.save is not None and args.pair_file:
+        save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
+
+
 def main():
     args = parse_args()
 
-    if args.fast:
+    if args.model is None:
+        # Server path (default)
         model, tokenizer = None, None
         args.host = resolve_host(args.host)
         args.model_id = query_model_id(args.host, args.port, args.key)
@@ -436,85 +345,21 @@ def main():
             print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)
             sys.exit(1)
     else:
+        # Local model path
         _, model, tokenizer = load_model(args.model)
-        if is_gemma_model(model) and is_instruct_model(model):
-            print("gemma instruct: True")
 
-    # Resolve prompt from --prompt or --prompt-file/--pid
     ctx = args.prompt
     if args.prompt_file:
         ctx = load_prompt_from_file(args.prompt_file, args.prompt_id)
 
-    if ctx:
-        # Use generators for common handling of --pair and --pair-file
-        pairs = None
-        start_pair = 0
-        if args.pair:
-            pairs = single_pair_generator(args.pair)
-        elif args.pair_file:
-            pairs, start_pair = file_pair_generator(args.pair_file, last_pair=args.last_pair)
-            if args.num_pairs:
-                pairs = itertools.islice(pairs, args.num_pairs)
-        if not pairs:
-            assert False, "TBD"
+    pairs, start_pair = get_pairs(args)
 
-        # Fast async path for file processing
-        if args.fast and args.pair_file:
-            yes_pairs, no_pairs, last_processed = asyncio.run(process_pairs_fast(ctx, pairs, args))
-            if args.num_pairs and last_processed and len(yes_pairs) + len(no_pairs) == args.num_pairs:
-                print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
-            if args.save is not None:
-                save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
-            return
+    if args.model is None and args.pair_file:
+        yes, no, last = asyncio.run(process_pairs_async(ctx, pairs, args))
+    else:
+        yes, no, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
-        yes_pairs = []
-        no_pairs = []
-        last_processed = None
-        for orig_pair in pairs:
-            pair = orig_pair.replace(',', ' ')
-            prompt, response = custom_context(model, tokenizer, args, ctx, pair)
-            yes = is_yes_response(model, response)
-            as_txt = ""
-            if not yes:
-                pair = flip(orig_pair).replace(',', ' ')
-                prompt, response = custom_context(model, tokenizer, args, ctx, pair)
-                yes = is_yes_response(model, response)
-                if yes:
-                    as_txt = f"as {pair}"
-
-            last_processed = orig_pair
-            if not args.pair_file:
-                print(response)
-            print(f"{orig_pair} {'YES' if yes else 'NO'} {as_txt}")
-            if yes:
-                yes_pairs.append(orig_pair)
-            else:
-                no_pairs.append(orig_pair)
-
-        if args.num_pairs and last_processed and len(yes_pairs) + len(no_pairs) == args.num_pairs:
-            print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
-
-        if args.save and args.pair_file:
-            save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
-    elif args.pair:
-        # Single pair mode (no ctx)
-        yes = False
-        if args.single:
-            yes, response, followup = single_question(model, tokenizer, args, args.pair)
-        else:
-            process_pair(model, tokenizer, args, args.pair, args.questions)
-
-        if yes:
-            follow_up(model, tokenizer, args, response, followup)
-    else: # args.pair_file without ctx
-        # File mode
-        try:
-            pairs, _ = file_pair_generator(args.pair_file)
-            for pair in pairs:
-                process_pair(model, tokenizer, args, pair, args.questions)
-        except FileNotFoundError:
-            print(f"Error: File not found: {args.pair_file}", file=sys.stderr)
-            sys.exit(1)
+    handle_results(args, yes, no, last, start_pair)
 
 if __name__ == "__main__":
     main()
