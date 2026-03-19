@@ -306,23 +306,20 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
-def save_results(pair_file, tag, yes_pairs, no_pairs, start_pair=0):
-    """Write YES/NO pairs to results/{basename}.{tag}.{start_pair}.yes and .no files."""
+def save_results(pair_file, tag, yes_pairs, no_pairs, bad_pairs, start_pair=0):
+    """Write YES/NO/BAD pairs to results/{basename}.{tag}.{start_pair}.{yes,no,bad} files."""
     import os
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
     basename = os.path.basename(pair_file)
     tag_part = f".{tag}" if tag else ""
-    yes_file = f"{results_dir}/{basename}{tag_part}.{start_pair}.yes"
-    no_file = f"{results_dir}/{basename}{tag_part}.{start_pair}.no"
-    with open(yes_file, 'w') as f:
-        for p in yes_pairs:
-            f.write(p + '\n')
-    with open(no_file, 'w') as f:
-        for p in no_pairs:
-            f.write(p + '\n')
-    print(f"Saved {len(yes_pairs)} YES pairs to {yes_file}")
-    print(f"Saved {len(no_pairs)} NO pairs to {no_file}")
+    prefix = f"{results_dir}/{basename}{tag_part}.{start_pair}"
+    for pairs, ext in [(yes_pairs, "yes"), (no_pairs, "no"), (bad_pairs, "bad")]:
+        filename = f"{prefix}.{ext}"
+        with open(filename, 'w') as f:
+            for p in pairs:
+                f.write(p + '\n')
+        print(f"Saved {len(pairs)} {ext.upper()} pairs to {filename}")
 
 
 def get_pairs(args):
@@ -342,7 +339,7 @@ def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_p
     if args.num_pairs and last_processed and total == args.num_pairs:
         print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
     if args.save is not None and args.pair_file:
-        save_results(args.pair_file, args.save, yes_pairs, no_pairs, start_pair)
+        save_results(args.pair_file, args.save, yes_pairs, no_pairs, bad_pairs, start_pair)
 
 
 def main():
