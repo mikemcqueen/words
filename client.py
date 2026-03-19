@@ -3,8 +3,10 @@
 # Shared async HTTP client utilities for concurrent request processing.
 
 import asyncio
+import re
 import sys
 import time
+from pathlib import Path
 
 import httpx
 
@@ -17,6 +19,81 @@ SERVERS = {
     "mini": "192.168.0.114",
 }
 SERVER_IPS = {ip: name for name, ip in SERVERS.items()}
+
+
+def parse_nginx_upstream(config_path=None):
+    """Parse nginx upstream block to extract server topology.
+
+    Returns dict with:
+      servers: list of {ip, port, max_conns, name}
+      queue_size: int (0 if no queue)
+      total_capacity: sum(max_conns) + queue_size
+    Or None if config not found/unparseable.
+    """
+    if config_path:
+        candidates = [Path(config_path)]
+    else:
+        candidates = [
+            Path("/etc/nginx/sites-available/gpu_cluster"),
+            Path("/etc/nginx/sites-enabled/gpu_cluster"),
+        ]
+
+    text = None
+    for p in candidates:
+        try:
+            text = p.read_text()
+            break
+        except (OSError, PermissionError):
+            continue
+    if text is None:
+        return None
+
+    # Extract upstream block
+    m = re.search(r'upstream\s+gpu_cluster\s*\{([^}]+)\}', text, re.DOTALL)
+    if not m:
+        return None
+    block = m.group(1)
+
+    servers = []
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#') or not stripped.startswith('server '):
+            continue
+        sm = re.match(r'server\s+([\d.]+):(\d+)\s*(.*)', stripped)
+        if not sm:
+            continue
+        ip, port = sm.group(1), int(sm.group(2))
+        rest = sm.group(3)
+        max_conns = 0
+        mc = re.search(r'max_conns=(\d+)', rest)
+        if mc:
+            max_conns = int(mc.group(1))
+        # Extract comment name (e.g. "# JUNIPER")
+        name = SERVER_IPS.get(ip)
+        if not name:
+            cm = re.search(r'#\s*(\S+)', rest)
+            if cm:
+                name = cm.group(1).lower()
+        servers.append({'ip': ip, 'port': port, 'max_conns': max_conns, 'name': name})
+
+    if not servers:
+        return None
+
+    queue_size = 0
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith('#'):
+            continue
+        qm = re.match(r'queue\s+(\d+)', stripped)
+        if qm:
+            queue_size = int(qm.group(1))
+
+    total = sum(s['max_conns'] for s in servers) + queue_size
+    return {
+        'servers': servers,
+        'queue_size': queue_size,
+        'total_capacity': total,
+    }
 
 
 def resolve_host(host: str) -> str:
@@ -123,11 +200,23 @@ def get_inference_params(args) -> dict:
     return params
 
 
+def _extract_upstream(response) -> str | None:
+    """Extract friendly server name from X-Upstream-Addr header."""
+    addr = response.headers.get("x-upstream-addr")
+    if not addr:
+        return None
+    ip = addr.split(":")[0]
+    return SERVER_IPS.get(ip, addr)
+
+
 async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
     """POST {base_url}/yesno with {"text": prompt}"""
     url = f"{args.host}:{args.port}/yesno"
     response = await _post_with_retry(client, url, json={"text": prompt})
     js = response.json()
+    upstream = _extract_upstream(response)
+    if upstream:
+        js['upstream'] = upstream
     return js["response"], js, js
 
 
@@ -163,9 +252,12 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
         **get_inference_params(args),
     }
     response = await _post_with_retry(client, url, headers=headers, json=payload)
+    upstream = _extract_upstream(response)
     payload = response.json()["choices"][0]
     message = payload["message"]
     del payload["message"]
     actual = message["content"]
     del message["content"]
+    if upstream:
+        payload['upstream'] = upstream
     return actual, message, payload

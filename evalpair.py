@@ -13,7 +13,7 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host
+from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, parse_nginx_upstream
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text, supports_thinking
 
@@ -57,17 +57,18 @@ def is_yes_response(model, response: str):
     return None
 
 
-def format_result(orig_pair, yes, as_txt):
+def format_result(orig_pair, yes, as_txt, upstream=None):
     """Format a result line for display."""
     label = 'YES' if yes else ('NO' if yes is False else 'None')
-    return f"{orig_pair} {label} {as_txt}"
+    prefix = f"[{upstream.upper()}] " if upstream else ""
+    return f"{prefix}{orig_pair} {label} {as_txt}"
 
 
 async def async_request_and_classify(client, args, prompt):
-    """Send request and return (YES/NO/None, truncated) classification."""
+    """Send request and return (YES/NO/None, truncated, upstream) classification."""
     if args.client == "yesno":
-        response, _, _ = await send_yesno_request(client, args, prompt)
-        return is_yes_response(None, response), False
+        response, _, meta = await send_yesno_request(client, args, prompt)
+        return is_yes_response(None, response), False, meta.get('upstream')
 
     for attempt in range(3):
         response, _, payload = await send_openai_request(client, args, prompt)
@@ -75,25 +76,25 @@ async def async_request_and_classify(client, args, prompt):
             continue
         result = is_yes_response(None, response)
         if result is not None:
-            return result, False
-    return None, True
+            return result, False, payload.get('upstream')
+    return None, True, None
 
 
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    yes, bad_response = await async_request_and_classify(client, args, prompt)
+    yes, bad_response, upstream = await async_request_and_classify(client, args, prompt)
     as_txt = ""
 
     if not yes:
         pair = flip(orig_pair).replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        yes, bad_flip_response = await async_request_and_classify(client, args, prompt)
+        yes, bad_flip_response, upstream = await async_request_and_classify(client, args, prompt)
         if yes:
             as_txt = f"as {pair}"
 
-    return orig_pair, yes, as_txt
+    return orig_pair, yes, as_txt, upstream
 
 
 async def process_pairs_async(ctx: str, pairs, args):
@@ -109,7 +110,7 @@ async def process_pairs_async(ctx: str, pairs, args):
     try:
         async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
             print(format_result(*result))
-            pair, yes, _ = result
+            pair, yes, _, _ = result
             last_processed = pair
             if yes is True:
                 yes_pairs.append(pair)
@@ -229,6 +230,8 @@ def parse_args():
                         help="Skip pairs in --pair-file up to and including this pair, then resume processing")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
                         help="Max concurrent requests (default: 1)")
+    parser.add_argument('--nginx-config', type=str,
+                        help='Path to nginx upstream config (auto-detected if omitted)')
     parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
                         help='Process only N pairs from pair-file')
 
@@ -349,6 +352,25 @@ def main():
         # Server path (default)
         model, tokenizer = None, None
         args.host = resolve_host(args.host)
+
+        # Auto-detect max-concurrent from nginx config when going through nginx
+        if args.host in ("http://localhost", "http://127.0.0.1") and args.port == 80:
+            upstream = parse_nginx_upstream(args.nginx_config)
+            if upstream:
+                user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
+                if not user_set_mc:
+                    args.max_concurrent = upstream['total_capacity']
+                    server_desc = ", ".join(
+                        f"{s['name'] or s['ip']}:{s['max_conns']}"
+                        for s in upstream['servers']
+                    )
+                    print(f"nginx: auto-set --max-concurrent={args.max_concurrent} "
+                          f"({len(upstream['servers'])} servers: {server_desc}, "
+                          f"queue={upstream['queue_size']})")
+                elif args.max_concurrent > upstream['total_capacity']:
+                    print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
+                          f"nginx capacity ({upstream['total_capacity']})")
+
         args.model_id = query_model_id(args.host, args.port, args.key)
         if args.think and not supports_thinking(args.model_id):
             print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)

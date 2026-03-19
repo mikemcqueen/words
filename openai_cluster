@@ -5,11 +5,12 @@ upstream gpu_cluster {
      #server 127.0.0.1:8000 max_conns=2;
      #server 192.168.0.110:8000 max_conns=2; # RAINBOW
      #server 192.168.0.112:8000 max_conns=2; # MINERVA
-     
-     server 192.168.0.111:8000 max_conns=1; # JUNIPER
-     server 192.168.0.114:8000 max_conns=1; # MINI
 
-     #queue 2 timeout=5s;  # queue up to N requests, wait 5s for a slot
+     server 192.168.0.111:8000 max_conns=6; # JUNIPER
+     server 192.168.0.114:8000 max_conns=6; # MINI
+
+     # queue requires nginx Plus — not available in open-source nginx
+     #queue 4 timeout=60s;  # queue up to N requests, wait 60s for a slot
      #keepalive 6;  # Maintain persistent connections to backends
 }
 
@@ -23,10 +24,10 @@ server {
     location / {
         proxy_pass http://gpu_cluster;
         proxy_http_version 1.1;
-        #proxy_set_header Connection ""; # when keepalive
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 30s;
+        add_header X-Upstream-Addr $upstream_addr always;
     }
 
     location /v1/chat/completions {
@@ -37,5 +38,6 @@ server {
          proxy_set_header Host $host;
          proxy_set_header X-Real-IP $remote_addr;
          proxy_read_timeout 300s;
+         add_header X-Upstream-Addr $upstream_addr always;
     }
 }
