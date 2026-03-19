@@ -12,9 +12,8 @@ import httpx
 
 from model import add_thinking
 
-SERVER_URL = "http://localhost"
-
 SERVERS = {
+    "localhost": "127.0.0.1",
     "juniper": "192.168.0.111",
     "mini": "192.168.0.114",
 }
@@ -101,7 +100,7 @@ def resolve_host(host: str) -> str:
     Raises SystemExit if it looks like a bare name but isn't recognized."""
     if host in SERVERS:
         return f"http://{SERVERS[host]}"
-    if "." not in host and "://" not in host and host != "localhost":
+    if "." not in host and "://" not in host:
         print(f"Error: unknown server name '{host}'")
         sys.exit(1)
     return host
@@ -111,6 +110,31 @@ def get_server_name(host: str) -> str | None:
     """Return a friendly server name for a host URL, or None if unknown."""
     bare = host.split("://", 1)[-1]
     return SERVER_IPS.get(bare)
+
+
+def get_max_concurrent(host: str, port: int, nginx_config=None):
+    """Auto-detect max-concurrent from nginx config.
+
+    If host is localhost:80 (nginx), returns total_capacity.
+    If host is a specific backend server, returns that server's max_conns.
+    Returns None if nginx config not found or host not in config.
+    """
+    upstream = parse_nginx_upstream(nginx_config)
+    if not upstream:
+        return None
+
+    # Going through nginx — use total capacity
+    bare = host.split("://", 1)[-1]
+    if bare == "127.0.0.1" and port == 80:
+        return upstream['total_capacity'], upstream
+
+    # Targeting a specific server — find its max_conns
+    ip = bare
+    for s in upstream['servers']:
+        if s['ip'] == ip or s['name'] == bare:
+            return s['max_conns'], upstream
+
+    return None
 
 
 

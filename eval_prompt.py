@@ -304,8 +304,8 @@ Examples:
                       help="System prompt file (optional)")
     parser.add_argument("-c", "--client", choices=["yesno", "openai"], default="openai",
                       help="Client type: 'yesno' or 'openai' (default)")
-    parser.add_argument("--host", default="http://localhost",
-                      help="Server host (default: http://localhost)")
+    parser.add_argument("--host", default="localhost",
+                      help="Server host (default: localhost)")
     parser.add_argument("--port", type=int, default=8000,
                       help="Server port (default: 8000)")
     parser.add_argument("--temp", type=float, default=1.0,

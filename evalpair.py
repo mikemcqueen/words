@@ -13,7 +13,7 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import SERVER_URL, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, parse_nginx_upstream, get_server_name
+from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, parse_nginx_upstream, get_server_name, get_max_concurrent
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text, supports_thinking
 
@@ -205,8 +205,8 @@ def parse_args():
                         help='System prompt file (optional)')
     parser.add_argument('-c', '--client', choices=["yesno", "openai"], default="openai",
                         help="Client type: 'yesno' or 'openai' (default)")
-    parser.add_argument('--host', default="http://localhost",
-                        help="Server host (default: http://localhost)")
+    parser.add_argument('--host', default="localhost",
+                        help="Server host (default: localhost)")
     parser.add_argument('--port', type=int, default=8000,
                         help="Server port (default: 8000)")
     parser.add_argument('--key', type=str, help="API key")
@@ -374,23 +374,28 @@ def main():
         model, tokenizer = None, None
         args.host = resolve_host(args.host)
 
-        # Auto-detect max-concurrent from nginx config when going through nginx
-        if args.host in ("http://localhost", "http://127.0.0.1") and args.port == 80:
-            upstream = parse_nginx_upstream(args.nginx_config)
-            if upstream:
-                user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
-                if not user_set_mc:
-                    args.max_concurrent = upstream['total_capacity']
+        # Auto-detect max-concurrent from nginx config
+        result = get_max_concurrent(args.host, args.port, args.nginx_config)
+        if result:
+            mc, upstream = result
+            user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
+            if not user_set_mc:
+                args.max_concurrent = mc
+                server_name = get_server_name(args.host)
+                if server_name == "localhost":
                     server_desc = ", ".join(
                         f"{s['name'] or s['ip']}:{s['max_conns']}"
                         for s in upstream['servers']
                     )
-                    print(f"nginx: auto-set --max-concurrent={args.max_concurrent} "
+                    print(f"nginx: auto-set --max-concurrent={mc} "
                           f"({len(upstream['servers'])} servers: {server_desc}, "
                           f"queue={upstream['queue_size']})")
-                elif args.max_concurrent > upstream['total_capacity']:
-                    print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
-                          f"nginx capacity ({upstream['total_capacity']})")
+                else:
+                    print(f"nginx: auto-set --max-concurrent={mc} "
+                          f"(from {server_name} max_conns)")
+            elif args.max_concurrent > upstream['total_capacity']:
+                print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
+                      f"nginx capacity ({upstream['total_capacity']})")
 
         args.model_id = query_model_id(args.host, args.port, args.key)
         if args.think and not supports_thinking(args.model_id):
