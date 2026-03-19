@@ -57,6 +57,27 @@ def is_yes_response(model, response: str):
     return None
 
 
+def print_retries(retry_map, file=sys.stdout):
+    """Print retry map as: pair  {host reason: N, ...},{host2 ...}"""
+    print("Retries:", file=file)
+    for pair, hosts in retry_map.items():
+        parts = []
+        for host, reasons in hosts.items():
+            counts = ", ".join(f"{r}: {n}" for r, n in reasons.items())
+            parts.append(f"{{{host} {counts}}}")
+        print(f"  {pair}  {','.join(parts)}", file=file)
+
+
+def merge_retries(a, b):
+    """Merge {host: {reason: count}} dicts, adding counts."""
+    for host, reasons in b.items():
+        if host not in a:
+            a[host] = {}
+        for reason, count in reasons.items():
+            a[host][reason] = a[host].get(reason, 0) + count
+    return a
+
+
 def format_result(orig_pair, yes, flipped, upstream=None):
     """Format a result line for display."""
     label = 'YES' if yes else ('NO' if yes is False else 'None')
@@ -66,36 +87,55 @@ def format_result(orig_pair, yes, flipped, upstream=None):
 
 
 async def async_request_and_classify(client, args, prompt):
-    """Send request and return (YES/NO/None, truncated, upstream) classification."""
+    """Send request and return (YES/NO/None, upstream, retries) classification."""
     if args.client == "yesno":
         response, _, meta = await send_yesno_request(client, args, prompt)
-        return is_yes_response(None, response), False, meta.get('upstream')
+        return is_yes_response(None, response), meta.get('upstream'), {}
+
+    retries = {}
+    def record_retry(payload):
+        host = payload.get('upstream') or get_server_name(args.host) or args.host
+        reason = payload.get('finish_reason')
+        retries.setdefault(host, {})
+        retries[host][reason] = retries[host].get(reason, 0) + 1
 
     for attempt in range(3):
         response, _, payload = await send_openai_request(client, args, prompt)
         if payload.get("finish_reason") != "stop":
+            record_retry(payload)
             continue
         result = is_yes_response(None, response)
         if result is not None:
-            return result, False, payload.get('upstream')
-    return None, True, None
+            return result, payload.get('upstream'), retries
+        record_retry(payload)
+    return None, None, retries
 
 
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    yes, bad_response, upstream = await async_request_and_classify(client, args, prompt)
+    yes, upstream, orig_retries = await async_request_and_classify(client, args, prompt)
     flipped = False
+    retry_map = {}
+
+    if orig_retries:
+        retry_map[orig_pair] = orig_retries
 
     if not yes:
-        pair = flip(orig_pair).replace(',', ' ')
+        orig_yes = yes
+        flipped_pair = flip(orig_pair)
+        pair = flipped_pair.replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        yes, bad_flip_response, upstream = await async_request_and_classify(client, args, prompt)
-        if yes:
-            flipped = True
+        flip_yes, upstream, flip_retries = await async_request_and_classify(client, args, prompt)
+        if flip_yes:
+            yes = flipped = True
+        elif orig_yes is None:
+            yes = None  # orig was bad, flip wasn't YES — can't trust it
+        if flip_retries:
+            retry_map[flipped_pair] = flip_retries
 
-    return orig_pair, yes, flipped, upstream
+    return orig_pair, yes, flipped, upstream, retry_map
 
 
 async def process_pairs_async(ctx: str, pairs, args):
@@ -103,6 +143,7 @@ async def process_pairs_async(ctx: str, pairs, args):
     yes_pairs = []
     no_pairs = []
     bad_pairs = []
+    retry_map = {}
 
     async def process(client, orig_pair):
         return await process_pair_async(client, args, ctx, orig_pair)
@@ -110,9 +151,10 @@ async def process_pairs_async(ctx: str, pairs, args):
     last_processed = None
     try:
         async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
-            print(format_result(*result))
-            pair, yes, _, _ = result
+            pair, yes, flipped, upstream, pair_retries = result
+            print(format_result(pair, yes, flipped, upstream))
             last_processed = pair
+            retry_map.update(pair_retries)
             if yes is True:
                 yes_pairs.append(pair)
             elif yes is False:
@@ -127,7 +169,7 @@ async def process_pairs_async(ctx: str, pairs, args):
             msg += f" Resume with: --last-pair {last_processed}"
         print(msg)
 
-    return yes_pairs, no_pairs, bad_pairs, last_processed
+    return yes_pairs, no_pairs, bad_pairs, last_processed, retry_map
 
 
 def get_first_line(text: str) -> str:
@@ -394,7 +436,9 @@ def main():
     pairs, start_pair = get_pairs(args)
 
     if args.model is None and args.pair_file:
-        yes, no, bad, last = asyncio.run(process_pairs_async(ctx, pairs, args))
+        yes, no, bad, last, retry_map = asyncio.run(process_pairs_async(ctx, pairs, args))
+        if retry_map:
+            print_retries(retry_map)
     else:
         yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
