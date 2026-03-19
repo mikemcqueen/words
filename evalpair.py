@@ -59,13 +59,14 @@ def is_yes_response(model, response: str):
 
 def print_retries(retry_map, file=sys.stdout):
     """Print retry map as: pair  {host reason: N, ...},{host2 ...}"""
+    max_len = max(len(pair) for pair in retry_map)
     print("Retries:", file=file)
     for pair, hosts in retry_map.items():
         parts = []
         for host, reasons in hosts.items():
             counts = ", ".join(f"{r}: {n}" for r, n in reasons.items())
             parts.append(f"{{{host} {counts}}}")
-        print(f"  {pair}  {','.join(parts)}", file=file)
+        print(f"  {pair:<{max_len}}  {','.join(parts)}", file=file)
 
 
 def merge_retries(a, b):
@@ -269,8 +270,8 @@ def parse_args():
                         help="Enable thinking output (for models that support it)")
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
-    parser.add_argument('--save', nargs='?', const='', default=None, metavar='TAG',
-                        help="Save YES/NO pairs to {pair-file}[.TAG].yes and .no")
+    parser.add_argument('--save', action='store_true',
+                        help="Save YES/NO/BAD pairs to results/ directory")
     parser.add_argument('--last-pair', type=str, metavar='TYPE,PAIR',
                         help="Skip pairs in --pair-file up to and including this pair, then resume processing")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
@@ -299,7 +300,7 @@ def parse_args():
         parser.error("--prompt-file requires --pid/--prompt-id")
 
     # --save requires --pair-file
-    if args.save is not None and not args.pair_file:
+    if args.save and not args.pair_file:
         parser.error("--save requires --pair-file")
 
     # --last-pair requires --pair-file
@@ -359,7 +360,7 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
-def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0):
+def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=None):
     """Write YES/NO/BAD pairs to results/{basename}_{prompt}_{pid}[_{server}][_{sys}]_mc{N}[.{tag}].{start_pair}.{yes,no,bad} files."""
     import os
     results_dir = "results"
@@ -389,6 +390,11 @@ def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0):
             for p in pairs:
                 f.write(p + '\n')
         print(f"Saved {len(pairs)} {ext.upper()} pairs to {filename}")
+    if retry_map:
+        filename = f"{prefix}.retries"
+        with open(filename, 'w') as f:
+            print_retries(retry_map, file=f)
+        print(f"Saved retries to {filename}")
 
 
 def get_pairs(args):
@@ -402,13 +408,13 @@ def get_pairs(args):
     return pairs, start_pair
 
 
-def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair):
+def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair, retry_map=None):
     """Print resume info and save results if requested."""
     total = len(yes_pairs) + len(no_pairs) + len(bad_pairs)
     if args.num_pairs and last_processed and total == args.num_pairs:
         print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
-    if args.save is not None and args.pair_file:
-        save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair)
+    if args.save and args.pair_file:
+        save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair, retry_map)
 
 
 def main():
@@ -435,6 +441,7 @@ def main():
 
     pairs, start_pair = get_pairs(args)
 
+    retry_map = None
     if args.model is None and args.pair_file:
         yes, no, bad, last, retry_map = asyncio.run(process_pairs_async(ctx, pairs, args))
         if retry_map:
@@ -442,7 +449,7 @@ def main():
     else:
         yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
-    handle_results(args, yes, no, bad, last, start_pair)
+    handle_results(args, yes, no, bad, last, start_pair, retry_map)
 
 if __name__ == "__main__":
     main()
