@@ -91,7 +91,7 @@ def get_retry_stats(retry_map):
     return total_retries, total_duration
 
 
-def print_retries(retry_map, file=sys.stdout):
+def print_retries(retry_map, file=sys.stdout, successful_requests=None):
     """Print retry map as: pair  {host reason: N @ duration, ...},{host2 ...}"""
     max_len = max(len(pair) for pair in retry_map)
     print("Retries:", file=file)
@@ -101,8 +101,12 @@ def print_retries(retry_map, file=sys.stdout):
             counts = ", ".join(f"{r}: {len(durs)} @ {fmt_duration(sum(durs))}" for r, durs in reasons.items())
             parts.append(f"{{{host} {counts}}}")
         print(f"  {pair:<{max_len}}  {','.join(parts)}", file=file)
-    total_retries, total_duration = get_retry_stats(retry_map)
-    print(f"Total: {total_retries} retries @ {fmt_duration(total_duration)}", file=file)
+    total_retries, retry_duration = get_retry_stats(retry_map)
+    header = f"{total_retries} retries"
+    if successful_requests is not None:
+        pct = round(total_retries / (successful_requests + total_retries) * 100)
+        header += f" ({pct}% of total, avg {fmt_duration(retry_duration / total_retries)})"
+    print(header, file=file)
 
 
 def merge_retries(a, b):
@@ -183,6 +187,7 @@ async def process_pairs_async(ctx: str, pairs, args):
     no_pairs = []
     bad_pairs = []
     retry_map = {}
+    flips = 0
 
     async def process(client, orig_pair):
         return await process_pair_async(client, args, ctx, orig_pair)
@@ -194,6 +199,8 @@ async def process_pairs_async(ctx: str, pairs, args):
             print(format_result(pair, yes, flipped, upstream))
             last_processed = pair
             retry_map.update(pair_retries)
+            if flipped:
+                flips += 1
             if yes is True:
                 yes_pairs.append(pair)
             elif yes is False:
@@ -208,7 +215,8 @@ async def process_pairs_async(ctx: str, pairs, args):
             msg += f" Resume with: --last-pair {last_processed}"
         print(msg)
 
-    return yes_pairs, no_pairs, bad_pairs, last_processed, retry_map
+    successful = len(yes_pairs) + flips + 2 * (len(no_pairs) + len(bad_pairs))
+    return yes_pairs, no_pairs, bad_pairs, last_processed, retry_map, successful
 
 
 def get_first_line(text: str) -> str:
@@ -398,7 +406,7 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
-def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=None):
+def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=None, successful_requests=None):
     """Write YES/NO/BAD pairs to results/{basename}_{prompt}_{pid}[_{server}][_{sys}]_mc{N}[.{tag}].{start_pair}.{yes,no,bad} files."""
     import os
     results_dir = "results"
@@ -431,7 +439,7 @@ def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=N
     if retry_map:
         filename = f"{prefix}.retries"
         with open(filename, 'w') as f:
-            print_retries(retry_map, file=f)
+            print_retries(retry_map, file=f, successful_requests=successful_requests)
         print(f"Saved retries to {filename}")
 
 
@@ -446,13 +454,13 @@ def get_pairs(args):
     return pairs, start_pair
 
 
-def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair, retry_map=None):
+def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair, retry_map=None, successful_requests=None):
     """Print resume info and save results if requested."""
     total = len(yes_pairs) + len(no_pairs) + len(bad_pairs)
     if args.num_pairs and last_processed and total == args.num_pairs:
         print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
     if args.save and args.pair_file:
-        save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair, retry_map)
+        save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair, retry_map, successful_requests)
 
 
 def main():
@@ -480,14 +488,21 @@ def main():
     pairs, start_pair = get_pairs(args)
 
     retry_map = None
+    successful = None
     if args.model is None and args.pair_file:
-        yes, no, bad, last, retry_map = asyncio.run(process_pairs_async(ctx, pairs, args))
+        t0 = time.monotonic()
+        yes, no, bad, last, retry_map, successful = asyncio.run(process_pairs_async(ctx, pairs, args))
+        duration = time.monotonic() - t0
+        num_pairs = len(yes) + len(no) + len(bad)
+        total_retries, _ = get_retry_stats(retry_map) if retry_map else (0, 0)
+        total_requests = successful + total_retries
+        print(f"Total {num_pairs} pairs ({total_requests} requests) in {fmt_duration(duration)}")
         if retry_map:
-            print_retries(retry_map)
+            print_retries(retry_map, successful_requests=successful)
     else:
         yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
-    handle_results(args, yes, no, bad, last, start_pair, retry_map)
+    handle_results(args, yes, no, bad, last, start_pair, retry_map, successful)
 
 if __name__ == "__main__":
     main()
