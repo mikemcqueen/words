@@ -213,9 +213,10 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
                 pending.add(task)
 
 
-async def _post_with_retry(client, *args, max_retries=3, label=None, **kwargs):
+async def _post_with_retry(client, *args, label=None, **kwargs):
     """Wrap client.post() with retry logic for transient errors."""
-    delays = [5, 20, 80]
+    delays = [5, 20, 40, 60, 80]
+    max_retries = len(delays)
     tag = f" [{label}]" if label else ""
     for attempt in range(max_retries + 1):
         try:
