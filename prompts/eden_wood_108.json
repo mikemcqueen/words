@@ -1,0 +1,6 @@
+[
+    {
+        "id": "prompt_1",
+        "text": "Think of '{PAIR}' as a clue. What might it refer to? Is that something recognizable? Answer with YES or NO only. Do not invent product names, brand names, or technical terms that may not exist."
+    }
+]

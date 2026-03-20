@@ -1,0 +1,36 @@
+* --mc auto should auto-detect concurrency based on host (or sum of all hosts). don't auto-detect unless
+  auto is specified (default: 1).
+
+
+
+* take questionable YES results from results/aardvark.yesno and add those pairs to a special pairs list,
+  then run evalpairs on it with -v which I *think* shows the thinking? and review the thinking. looking for
+  ways to further filter.
+
+* the best approach here may be to use the current good_prompt as the "first filter", and run additional
+  filters on the remaining YES results.
+  * I suppose I should review NO results as well and not just blindly accept them as bad (although aardvark
+    might not be the best test set to do that with).
+
+* tool (disposable) to parse aardvark.yesno and create .yes and .no files.
+
+
+--old--
+
+* i was going to supply a .probs output to claude to have it make a python script to output the top1k words.
+  but got sidetracked by fir trees.
+  top-k 100 probably good idea too.
+  * and filter out filter-words.
+    * and add more words to filter-words. 'the fir' is a good source.
+    * add single letters to filter-words.
+  i'm not sure a top-p is possible because the probabilities aren't renormalized. and i don't think it
+  makes any statistical sense to renormalize them.  but it may make practical sense.
+
+* try an instruct model with whatever that word is from some chatgpt chat about finding "meaningful pairs"
+  * use examples
+  * consider also having it dump the meaning or examples of the pair
+    e.g. aquatic bird duck,swan,...
+
+* it seems like we could dump pairs with probabilities, and have a "find high-value pairs" (with remaining letters
+  also being words) tool given a string of letters
+

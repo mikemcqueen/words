@@ -1,0 +1,90 @@
+[
+    {
+        "id": "p1",
+        "text": "Consider whether '{PAIR}' is a good intermediate-level crossword-puzzle clue. Does it have one or more obvious 'solutions' that would be widely recognized? Do not fabricate — if nothing comes to mind, answer NO. Be especially wary of inventing technical terms or specialized vocabulary that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p2",
+        "text": "Does '{PAIR}' work as a crossword-style clue — that is, do these words together point to a specific, well-known answer? Do not fabricate or guess; if no clear answer comes to mind, say NO. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p3",
+        "text": "Could '{PAIR}' work as a clue that points to a specific, widely recognized answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p4",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p5",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue? Answer YES only if a clear, well-known answer comes to mind right away. If you have to search hard for an answer, say NO. Do not invent product names, brand names, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p6",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a specific, widely recognized answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p7",
+        "text": "Does '{PAIR}' signify something specific and well-known — either as a name, description, or clue? Do not speculate or guess — if nothing identifiable comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p8",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Only answer YES if you are certain the answer exists and is well-known. Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p9",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Answer quickly — do not overthink this. If no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p10",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Do not fabricate or invent answers. Answer YES or NO only."
+    },
+    {
+        "id": "p11",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p12",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical, but some reference well-known things from various fields — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p13",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Not all word pairs have valid answers — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p14",
+        "text": "Could '{PAIR}' work as a crossword-style clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p15",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p16",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a clear, well-known answer? Many word pairs are nonsensical and have no valid answer — if no clear answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p17",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Answer quickly. Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p18",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer is obvious, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p19",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue? Consider what the words mean together. Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p20",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with one or more obvious solutions? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p21",
+        "text": "Does '{PAIR}' have a well-known crossword puzzle solution? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p22",
+        "text": "Could '{PAIR}' work as a crossword puzzle clue — as a name, description, or hint for a clear answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    }
+]
