@@ -5,6 +5,7 @@
 import argparse
 import asyncio
 import itertools
+import os
 import signal
 import sys
 import time
@@ -127,10 +128,10 @@ def format_result(orig_pair, yes, flipped, upstream=None):
     return f"{prefix}{orig_pair} {label}{as_txt}"
 
 
-async def async_request_and_classify(client, args, prompt):
+async def async_request_and_classify(client, args, prompt, label=None):
     """Send request and return (YES/NO/None, upstream, retries) classification."""
     if args.client == "yesno":
-        response, _, meta = await send_yesno_request(client, args, prompt)
+        response, _, meta = await send_yesno_request(client, args, prompt, label=label)
         return is_yes_response(None, response), meta.get('upstream'), {}
 
     retries = {}
@@ -142,7 +143,7 @@ async def async_request_and_classify(client, args, prompt):
 
     for attempt in range(3):
         t0 = time.monotonic()
-        response, _, payload = await send_openai_request(client, args, prompt)
+        response, _, payload = await send_openai_request(client, args, prompt, label=label)
         duration = time.monotonic() - t0
         if payload.get("finish_reason") != "stop":
             record_retry(payload, duration)
@@ -158,7 +159,7 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
     """Process a single pair with retry on flipped pair if NO."""
     pair = orig_pair.replace(',', ' ')
     prompt = ctx.replace("{PAIR}", pair)
-    yes, upstream, orig_retries = await async_request_and_classify(client, args, prompt)
+    yes, upstream, orig_retries = await async_request_and_classify(client, args, prompt, label=orig_pair)
     flipped = False
     retry_map = {}
 
@@ -170,7 +171,7 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
         flipped_pair = flip(orig_pair)
         pair = flipped_pair.replace(',', ' ')
         prompt = ctx.replace("{PAIR}", pair)
-        flip_yes, upstream, flip_retries = await async_request_and_classify(client, args, prompt)
+        flip_yes, upstream, flip_retries = await async_request_and_classify(client, args, prompt, label=flipped_pair)
         if flip_yes:
             yes = flipped = True
         elif orig_yes is None:
@@ -181,7 +182,7 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
     return orig_pair, yes, flipped, upstream, retry_map
 
 
-async def process_pairs_async(ctx: str, pairs, args):
+async def process_pairs_async(ctx: str, pairs, args, writer=None):
     """Process all pairs with max_concurrent in flight at once."""
     yes_pairs = []
     no_pairs = []
@@ -189,34 +190,40 @@ async def process_pairs_async(ctx: str, pairs, args):
     retry_map = {}
     flips = 0
 
-    async def process(client, orig_pair):
-        return await process_pair_async(client, args, ctx, orig_pair)
+    async def process(client, item):
+        seq, orig_pair = item
+        result = await process_pair_async(client, args, ctx, orig_pair)
+        return (seq, *result)
 
-    last_processed = None
+    numbered_pairs = enumerate(pairs, start=writer.next_seq if writer else 0)
     try:
-        async for result in run_concurrent(pairs, process, args.max_concurrent, args.timeout):
-            pair, yes, flipped, upstream, pair_retries = result
+        async for result in run_concurrent(numbered_pairs, process, args.max_concurrent, args.timeout):
+            seq, pair, yes, flipped, upstream, pair_retries = result
             print(format_result(pair, yes, flipped, upstream))
-            last_processed = pair
             retry_map.update(pair_retries)
             if flipped:
                 flips += 1
             if yes is True:
+                classification = "yes"
                 yes_pairs.append(pair)
             elif yes is False:
+                classification = "no"
                 no_pairs.append(pair)
             else:
+                classification = "bad"
                 bad_pairs.append(pair)
+            if writer:
+                writer.submit(seq, pair, classification)
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
             print(f"\n{type(e).__name__}: {e}")
         msg = f"Interrupted. {len(yes_pairs)} YES, {len(no_pairs)} NO, {len(bad_pairs)} BAD."
-        if last_processed:
-            msg += f" Resume with: --last-pair {last_processed}"
+        if args.save:
+            msg += " Re-run to continue."
         print(msg)
 
     successful = len(yes_pairs) + flips + 2 * (len(no_pairs) + len(bad_pairs))
-    return yes_pairs, no_pairs, bad_pairs, last_processed, retry_map, successful
+    return yes_pairs, no_pairs, bad_pairs, retry_map, successful
 
 
 def get_first_line(text: str) -> str:
@@ -317,9 +324,7 @@ def parse_args():
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
     parser.add_argument('--save', action='store_true',
-                        help="Save YES/NO/BAD pairs to results/ directory")
-    parser.add_argument('--last-pair', type=str, metavar='TYPE,PAIR',
-                        help="Skip pairs in --pair-file up to and including this pair, then resume processing")
+                        help="Save YES/NO/BAD pairs to results/ directory (auto-resumes from existing files)")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
                         help="Max concurrent requests (default: 1)")
     parser.add_argument('--nginx-config', type=str,
@@ -349,10 +354,6 @@ def parse_args():
     if args.save and not args.pair_file:
         parser.error("--save requires --pair-file")
 
-    # --last-pair requires --pair-file
-    if args.last_pair and not args.pair_file:
-        parser.error("--last-pair requires --pair-file")
-
     # --num-pairs requires --pair-file
     if args.num_pairs and not args.pair_file:
         parser.error("--num-pairs requires --pair-file")
@@ -369,31 +370,13 @@ def single_pair_generator(pair_string):
     """Generator that yields a single pair string, then ends."""
     yield pair_string
 
-def file_pair_generator(filename, last_pair=None):
-    """Generator that yields pairs from a file. If last_pair is set, skip up to and including it, then yield the rest.
-    Returns (generator, start_index) where start_index is the 0-based index of the first pair yielded."""
-    def _gen(f, start_index):
+def file_pair_generator(filename):
+    """Generator that yields pairs from a file."""
+    with open(filename, 'r') as f:
         for line in f:
             pair = line.strip()
             if pair:
                 yield pair
-
-    f = open(filename, 'r')
-    start_index = 0
-    if last_pair:
-        found = False
-        for line in f:
-            pair = line.strip()
-            if pair:
-                start_index += 1
-            if pair == last_pair:
-                found = True
-                break
-        if not found:
-            f.close()
-            raise ValueError(f"--last-pair '{last_pair}' not found in {filename}")
-
-    return _gen(f, start_index), start_index
 
 def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     """Load a prompt from a JSON prompt file by ID."""
@@ -406,13 +389,36 @@ def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
     raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
 
 
-def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=None, successful_requests=None):
-    """Write YES/NO/BAD pairs to results/{basename}_{prompt}_{pid}[_{server}][_{sys}]_mc{N}[.{tag}].{start_pair}.{yes,no,bad} files."""
-    import os
+class IncrementalWriter:
+    def __init__(self, prefix, next_seq=0):
+        self.prefix = prefix
+        self.files = {
+            "yes": open(f"{prefix}.yes", "a"),
+            "no":  open(f"{prefix}.no", "a"),
+            "bad": open(f"{prefix}.bad", "a"),
+        }
+        self.next_seq = next_seq
+        self.buffer = {}         # {seq: (pair, classification)}
+
+    def submit(self, seq, pair, classification):
+        """Buffer a result; flush all consecutive completed results."""
+        self.buffer[seq] = (pair, classification)
+        while self.next_seq in self.buffer:
+            p, c = self.buffer.pop(self.next_seq)
+            self.files[c].write(p + "\n")
+            self.files[c].flush()
+            self.next_seq += 1
+
+    def close(self):
+        for f in self.files.values():
+            f.close()
+
+
+def make_result_prefix(args):
+    """Build the result file prefix from args."""
     results_dir = "results"
     os.makedirs(results_dir, exist_ok=True)
     basename = os.path.basename(args.pair_file)
-    # Build prompt source and pid
     if args.prompt_file:
         prompt_source = Path(args.prompt_file).stem
         pid = args.prompt_id
@@ -426,16 +432,32 @@ def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=N
     if args.system_prompt_filename:
         base_name += f"_{Path(args.system_prompt_filename).stem}"
     base_name += f"_mc{args.max_concurrent}"
-    base_name += f"_{start_pair}"
     if args.tag:
         base_name += f".{args.tag}"
-    prefix = f"{results_dir}/{base_name}"
-    for pairs, ext in [(yes_pairs, "yes"), (no_pairs, "no"), (bad_pairs, "bad")]:
-        filename = f"{prefix}.{ext}"
-        with open(filename, 'w') as f:
-            for p in pairs:
-                f.write(p + '\n')
-        print(f"Saved {len(pairs)} {ext.upper()} pairs to {filename}")
+    return f"{results_dir}/{base_name}"
+
+
+def count_completed_pairs(prefix):
+    """Count completed pairs across .yes/.no/.bad files."""
+    count = 0
+    for ext in ("yes", "no", "bad"):
+        path = f"{prefix}.{ext}"
+        if os.path.exists(path):
+            with open(path) as f:
+                count += sum(1 for line in f if line.strip())
+    return count
+
+
+def save_results(args, yes_pairs, no_pairs, bad_pairs, retry_map=None, successful_requests=None, writer=None):
+    """Write results. If writer was used, only write .retries file."""
+    prefix = make_result_prefix(args)
+    if not writer:
+        for pairs, ext in [(yes_pairs, "yes"), (no_pairs, "no"), (bad_pairs, "bad")]:
+            filename = f"{prefix}.{ext}"
+            with open(filename, 'w') as f:
+                for p in pairs:
+                    f.write(p + '\n')
+            print(f"Saved {len(pairs)} {ext.upper()} pairs to {filename}")
     if retry_map:
         filename = f"{prefix}.retries"
         with open(filename, 'w') as f:
@@ -443,24 +465,25 @@ def save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair=0, retry_map=N
         print(f"Saved retries to {filename}")
 
 
-def get_pairs(args):
-    """Return (pairs_generator, start_pair_index) from args."""
-    start_pair = 0
+def get_pairs(args, skip=0):
+    """Return pairs generator from args, optionally skipping the first `skip` pairs."""
     if args.pair:
-        return single_pair_generator(args.pair), start_pair
-    pairs, start_pair = file_pair_generator(args.pair_file, last_pair=args.last_pair)
+        return single_pair_generator(args.pair)
+    pairs = file_pair_generator(args.pair_file)
+    if skip:
+        pairs = itertools.islice(pairs, skip, None)
     if args.num_pairs:
         pairs = itertools.islice(pairs, args.num_pairs)
-    return pairs, start_pair
+    return pairs
 
 
-def handle_results(args, yes_pairs, no_pairs, bad_pairs, last_processed, start_pair, retry_map=None, successful_requests=None):
-    """Print resume info and save results if requested."""
+def handle_results(args, yes_pairs, no_pairs, bad_pairs, retry_map=None, successful_requests=None, writer=None):
+    """Print batch info and save results if requested."""
     total = len(yes_pairs) + len(no_pairs) + len(bad_pairs)
-    if args.num_pairs and last_processed and total == args.num_pairs:
-        print(f"Processed {args.num_pairs} pairs. Resume with: --last-pair {last_processed}")
+    if args.num_pairs and total == args.num_pairs:
+        print(f"Processed {args.num_pairs} pairs. Re-run to continue.")
     if args.save and args.pair_file:
-        save_results(args, yes_pairs, no_pairs, bad_pairs, start_pair, retry_map, successful_requests)
+        save_results(args, yes_pairs, no_pairs, bad_pairs, retry_map, successful_requests, writer)
 
 
 def main():
@@ -485,13 +508,27 @@ def main():
     if args.prompt_file:
         ctx = load_prompt_from_file(args.prompt_file, args.prompt_id)
 
-    pairs, start_pair = get_pairs(args)
+    # When --save, count existing results and resume from where we left off
+    skip = 0
+    writer = None
+    if args.save and args.pair_file:
+        prefix = make_result_prefix(args)
+        skip = count_completed_pairs(prefix)
+        if skip:
+            print(f"Resuming: skipping {skip} completed pairs")
+        writer = IncrementalWriter(prefix, next_seq=skip)
+
+    pairs = get_pairs(args, skip=skip)
 
     retry_map = None
     successful = None
     if args.model is None and args.pair_file:
         t0 = time.monotonic()
-        yes, no, bad, last, retry_map, successful = asyncio.run(process_pairs_async(ctx, pairs, args))
+        try:
+            yes, no, bad, retry_map, successful = asyncio.run(process_pairs_async(ctx, pairs, args, writer))
+        finally:
+            if writer:
+                writer.close()
         duration = time.monotonic() - t0
         num_pairs = len(yes) + len(no) + len(bad)
         total_retries, _ = get_retry_stats(retry_map) if retry_map else (0, 0)
@@ -502,7 +539,7 @@ def main():
     else:
         yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args)
 
-    handle_results(args, yes, no, bad, last, start_pair, retry_map, successful)
+    handle_results(args, yes, no, bad, retry_map, successful, writer)
 
 if __name__ == "__main__":
     main()

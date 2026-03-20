@@ -179,7 +179,7 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
             nonlocal in_flight
             in_flight += 1
             ts = time.strftime("%H:%M:%S")
-            label = item['pair'] if isinstance(item, dict) else item
+            label = item['pair'] if isinstance(item, dict) else item[1] if isinstance(item, tuple) else item
             print(f"[{ts}] >>> REQUEST START {label} in_flight={in_flight} pending={len(pending)}")
             if in_flight > max_concurrent:
                 print(f"[{ts}] !!! BUG: in_flight ({in_flight}) > max_concurrent ({max_concurrent})")
@@ -213,9 +213,10 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
                 pending.add(task)
 
 
-async def _post_with_retry(client, *args, max_retries=3, **kwargs):
+async def _post_with_retry(client, *args, max_retries=3, label=None, **kwargs):
     """Wrap client.post() with retry logic for transient errors."""
     delays = [5, 20, 80]
+    tag = f" [{label}]" if label else ""
     for attempt in range(max_retries + 1):
         try:
             response = await client.post(*args, **kwargs)
@@ -226,14 +227,14 @@ async def _post_with_retry(client, *args, max_retries=3, **kwargs):
                 raise
             delay = delays[attempt]
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] RETRY {attempt+1}/{max_retries} after {type(e).__name__}, waiting {delay}s", file=sys.stderr)
+            print(f"[{ts}] RETRY {attempt+1}/{max_retries}{tag} after {type(e).__name__}, waiting {delay}s", file=sys.stderr)
             await asyncio.sleep(delay)
         except httpx.HTTPStatusError as e:
             if e.response.status_code < 500 or attempt >= max_retries:
                 raise
             delay = delays[attempt]
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] RETRY {attempt+1}/{max_retries} after HTTP {e.response.status_code}, waiting {delay}s", file=sys.stderr)
+            print(f"[{ts}] RETRY {attempt+1}/{max_retries}{tag} after HTTP {e.response.status_code}, waiting {delay}s", file=sys.stderr)
             await asyncio.sleep(delay)
 
 
@@ -260,10 +261,10 @@ def _extract_upstream(response) -> str | None:
     return SERVER_IPS.get(ip, addr)
 
 
-async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str) -> tuple[str, dict]:
+async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict]:
     """POST {base_url}/yesno with {"text": prompt}"""
     url = f"{args.host}:{args.port}/yesno"
-    response = await _post_with_retry(client, url, json={"text": prompt})
+    response = await _post_with_retry(client, url, json={"text": prompt}, label=label)
     js = response.json()
     upstream = _extract_upstream(response)
     if upstream:
@@ -285,7 +286,7 @@ def query_model_id(host: str, port: int, key: str = None) -> str:
     return data[0]["id"]
 
 
-async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku") -> tuple[str, dict]:
+async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None) -> tuple[str, dict]:
     """POST {base_url}/v1/chat/completions with OpenAI chat format"""
     url = f"{args.host}:{args.port}/v1/chat/completions"
 
@@ -302,7 +303,7 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
         "messages": messages,
         **get_inference_params(args),
     }
-    response = await _post_with_retry(client, url, headers=headers, json=payload)
+    response = await _post_with_retry(client, url, headers=headers, json=payload, label=label)
     upstream = _extract_upstream(response)
     payload = response.json()["choices"][0]
     message = payload["message"]
