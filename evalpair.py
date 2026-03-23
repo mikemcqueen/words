@@ -183,7 +183,7 @@ async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pai
     return orig_pair, yes, flipped, upstream, retry_map
 
 
-async def process_pairs_async(ctx: str, pairs, args, writer=None):
+async def process_pairs_async(ctx: str, pairs, args, writer=None, on_result=None):
     """Process all pairs with max_concurrent in flight at once."""
     yes_pairs = []
     no_pairs = []
@@ -213,6 +213,8 @@ async def process_pairs_async(ctx: str, pairs, args, writer=None):
             else:
                 classification = "bad"
                 bad_pairs.append(pair)
+            if on_result:
+                on_result(pair, classification)
             if writer:
                 writer.submit(seq, pair, classification)
     except BaseException as e:
@@ -265,7 +267,7 @@ def evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair):
             flipped = True
     return orig_pair, yes, flipped
 
-def process_pairs_sync(ctx, pairs, model, tokenizer, args, writer=None):
+def process_pairs_sync(ctx, pairs, model, tokenizer, args, writer=None, on_result=None):
     """Process all pairs synchronously (local model path)."""
     yes_pairs, no_pairs, bad_pairs, last_processed = [], [], [], None
     for seq, orig_pair in enumerate(pairs, start=writer.next_seq if writer else 0):
@@ -281,6 +283,8 @@ def process_pairs_sync(ctx, pairs, model, tokenizer, args, writer=None):
         else:
             classification = "bad"
             bad_pairs.append(orig_pair)
+        if on_result:
+            on_result(orig_pair, classification)
         if writer:
             writer.submit(seq, orig_pair, classification)
     return yes_pairs, no_pairs, bad_pairs, last_processed
@@ -466,40 +470,26 @@ def prepare_bad_file_mode(args):
     if bad_path.suffix != ".bad":
         return None
 
-    if args.pair:
-        raise AssertionError("prepare_bad_file_mode called without --pair-file")
-
     errors = []
-    base_name = bad_path.name[:-len(".bad")]
-    metadata_base = re.sub(r"_mc\d+(?:\..+)?$", "", base_name)
-    if metadata_base == base_name:
-        errors.append(f"bad result filename missing expected _mcN segment: {bad_path}")
-
     if args.num_pairs:
         errors.append("--num-pairs cannot be used with a .bad result file")
 
-    pair_basename = None
-    prefix = None
-    result_paths = None
-    if metadata_base != base_name:
-        expected_suffix = get_expected_bad_metadata_suffix(args)
-        if not metadata_base.endswith(expected_suffix):
-            errors.append(
-                "bad result filename does not match command-line prompt/server/system-prompt options:\n"
-                f"  file: {bad_path.name}\n"
-                f"  expected suffix: *{expected_suffix}_mcN[.tag].bad"
-            )
+    base_name = bad_path.name[:-len(".bad")]
+    metadata_base = re.sub(r"_mc\d+(?:\..+)?$", "", base_name)
+    expected_suffix = get_expected_bad_metadata_suffix(args)
+    if not metadata_base.endswith(expected_suffix):
+        errors.append(
+            "bad result filename does not match command-line prompt/server/system-prompt options:\n"
+            f"  file: {bad_path.name}\n"
+            f"  expected suffix: *{expected_suffix}[optional _mcN[.tag]].bad"
+        )
 
-        pair_basename = metadata_base[:-len(expected_suffix)]
-        if not pair_basename:
-            errors.append(f"could not determine original pair filename from {bad_path}")
-
-        prefix = str(bad_path)[:-len(".bad")]
-        result_paths = get_result_paths(prefix)
-        missing = [path for ext, path in result_paths.items() if ext in ("yes", "no") and not os.path.exists(path)]
-        if missing:
-            errors.append("corresponding result files are missing:")
-            errors.extend(f"  {path}" for path in missing)
+    prefix = str(bad_path)[:-len(".bad")]
+    result_paths = get_result_paths(prefix)
+    missing = [path for ext, path in result_paths.items() if ext in ("yes", "no") and not os.path.exists(path)]
+    if missing:
+        errors.append("corresponding result files are missing:")
+        errors.extend(f"  {path}" for path in missing)
 
     if errors:
         print("Error: cannot process .bad pair file:", file=sys.stderr)
@@ -520,8 +510,7 @@ def prepare_bad_file_mode(args):
 
     return {
         "prefix": prefix,
-        "pair_basename": pair_basename,
-        "existing_bad_pairs": bad_pairs,
+        "bad_pairs": bad_pairs,
         "paths": result_paths,
     }
 
@@ -567,7 +556,7 @@ def get_pairs(args, skip=0):
 
 
 def get_bad_pairs(args, state):
-    pairs = iter(state["existing_bad_pairs"])
+    pairs = iter(sorted(state["bad_pairs"]))
     if args.num_pairs:
         pairs = itertools.islice(pairs, args.num_pairs)
     return pairs
@@ -621,10 +610,20 @@ def main():
 
     retry_map = None
     successful = None
+    on_result = None
+    if bad_mode:
+        bad_pairs = bad_mode["bad_pairs"]
+
+        def on_result(pair, classification):
+            if classification == "bad":
+                bad_pairs.add(pair)
+            else:
+                bad_pairs.discard(pair)
+
     if args.model is None and (args.pair_file or args.pair):
         t0 = time.monotonic()
         try:
-            yes, no, bad, retry_map, successful = asyncio.run(process_pairs_async(ctx, pairs, args, writer))
+            yes, no, bad, retry_map, successful = asyncio.run(process_pairs_async(ctx, pairs, args, writer, on_result=on_result))
         finally:
             if writer:
                 writer.close()
@@ -636,14 +635,14 @@ def main():
         if retry_map:
             print_retries(retry_map, successful_requests=successful)
     else:
-        yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args, writer)
+        yes, no, bad, last = process_pairs_sync(ctx, pairs, model, tokenizer, args, writer, on_result=on_result)
 
     if bad_mode:
         bad_filename = bad_mode["paths"]["bad"]
         with open(bad_filename, "w") as f:
-            for pair in bad:
+            for pair in sorted(bad_mode["bad_pairs"]):
                 f.write(pair + "\n")
-        print(f"Saved {len(bad)} BAD pairs to {bad_filename}")
+        print(f"Saved {len(bad_mode['bad_pairs'])} BAD pairs to {bad_filename}")
         if retry_map:
             retries_filename = f"{bad_mode['prefix']}.retries"
             with open(retries_filename, "w") as f:
