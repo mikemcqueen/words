@@ -45,6 +45,8 @@ def load_pairs_from_args(args) -> List[Dict]:
         return load_expected_pairs(args.yes_pairs, "YES")
     elif args.no_pairs:
         return load_expected_pairs(args.no_pairs, "NO")
+    elif args.any_pairs:
+        return load_expected_pairs(args.any_pairs, "ANY")
     else:
         return load_pairs(args.pairs)
 
@@ -96,7 +98,11 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             del message["reasoning_content"]
             finish_reason = payload["finish_reason"]
         seconds_elapsed = time.time() - start_time
-        correct = actual.upper().startswith(expected.upper())
+        upper_actual = actual.upper()
+        if expected == "ANY":
+            correct = upper_actual.startswith("YES") or upper_actual.startswith("NO")
+        else:
+            correct = upper_actual.startswith(expected.upper())
         if finish_reason:
             correct = correct and finish_reason == "stop"
         if args.verbose:
@@ -180,6 +186,8 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         base_name += f"_{Path(args.yes_pairs).name}"
     elif args.no_pairs:
         base_name += f"_{Path(args.no_pairs).name}"
+    elif args.any_pairs:
+        base_name += f"_{Path(args.any_pairs).name}"
     server_name = get_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
@@ -327,6 +335,8 @@ Examples:
                       help="Pairs text file (one per line) — all expected YES")
     pairs_group.add_argument("--no-pairs", type=str,
                       help="Pairs text file (one per line) — all expected NO")
+    pairs_group.add_argument("--any-pairs", type=str,
+                      help="Pairs text file (one per line) — accept either YES or NO, but not None")
     parser.add_argument("--think", action="store_true",
                       help="Enable thinking output (for models that support it)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -338,7 +348,7 @@ Examples:
 
     args = parser.parse_args()
 
-    if not args.pairs and not args.yes_pairs and not args.no_pairs:
+    if not args.pairs and not args.yes_pairs and not args.no_pairs and not args.any_pairs:
         args.pairs = PAIRS_FILE
 
     if args.system_prompt:
