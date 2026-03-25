@@ -1,7 +1,6 @@
-* --mc auto should auto-detect concurrency based on host (or sum of all hosts). don't auto-detect unless
-  auto is specified (default: 1).
+* should probably incrementally save retry data as well.
 
-
+--old--
 
 * take questionable YES results from results/aardvark.yesno and add those pairs to a special pairs list,
   then run evalpairs on it with -v which I *think* shows the thinking? and review the thinking. looking for
@@ -14,8 +13,6 @@
 
 * tool (disposable) to parse aardvark.yesno and create .yes and .no files.
 
-
---old--
 
 * i was going to supply a .probs output to claude to have it make a python script to output the top1k words.
   but got sidetracked by fir trees.

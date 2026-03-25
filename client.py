@@ -309,8 +309,8 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
     payload = response.json()["choices"][0]
     message = payload["message"]
     del payload["message"]
-    actual = message["content"]
+    response = message["content"]
     del message["content"]
     if upstream:
         payload['upstream'] = upstream
-    return actual, message, payload
+    return response, message, payload

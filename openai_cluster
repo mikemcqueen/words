@@ -6,8 +6,8 @@ upstream gpu_cluster {
      #server 192.168.0.110:8000 max_conns=2; # RAINBOW
      #server 192.168.0.112:8000 max_conns=2; # MINERVA
 
-     server 192.168.0.111:8000 max_conns=6; # JUNIPER
-     server 192.168.0.114:8000 max_conns=6; # MINI
+     server 192.168.0.111:8000 max_conns=8; # JUNIPER
+     server 192.168.0.114:8000 max_conns=8; # MINI
 
      # queue requires nginx Plus — not available in open-source nginx
      #queue 4 timeout=60s;  # queue up to N requests, wait 60s for a slot

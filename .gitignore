@@ -4,7 +4,6 @@ wt/**
 out/**
 out*
 data*/**
-eval/**
 words/**
 results/**
-plans/**
+junk/**

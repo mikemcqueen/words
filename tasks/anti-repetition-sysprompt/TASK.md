@@ -9,11 +9,11 @@ Review the following file contents:
 
 * prompt p22 in prompts/crossword.json
 * words and their expected answer in pairs.json
-* system prompts in results/sys?
-* results in the results/crossword_p22_{HOST}_sys?_mc6.?.json
+* system prompts in results/sysN where N is a number
+* results in the results/crossword_p22_{HOST}_sys{N}_mc6.{ITER}.json where ITER is a number
 
 These represent the prompt we're testing, the words that were substituted within those prompts,
-the system prompts we've already tried, and the results of testing those prompts with different
+the system prompts we've already tried, and the results of testing the prompts with different
 system prompts and the substituted words on different hosts.
 
 Each result file has a score, which represents the percentage of correct answers for all substituted words.
@@ -22,7 +22,7 @@ Each result file has a score, which represents the percentage of correct answers
 
 Analyze the reasoning of results where the "finish_reason" field is "length". This indicates that the
 reasoning went on for too long. From those results, you're specifically looking for degenerative reasoning
-resulting from repetition of the same words or token sequences, from enumeration of many possibilities.
+resulting from repetition of the same words or token sequences, or from enumeration of many possibilities.
 
 Based on your analysis, design a new system prompt that you think will solve the degenerate reasoning problem,
 while not impacting the score.

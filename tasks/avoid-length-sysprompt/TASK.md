@@ -13,7 +13,7 @@ Review the following file contents:
 
 * prompt p22 in prompts/crossword.json
 * words and their expected answer in pairs.json
-* system prompts in results/sysN where N is a number
+* system prompts in prompts/sysN where N is a number
 * results in results/crossword_p22_juniper_sys26_mc8.pairs2.ITER.json where ITER is a number
 
 These represent the prompt we're testing, the words that were substituted within those prompts,
@@ -21,6 +21,9 @@ the system prompts we've already tried, and the results of testing the prompts w
 system prompts and the substituted words.
 
 Each result file has a score, which represents the percentage of correct answers for all substituted words.
+
+prompts/sys26 was a very successful system prompt and I suggest making incremental modifications to
+that prompt in order to achieve your goal.
 
 ## What To Do
 
@@ -41,8 +44,16 @@ likely that it is purely probabilistic that the loop continues, and that the sys
 on whether it continues. Therefore, when addressing degenerative reasoning, the goal should be preventing it
 from entering a loop - not how to exit a loop once it has been entered.
 
-Once you have a new system prompt, save it as NEW file named prompts/sysN where N is the next unused number.
+Keep in mind that you are modifying the *system* prompt, which is meant to address how the model thinks and
+generates responses more generally. The system prompt shouldn't contain anything specific to crossword puzzle
+clues or word-pairs, or about limiting the response to YES/NO - that is all contained with the regular prompt.
+
+Once you have a new system prompt, validate it via tasks/validate-sysprompt/TASK.md.
+
+If the validation suceeds, save it as NEW file named prompts/sysN where N is the next unused number.
 Do not edit previously created system prompt files. Substitute that path in the evaluation step below.
+
+If validation fails, continue from **What To Do** above.
 
 ## How To Evaluate Your System Prompt
 

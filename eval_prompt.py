@@ -78,6 +78,17 @@ def load_all_prompts() -> List[Dict]:
     return all_prompts
 
 
+def parse_yesno_response(yesno: str) -> str | None:
+    """Return normalized YES/NO for exact matches, else None."""
+    if yesno:
+        yesno = yesno.strip().upper()
+        if yesno.startswith("YES"):
+            return "YES"
+        elif yesno.startswith("NO"):
+            return "NO"
+    return None
+
+
 async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                                  pair: str, expected: str, args) -> dict:
     """
@@ -91,30 +102,31 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
         payload = None
         start_time = time.time()
         if args.client == "yesno":
-            actual, message, _ = await send_yesno_request(client, args, prompt)
+            response, message, _ = await send_yesno_request(client, args, prompt)
         else:
-            actual, message, payload = await send_openai_request(client, args, prompt, MODEL)
+            response, message, payload = await send_openai_request(client, args, prompt, MODEL)
             reasoning = message["reasoning_content"]
             del message["reasoning_content"]
             finish_reason = payload["finish_reason"]
         seconds_elapsed = time.time() - start_time
-        upper_actual = actual.upper()
+        yesno = parse_yesno_response(response)
+        expected = expected.upper()
         if expected == "ANY":
-            correct = upper_actual.startswith("YES") or upper_actual.startswith("NO")
+            correct = yesno in ("YES", "NO")
         else:
-            correct = upper_actual.startswith(expected.upper())
+            correct = yesno == expected
         if finish_reason:
             correct = correct and finish_reason == "stop"
         if args.verbose:
             print(f"{pair}: {'✓' if correct else '✗'}")
-            print(f"  content: {actual}")
+            print(f"  content: {response}")
             if reasoning:
                 print(f"  reasoning:\n===============\n{reasoning}\n===============")
             if payload:
                 print(f"  payload: {payload}")
             print(f"  message: {message}")
         return {"pair": pair, "expected": expected, "correct": correct,
-                "actual": actual, "message": message, "reasoning": reasoning,
+                "actual": response, "message": message, "reasoning": reasoning,
                 "finish_reason": finish_reason, "seconds_elapsed": seconds_elapsed}
     except Exception as e:
         ts = time.strftime("%H:%M:%S")

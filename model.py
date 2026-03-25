@@ -79,7 +79,7 @@ def is_instruct_model(model):
 
 def is_quantized(name: str):
     name = name.lower()
-    return "-QAT" in name
+    return "-qat" in name
 
 def is_quantized_model(model):
     if getattr(model, 'is_mlx', False):
