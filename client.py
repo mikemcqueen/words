@@ -3,6 +3,8 @@
 # Shared async HTTP client utilities for concurrent request processing.
 
 import asyncio
+import argparse
+import json
 import re
 import sys
 import time
@@ -10,7 +12,7 @@ from pathlib import Path
 
 import httpx
 
-from model import add_thinking
+from model import adjust_thinking
 
 SERVERS = {
     "localhost": "127.0.0.1",
@@ -18,6 +20,38 @@ SERVERS = {
     "mini": "192.168.0.114",
 }
 SERVER_IPS = {ip: name for name, ip in SERVERS.items()}
+
+
+def parse_on_off(value: str) -> bool:
+    """Parse an on/off CLI value into a boolean."""
+    normalized = value.lower()
+    if normalized == "on":
+        return True
+    if normalized == "off":
+        return False
+    raise argparse.ArgumentTypeError("expected 'on' or 'off'")
+
+
+def add_inference_args(parser: argparse.ArgumentParser) -> None:
+    """Add shared inference-related CLI arguments to a parser."""
+    parser.add_argument("--temp", type=float, default=1.0,
+                        help="Sampling temperature (default: 1.0)")
+    parser.add_argument("--top-p", "--top_p", dest="top_p", type=float, default=0.95,
+                        help="Top-p sampling (default: 0.95)")
+    parser.add_argument("--top-k", "--top_k", dest="top_k", type=int, default=20,
+                        help="Top-k sampling (default: 20)")
+    parser.add_argument("--min-p", "--min_p", dest="min_p", type=float, default=0.01,
+                        help="Min-p sampling (default: 0.01)")
+    parser.add_argument("--repeat-penalty", "--rp", dest="repeat_penalty", type=float, default=1.0,
+                        help="Repeat penalty (default: 1.0)")
+    parser.add_argument("--repeat-last-n", "--rln", dest="repeat_last_n", type=int, default=32,
+                        help="Repeat last n tokens (default: 32)")
+    parser.add_argument("--presence-penalty", "--pp", dest="presence_penalty",
+                        type=float, default=0.0,
+                        help="Presence penalty (default: 0.0)")
+    parser.add_argument("--thinking", type=parse_on_off, choices=(True, False), default=True,
+                        metavar="on|off",
+                        help="Control API thinking mode (default: on)")
 
 
 def parse_nginx_upstream(config_path=None):
@@ -239,18 +273,24 @@ async def _post_with_retry(client, *args, label=None, **kwargs):
             await asyncio.sleep(delay)
 
 
-def get_inference_params(args) -> dict:
-    """Extract inference parameters from args into a canonical dict."""
-    params = {
+def add_inference_options(payload: dict, args) -> dict:
+    """Populate a request payload with shared inference options."""
+    payload.update({
         "temperature": args.temp,
         "top_p": args.top_p,
+        "top_k": args.top_k,
         "min_p": args.min_p,
         "repeat_penalty": args.repeat_penalty,
         "repeat_last_n": args.repeat_last_n,
-    }
-    if args.think:
-        add_thinking(params, args.model_id)
-    return params
+        "presence_penalty": args.presence_penalty,
+    })
+    adjust_thinking(payload, args.model_id, args.thinking)
+    return payload
+
+
+def get_inference_params(args) -> dict:
+    """Extract inference parameters from args into a canonical dict."""
+    return add_inference_options({}, args)
 
 
 def _extract_upstream(response) -> str | None:
@@ -299,11 +339,12 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
     if args.system_prompt:
             messages.append({"role": "system", "content": args.system_prompt})
     messages.append({"role": "user", "content": prompt})
-    payload = {
+    payload = add_inference_options({
         "model": model,
         "messages": messages,
-        **get_inference_params(args),
-    }
+    }, args)
+    if args.verbose:
+        print(json.dumps(payload, indent=2))
     response = await _post_with_retry(client, url, headers=headers, json=payload, label=label)
     upstream = _extract_upstream(response)
     payload = response.json()["choices"][0]

@@ -228,13 +228,14 @@ def clear_cache(device):
 
 def supports_thinking(model_id: str) -> bool:
     """Return True if the remote model supports thinking output."""
-    return model_id.upper().startswith("GLM")
+    return model_id.upper().startswith("GLM") or model_id.upper().startswith("QWEN")
 
 
-def add_thinking(payload: dict, model_id: str) -> None:
-    """Modify an OpenAI-style request payload to enable thinking for the given model."""
-    if model_id.upper().startswith("GLM"):
-        payload["think"] = True
+def adjust_thinking(payload: dict, model_id: str, thinking: bool) -> None:
+    """Modify thinking-related request fields for the given model."""
+    if model_id.upper().startswith("GLM") or model_id.upper().startswith("QWEN"):
+        if not thinking:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
 
 def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> str:

@@ -18,9 +18,7 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from model import supports_thinking
-
+from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
 # Configuration
 PAIRS_FILE = "pairs.json"
 PROMPTS_DIR = Path("prompts")
@@ -105,8 +103,8 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             response, message, _ = await send_yesno_request(client, args, prompt)
         else:
             response, message, payload = await send_openai_request(client, args, prompt, MODEL)
-            reasoning = message["reasoning_content"]
-            del message["reasoning_content"]
+            reasoning = message.get("reasoning_content")
+            message.pop("reasoning_content", None)
             finish_reason = payload["finish_reason"]
         seconds_elapsed = time.time() - start_time
         yesno = parse_yesno_response(response)
@@ -328,16 +326,7 @@ Examples:
                       help="Server host (default: localhost)")
     parser.add_argument("--port", type=int, default=8000,
                       help="Server port (default: 8000)")
-    parser.add_argument("--temp", type=float, default=1.0,
-                      help="Sampling temperature (default: 1.0)")
-    parser.add_argument("--top_p", type=float, default=0.95,
-                      help="Top-p sampling (default: 0.95)")
-    parser.add_argument("--min_p", type=float, default=0.01,
-                      help="Min-p sampling (default: 0.01)")
-    parser.add_argument("--repeat-penalty", "--rp", type=float, default=1.0,
-                      help="Repeat penalty (default: 1.0)")
-    parser.add_argument("--repeat-last-n", "--rln", type=int, default=32,
-                      help="Repeat last n tokens (default: 32)")
+    add_inference_args(parser)
     parser.add_argument("--timeout", type=float, default=300.0,
                       help="Request timeout in seconds (default: 300)")
     pairs_group = parser.add_mutually_exclusive_group()
@@ -349,8 +338,6 @@ Examples:
                       help="Pairs text file (one per line) — all expected NO")
     pairs_group.add_argument("--any-pairs", type=str,
                       help="Pairs text file (one per line) — accept either YES or NO, but not None")
-    parser.add_argument("--think", action="store_true",
-                      help="Enable thinking output (for models that support it)")
     parser.add_argument("-v", "--verbose", action="store_true",
                       help="Show actual response and message")
     parser.add_argument("--max-concurrent", "--mc", type=int, default=1,
@@ -377,9 +364,6 @@ Examples:
     auto_detect_max_concurrent(args)
 
     args.model_id = query_model_id(args.host, args.port, args.key)
-    if args.think and not supports_thinking(args.model_id):
-        print(f"Error: --think not supported for model '{args.model_id}'")
-        return
 
     pairs = load_pairs_from_args(args)
     if not pairs:

@@ -17,9 +17,9 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
 from info import info
-from model import load_model, is_gemma_model, specialize_prompt, generate_text, supports_thinking
+from model import load_model, is_gemma_model, specialize_prompt, generate_text
 
 def generate_response(model, tokenizer, prompt: str, skip_special = True, max_new_tokens: int = 1000 ) -> str:
     return generate_text(model, tokenizer, prompt, max_new_tokens)
@@ -144,7 +144,7 @@ async def async_request_and_classify(client, args, prompt, label=None):
 
     for attempt in range(3):
         t0 = time.monotonic()
-        response, _, payload = await send_openai_request(client, args, prompt, label=label)
+        response, _, payload = await send_openai_request(client, args, prompt, label=label, model="1454cffb1a21737e162f508e5bc70be9def89276")
         duration = time.monotonic() - t0
         if payload.get("finish_reason") != "stop":
             record_retry(payload, duration)
@@ -319,18 +319,7 @@ def parse_args():
     parser.add_argument('--port', type=int, default=8000,
                         help="Server port (default: 8000)")
     parser.add_argument('--key', type=str, help="API key")
-    parser.add_argument('--temp', type=float, default=1.0,
-                        help="Sampling temperature (default: 1.0)")
-    parser.add_argument('--top_p', type=float, default=0.95,
-                        help="Top-p sampling (default: 0.95)")
-    parser.add_argument('--min_p', type=float, default=0.01,
-                        help="Min-p sampling (default: 0.01)")
-    parser.add_argument('--repeat-penalty', '--rp', type=float, default=1.0,
-                        help="Repeat penalty (default: 1.0)")
-    parser.add_argument('--repeat-last-n', '--rln', type=int, default=32,
-                        help="Repeat last n tokens (default: 32)")
-    parser.add_argument('--think', action="store_true",
-                        help="Enable thinking output (for models that support it)")
+    add_inference_args(parser)
     parser.add_argument('--timeout', type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
     parser.add_argument('--save', action='store_true',
@@ -343,6 +332,8 @@ def parse_args():
                         help='Process only N pairs from pair-file')
     parser.add_argument('--tag', type=str,
                         help='Tag to append to result filename')
+    parser.add_argument("-v", "--verbose", action="store_true",
+                      help="Show actual response and message")
 
     args = parser.parse_args()
 
@@ -438,7 +429,7 @@ def make_result_prefix(args):
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
         base_name += f"_{Path(args.system_prompt_filename).stem}"
-    base_name += f"_mc{args.max_concurrent}"
+    #base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
     return f"{results_dir}/{base_name}"
@@ -583,9 +574,6 @@ def main():
         auto_detect_max_concurrent(args)
 
         args.model_id = query_model_id(args.host, args.port, args.key)
-        if args.think and not supports_thinking(args.model_id):
-            print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)
-            sys.exit(1)
     else:
         # Local model path
         _, model, tokenizer = load_model(args.model)

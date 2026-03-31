@@ -86,5 +86,9 @@
     {
         "id": "p22",
         "text": "Could '{PAIR}' work as a crossword puzzle clue — as a name, description, or hint for a clear answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+    },
+    {
+        "id": "p23",
+        "text": "Evaluate whether the following words work as a crossword puzzle clue — as a name, description, or hint for a clear answer? Many word sequences are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only.\nThe words are: {PAIR}"
     }
 ]

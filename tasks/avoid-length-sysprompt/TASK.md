@@ -22,9 +22,6 @@ system prompts and the substituted words.
 
 Each result file has a score, which represents the percentage of correct answers for all substituted words.
 
-prompts/sys26 was a very successful system prompt and I suggest making incremental modifications to
-that prompt in order to achieve your goal.
-
 ## What To Do
 
 Analyze the reasoning of results where the "finish_reason" field is "length", which indicates that the
@@ -48,12 +45,12 @@ Keep in mind that you are modifying the *system* prompt, which is meant to addre
 generates responses more generally. The system prompt shouldn't contain anything specific to crossword puzzle
 clues or word-pairs, or about limiting the response to YES/NO - that is all contained with the regular prompt.
 
-Once you have a new system prompt, validate it via tasks/validate-sysprompt/TASK.md.
+Once you have a new system prompt, validate it by executing the task in tasks/validate-sysprompt/TASK.md.
 
-If the validation suceeds, save it as NEW file named prompts/sysN where N is the next unused number.
+If validation fails, start over from **What To Do** above.
+
+Otherwise, save your system prompt as NEW file named prompts/sysN where N is the next unused number.
 Do not edit previously created system prompt files. Substitute that path in the evaluation step below.
-
-If validation fails, continue from **What To Do** above.
 
 ## How To Evaluate Your System Prompt
 

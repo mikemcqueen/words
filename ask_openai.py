@@ -8,9 +8,6 @@ from pathlib import Path
 import httpx
 
 from client import query_model_id, resolve_host, send_openai_request
-from model import supports_thinking
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Send a single OpenAI-style prompt to the configured server"
@@ -36,8 +33,8 @@ def parse_args():
                         help="Repeat penalty (default: 1.0)")
     parser.add_argument("--repeat-last-n", "--rln", type=int, default=32,
                         help="Repeat last n tokens (default: 32)")
-    parser.add_argument("--think", action="store_true",
-                        help="Enable thinking output (for models that support it)")
+    parser.add_argument("--thinking", type=str, choices=("on", "off"), default="on",
+                        help="Control API thinking mode (default: on)")
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="Request timeout in seconds (default: 300)")
 
@@ -53,6 +50,8 @@ def parse_args():
     else:
         args.system_prompt_filename = None
 
+    args.thinking = args.thinking == "on"
+
     return args
 
 
@@ -67,19 +66,26 @@ async def run(args):
     return response, message, payload
 
 
+def extract_reasoning(message: dict) -> str | None:
+    """Return reasoning text from the OpenAI message payload, if present."""
+    return message.get("reasoning_content")
+
+
 def main():
     args = parse_args()
     args.host = resolve_host(args.host)
 
     try:
         args.model_id = query_model_id(args.host, args.port, args.key)
-        if args.think and not supports_thinking(args.model_id):
-            print(f"Error: --think not supported for model '{args.model_id}'", file=sys.stderr)
-            sys.exit(1)
-
         print(f"temp={args.temp} min-p={args.min_p} top-p={args.top_p}")
 
-        response, _, _ = asyncio.run(run(args))
+        response, message, _ = asyncio.run(run(args))
+        reasoning = extract_reasoning(message)
+        if reasoning:
+            print("reasoning:")
+            print("===============")
+            print(reasoning)
+            print("===============")
         print(response)
     except httpx.ConnectError:
         print(f"Error: Cannot connect to server at {args.host}:{args.port}", file=sys.stderr)
