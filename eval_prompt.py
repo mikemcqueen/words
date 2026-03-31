@@ -141,7 +141,7 @@ async def eval_all_pairs(prompt_text: str, pairs: list, args) -> list:
     async def process(client, p):
         return await eval_prompt_with_pair(client, prompt_text, p["pair"], p["expected"], args)
 
-    return [r async for r in run_concurrent(pairs, process, args.max_concurrent, args.timeout)]
+    return [r async for r in run_concurrent(pairs, process, args)]
 
 
 def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
@@ -172,38 +172,48 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     details = asyncio.run(eval_all_pairs(prompt_text, pairs, args))
     wall_elapsed = time.time() - wall_start
     correct = sum(1 for d in details if d['correct'])
+    score = (correct / total) * 100
 
     # Print results
-    for d in details:
-        status = d["actual"] if d["actual"] else "None"
-        status += ' '
-        if d["correct"]:
-            status += '✓'
-        elif d["finish_reason"] == "stop":
-            status += '✗'
-        else:
-            status += f"[{d['finish_reason']}]"
-            
-        print(f"  {d['pair']}: {status}")
+    if not args.quiet or args.compact:
+        compact_details = []
+        for d in details:
+            status = d["actual"] if d["actual"] else "None"
+            status += ' '
+            if d["correct"]:
+                status += '✓'
+            elif d["finish_reason"] == "stop":
+                status += '✗'
+            else:
+                status += f"[{d['finish_reason']}]"
 
-    score = (correct / total) * 100
+            line = f"{d['pair']}: {status}"
+            if not args.quiet:
+                print(f"  {line}")
+            if args.compact:
+                compact_details.append(line)
+        if args.compact:
+            details = compact_details
+
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
 
-    # Save result with filename: {source_file}_{prompt_id}[_{server}][_{sys}].mc{N}.json
+    # Save results
     RESULTS_DIR.mkdir(exist_ok=True)
-    base_name = f"{source_file}_{prompt_id}"
     if args.yes_pairs:
-        base_name += f"_{Path(args.yes_pairs).name}"
+        base_name = f"{Path(args.yes_pairs).name}"
     elif args.no_pairs:
-        base_name += f"_{Path(args.no_pairs).name}"
+        base_name = f"{Path(args.no_pairs).name}"
     elif args.any_pairs:
-        base_name += f"_{Path(args.any_pairs).name}"
+        base_name = f"{Path(args.any_pairs).name}"
+    else:
+        base_name = f"{Path(args.pairs).stem}"
+    base_name += f"_{source_file}_{prompt_id}"
     server_name = get_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
         base_name += f"_{Path(args.system_prompt_filename).stem}"
-    base_name += f"_mc{args.max_concurrent}"
+    #base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
     result_file = RESULTS_DIR / f"{base_name}.json"
@@ -220,7 +230,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "max_concurrent": args.max_concurrent,
         "seconds_elapsed": wall_elapsed,
         "inference_params": get_inference_params(args),
-        "details": details
+        "results": details
     }
 
     with open(result_file, 'w') as f:
@@ -340,6 +350,10 @@ Examples:
                       help="Pairs text file (one per line) — accept either YES or NO, but not None")
     parser.add_argument("-v", "--verbose", action="store_true",
                       help="Show actual response and message")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                      help="Suppress REQUEST START/END messages and per-pair details")
+    parser.add_argument("--compact", action="store_true",
+                      help="Save details as compact strings instead of full objects")
     parser.add_argument("--max-concurrent", "--mc", type=int, default=1,
                       help="Max concurrent requests (default: 1)")
     parser.add_argument("--tag", type=str,

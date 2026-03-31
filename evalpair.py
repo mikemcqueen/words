@@ -198,7 +198,7 @@ async def process_pairs_async(ctx: str, pairs, args, writer=None, on_result=None
 
     numbered_pairs = enumerate(pairs, start=writer.next_seq if writer else 0)
     try:
-        async for result in run_concurrent(numbered_pairs, process, args.max_concurrent, args.timeout):
+        async for result in run_concurrent(numbered_pairs, process, args):
             seq, pair, yes, flipped, upstream, pair_retries = result
             print(format_result(pair, yes, flipped, upstream))
             retry_map.update(pair_retries)
@@ -334,6 +334,8 @@ def parse_args():
                         help='Tag to append to result filename')
     parser.add_argument("-v", "--verbose", action="store_true",
                       help="Show actual response and message")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                      help="Suppress REQUEST START/END messages")
 
     args = parser.parse_args()
 

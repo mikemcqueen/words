@@ -199,12 +199,14 @@ def auto_detect_max_concurrent(args):
               f"nginx capacity ({upstream['total_capacity']})")
 
 
-async def run_concurrent(items, process_fn, max_concurrent, timeout):
+async def run_concurrent(items, process_fn, args):
     """
     Process items with bounded concurrency, yielding results as they complete.
     At most max_concurrent requests in flight at any time.
     """
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    max_concurrent = args.max_concurrent
+    quiet = getattr(args, 'quiet', False)
+    async with httpx.AsyncClient(timeout=args.timeout) as client:
         pending = set()
         items_iter = iter(items)
         in_flight = 0
@@ -214,7 +216,8 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
             in_flight += 1
             ts = time.strftime("%H:%M:%S")
             label = item['pair'] if isinstance(item, dict) else item[1] if isinstance(item, tuple) else item
-            print(f"[{ts}] >>> REQUEST START {label} in_flight={in_flight} pending={len(pending)}")
+            if not quiet:
+                print(f"[{ts}] >>> REQUEST START {label} in_flight={in_flight} pending={len(pending)}")
             if in_flight > max_concurrent:
                 print(f"[{ts}] !!! BUG: in_flight ({in_flight}) > max_concurrent ({max_concurrent})")
             try:
@@ -222,7 +225,8 @@ async def run_concurrent(items, process_fn, max_concurrent, timeout):
             finally:
                 in_flight -= 1
                 ts_end = time.strftime("%H:%M:%S")
-                print(f"[{ts_end}] <<< REQUEST END {label} in_flight={in_flight}")
+                if not quiet:
+                    print(f"[{ts_end}] <<< REQUEST END {label} in_flight={in_flight}")
 
         # Start initial batch
         for _ in range(max_concurrent):
