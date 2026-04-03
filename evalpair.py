@@ -18,6 +18,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from common import load_prompts_from_file
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text
 
@@ -381,16 +382,6 @@ def file_pair_generator(filename):
             if pair:
                 yield pair
 
-def load_prompt_from_file(prompt_file: str, prompt_id: str) -> str:
-    """Load a prompt from a JSON prompt file by ID."""
-    import json
-    with open(prompt_file, 'r') as f:
-        prompts = json.load(f)
-    for p in prompts:
-        if p.get('id') == prompt_id:
-            return p.get('text')
-    raise ValueError(f"Prompt ID '{prompt_id}' not found in {prompt_file}")
-
 
 class IncrementalWriter:
     def __init__(self, prefix, next_seq=0, enabled_exts=("yes", "no", "bad")):
@@ -431,7 +422,7 @@ def make_result_prefix(args):
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
         base_name += f"_{Path(args.system_prompt_filename).stem}"
-    #base_name += f"_mc{args.max_concurrent}"
+    base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
     return f"{results_dir}/{base_name}"
@@ -582,7 +573,11 @@ def main():
 
     ctx = args.prompt
     if args.prompt_file:
-        ctx = load_prompt_from_file(args.prompt_file, args.prompt_id)
+        prompts = load_prompts_from_file(args.prompt_file)
+        prompt_obj = next((p for p in prompts if p.get('id') == args.prompt_id), None)
+        if not prompt_obj:
+            raise ValueError(f"Prompt ID '{args.prompt_id}' not found in {args.prompt_file}")
+        ctx = prompt_obj['text']
 
     # When --save, count existing results and resume from where we left off
     skip = 0

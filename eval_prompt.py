@@ -3,9 +3,8 @@
 eval_prompt.py - Evaluate prompts against test words
 
 Usage:
-  python eval_prompt.py --all                          # Evaluate all prompts
-  python eval_prompt.py --all -f good_prompts          # Evaluate prompts from one file
-  python eval_prompt.py --pid prompt_1 -f good_prompts # Evaluate by ID
+  python eval_prompt.py --all -f good_prompts.json     # Evaluate all prompts from file
+  python eval_prompt.py --pid prompt_1 -f good_prompts.json  # Evaluate by ID
   python eval_prompt.py -p "Is '{PAIR}' valid?"        # Evaluate new prompt
 """
 
@@ -19,9 +18,9 @@ from pathlib import Path
 from typing import Dict, List
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from common import load_prompts_from_file
 # Configuration
 PAIRS_FILE = "pairs.json"
-PROMPTS_DIR = Path("prompts")
 RESULTS_DIR = Path("results")
 MODEL = "haiku"  # Model for testing
 
@@ -48,32 +47,6 @@ def load_pairs_from_args(args) -> List[Dict]:
     else:
         return load_pairs(args.pairs)
 
-
-def load_prompts_from_file(filepath: Path) -> List[Dict]:
-    """Load prompts from a single file, adding source_file to each prompt."""
-    with open(filepath) as f:
-        prompts = json.load(f)
-    # Add source file info to each prompt
-    for p in prompts:
-        p["_source_file"] = filepath.stem  # e.g., "good_prompts" or "test_prompts_1"
-    return prompts
-
-
-def load_all_prompts() -> List[Dict]:
-    """Load all prompts from all JSON files in the prompts directory.
-
-    Skips files starting with 'bad_prompts'.
-    """
-    if not PROMPTS_DIR.exists():
-        return []
-
-    all_prompts = []
-    for filepath in sorted(PROMPTS_DIR.glob("*.json")):
-        if filepath.stem.startswith("bad_prompts"):
-            continue
-        prompts = load_prompts_from_file(filepath)
-        all_prompts.extend(prompts)
-    return all_prompts
 
 
 def parse_yesno_response(yesno: str) -> str | None:
@@ -198,7 +171,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     print(f"\nScore: {score:.1f}% ({correct}/{total})")
 
     # Save results
-    RESULTS_DIR.mkdir(exist_ok=True)
+    args.results_dir.mkdir(exist_ok=True)
     if args.yes_pairs:
         base_name = f"{Path(args.yes_pairs).name}"
     elif args.no_pairs:
@@ -216,7 +189,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     #base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
-    result_file = RESULTS_DIR / f"{base_name}.json"
+    result_file = args.results_dir / f"{base_name}.json"
 
     result_data = {
         "prompt_id": prompt_id,
@@ -246,9 +219,7 @@ def print_summary(results: List[Dict]) -> None:
     if not results:
         return
 
-    print("\n" + "=" * 70)
     print("SUMMARY")
-    print("=" * 70)
 
     sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
 
@@ -261,50 +232,6 @@ def print_summary(results: List[Dict]) -> None:
     print(f"\nBest: {best_name} with {best['score']:.1f}%")
 
 
-def eval_all_prompts(args) -> List[Dict]:
-    """
-    Evaluate all prompts from all files in the prompts directory.
-
-    Args:
-        args: Parsed command-line arguments
-
-    Returns:
-        List of evaluation results
-    """
-    prompts = load_all_prompts()
-
-    if not prompts:
-        print("No prompts found in prompts directory")
-        return []
-
-    # Load pairs once for efficiency
-    pairs = load_pairs_from_args(args)
-
-    print(f"\nEvaluating {len(prompts)} prompts...\n")
-    print("=" * 70)
-
-    results = []
-    for prompt_obj in prompts:
-        result = eval_prompt_obj(prompt_obj, pairs, args)
-        results.append(result)
-        print("=" * 70)
-
-    print_summary(results)
-    return results
-
-
-def make_prompts_file_path(prompt_file: str) -> Path:
-    """Make a full path to a prompts file.
-
-    - If no .json suffix, add it
-    - If no directory specified, use PROMPTS_DIR
-    """
-    if not prompt_file.endswith(".json"):
-        prompt_file += ".json"
-    if '/' not in prompt_file:
-        return PROMPTS_DIR / prompt_file
-    return Path(prompt_file)
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -312,22 +239,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python eval_prompt.py --all
-  python eval_prompt.py --all -f good_prompts
-  python eval_prompt.py --pid prompt_1 -f test_prompts_1
+  python eval_prompt.py --all -f good_prompts.json
+  python eval_prompt.py --pid prompt_1 -f test_prompts_1.jsonl
   python eval_prompt.py -p "Is {PAIR} a valid term? Answer YES or NO."
         """
     )
 
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--all", action="store_true",
-                      help="Evaluate all prompts from prompts/ (or single file with -f)")
-    group.add_argument("-p", "--prompt", type=str, help="Evaluate a new prompt string")
-    group.add_argument("--pid", type=str, help="Evaluate existing prompt by ID (requires -f)")
+    parser.add_argument("--all", action="store_true",
+                      help="Evaluate all prompts from the file specified with -f")
+    parser.add_argument("-p", "--prompt", type=str, help="Evaluate a new prompt string")
+    parser.add_argument("--pid", type=str, help="Evaluate existing prompt by ID (requires -f)")
 
     parser.add_argument("--key", type=str, help="API key")
     parser.add_argument("-f", "--prompt-file", type=str,
-                      help="Prompt file name (without .json), e.g. 'good_prompts'")
+                      help="Prompt file path (.json array or .jsonl)")
     parser.add_argument("-s", "--system-prompt", type=str,
                       help="System prompt file (optional)")
     parser.add_argument("-c", "--client", choices=["yesno", "openai"], default="openai",
@@ -358,8 +283,19 @@ Examples:
                       help="Max concurrent requests (default: 1)")
     parser.add_argument("--tag", type=str,
                       help="Tag to append to result filename")
+    parser.add_argument("-r", "--results-dir", type=Path, default=RESULTS_DIR,
+                      help=f"Directory for result files (default: {RESULTS_DIR})")
 
     args = parser.parse_args()
+
+    if args.prompt_file:
+        if not (args.pid or args.all):
+            parser.error("--prompt-file requires --pid or --all")
+    elif args.prompt:
+        if args.pid or args.all:
+            parser.error("--pid and --all not allowed with --prompt")
+    else:
+        parser.error("either -f/--prompt-file or -p/--prompt is required")
 
     if not args.pairs and not args.yes_pairs and not args.no_pairs and not args.any_pairs:
         args.pairs = PAIRS_FILE
@@ -385,30 +321,22 @@ Examples:
         return
 
     if args.all:
-        if args.prompt_file:
-            filepath = make_prompts_file_path(args.prompt_file)
-            if not filepath.exists():
-                print(f"Error: File not found: {filepath}")
-                return
-            prompts = load_prompts_from_file(filepath)
-            print(f"\nEvaluating {len(prompts)} prompts from {args.prompt_file}...\n")
-            print("=" * 70)
-            results = []
-            for prompt_obj in prompts:
-                result = eval_prompt_obj(prompt_obj, pairs, args)
-                results.append(result)
-                print("=" * 70)
-            print_summary(results)
-        else:
-            eval_all_prompts(args)
+        filepath = Path(args.prompt_file)
+        if not filepath.exists():
+            print(f"Error: File not found: {filepath}")
+            return
+        prompts = load_prompts_from_file(filepath)
+        print(f"\nEvaluating {len(prompts)} prompts from {args.prompt_file}...\n")
+        results = []
+        for prompt_obj in prompts:
+            result = eval_prompt_obj(prompt_obj, pairs, args)
+            results.append(result)
+        print_summary(results)
     elif args.prompt:
         prompt_obj = {"id": "manual", "text": args.prompt, "_source_file": "manual"}
         eval_prompt_obj(prompt_obj, pairs, args)
     elif args.pid:
-        if not args.prompt_file:
-            print("Error: --pid requires -f/--prompt-file to specify which file")
-            return
-        filepath = make_prompts_file_path(args.prompt_file)
+        filepath = Path(args.prompt_file)
         if not filepath.exists():
             print(f"Error: File not found: {filepath}")
             return
