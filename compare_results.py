@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Compare two prompt result files and report individual + ensemble statistics."""
+"""Compare prompt result files and report individual + ensemble statistics.
+
+Usage:
+  compare_results.py <file_a> <file_b>   — compare two files explicitly
+  compare_results.py <file>              — auto-discover sibling files by prompt id,
+                                           report all baselines + pairwise ensembles
+                                           sorted by # correct
+"""
 
 import json
 import sys
+from itertools import combinations
 from pathlib import Path
 
 
@@ -41,7 +49,7 @@ def compute_stats(pair_results):
 
 
 def print_stats(label, stats):
-    print(f"  {label:<20s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
+    print(f"  {label:<24s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
           f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
 
 
@@ -59,12 +67,34 @@ def apply_ensemble(results_a, results_b, rule):
     return combined
 
 
-def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <result_file_a> <result_file_b>")
+ENSEMBLE_RULES = [
+    ("OR",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
+    ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO'),
+    ("A=Y,B=N", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
+    ("A=N,B=Y", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
+]
+
+
+def discover_files(seed_path, seed_pid):
+    """Return {pid: (data, results)} for all p1, p2, ... files found sequentially."""
+    path = Path(seed_path)
+    marker = f'_{seed_pid}_'
+    if marker not in path.name:
+        print(f"Error: '{marker}' not found in filename '{path.name}'", file=sys.stderr)
         sys.exit(1)
 
-    path_a, path_b = sys.argv[1], sys.argv[2]
+    found = {}
+    for n in range(1, 100):
+        pid = f'p{n}'
+        candidate = path.parent / path.name.replace(marker, f'_{pid}_', 1)
+        if candidate.exists():
+            found[pid] = parse_result_file(candidate)
+        else:
+            break
+    return found
+
+
+def run_two_file(path_a, path_b):
     data_a, results_a = parse_result_file(path_a)
     data_b, results_b = parse_result_file(path_b)
 
@@ -81,25 +111,72 @@ def main():
         print(f"\n  (A has {len(results_a)} pairs, B has {len(results_b)}, "
               f"{n_common} in common — ensemble uses common pairs only)")
 
-    print(f"\n{'':>22s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*60}")
+    print(f"\n{'':>26s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"  {'─'*64}")
 
     print("  Individual:")
     print_stats(f"A ({pid_a})", compute_stats(results_a))
     print_stats(f"B ({pid_b})", compute_stats(results_b))
 
     print("  Ensemble (common pairs):")
-    ensembles = [
-        ("A OR B",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
-        ("A AND B",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO'),
-        ("A=YES, B=NO", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
-        ("A=NO, B=YES", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
-    ]
-    for label, rule in ensembles:
+    for label, rule in ENSEMBLE_RULES:
         combined = apply_ensemble(results_a, results_b, rule)
         print_stats(label, compute_stats(combined))
 
     print()
+
+
+def run_discovery(seed_path):
+    data0, _ = parse_result_file(seed_path)
+    seed_pid  = data0.get('prompt_id', '')
+    if not seed_pid:
+        print("Error: could not determine prompt_id from file", file=sys.stderr)
+        sys.exit(1)
+
+    files = discover_files(seed_path, seed_pid)
+    if not files:
+        print("No files found.", file=sys.stderr)
+        sys.exit(1)
+
+    pids = sorted(files.keys())
+    print(f"\nPattern: {Path(seed_path).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
+    print(f"Found: {', '.join(pids)}\n")
+
+    # Collect all rows: label -> stats
+    rows = {}
+
+    # Baselines
+    for pid in pids:
+        d, r = files[pid]
+        rows[pid] = compute_stats(r)
+
+    # Pairwise ensembles over every combination
+    for pid_a, pid_b in combinations(pids, 2):
+        _, results_a = files[pid_a]
+        _, results_b = files[pid_b]
+        pair_key = f"{pid_a},{pid_b}"
+        for method, rule in ENSEMBLE_RULES:
+            combined = apply_ensemble(results_a, results_b, rule)
+            rows[f"{pair_key} {method}"] = compute_stats(combined)
+
+    # Sort by correct count descending
+    sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
+
+    print(f"  {'label':<24s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"  {'─'*64}")
+    for label, stats in sorted_rows:
+        print_stats(label, stats)
+    print()
+
+
+def main():
+    if len(sys.argv) == 2:
+        run_discovery(sys.argv[1])
+    elif len(sys.argv) == 3:
+        run_two_file(sys.argv[1], sys.argv[2])
+    else:
+        print(f"Usage: {sys.argv[0]} <file_a> [file_b]")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
