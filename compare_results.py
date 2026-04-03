@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Compare prompt result files and report individual + ensemble statistics.
+"""Compare prompt result files and report statistics.
 
 Usage:
   compare_results.py <file_a> <file_b>          — compare two files explicitly
-  compare_results.py [-3] <file>                — auto-discover sibling files by prompt id,
-                                                   report all baselines + pairwise ensembles
-                                                   sorted by # correct; -3 uses 3-way combos
+  compare_results.py <file>                     — auto-discover sibling files by prompt id;
+                                                   default: Fixed/New FP/FN + score per file
+  compare_results.py -e [<file_a> <file_b>]     — ensemble mode: test all combinations
+  compare_results.py -e -3 <file>               — ensemble mode with 3-way combos
 """
 
 import argparse
@@ -54,6 +55,28 @@ def print_stats(label, stats):
           f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
 
 
+def compute_pair_diff(results_1, results_2):
+    """Compute Fixed/New FP/FN counts and score comparing results_1 (anchor) to results_2."""
+    common = set(results_1) & set(results_2)
+    fixed_fp = fixed_fn = new_fp = new_fn = 0
+    for pair in common:
+        r1, r2 = results_1[pair], results_2[pair]
+        was_fp = r1['answer'] == 'YES' and r1['expected'] == 'NO'
+        was_fn = r1['answer'] == 'NO'  and r1['expected'] == 'YES'
+        is_fp  = r2['answer'] == 'YES' and r2['expected'] == 'NO'
+        is_fn  = r2['answer'] == 'NO'  and r2['expected'] == 'YES'
+        was_correct = not was_fp and not was_fn
+        if was_fp and not is_fp:     fixed_fp += 1
+        if was_fn and not is_fn:     fixed_fn += 1
+        if was_correct and is_fp:    new_fp += 1
+        if was_correct and is_fn:    new_fn += 1
+    s1 = compute_stats(results_1)
+    s2 = compute_stats(results_2)
+    score = (fixed_fp + fixed_fn) - (new_fp + new_fn)
+    return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
+                score=score, s1=s1, s2=s2)
+
+
 def apply_ensemble(results_a, results_b, rule):
     """Apply rule(a, b) -> 'YES'/'NO' over common pairs."""
     combined = {}
@@ -90,9 +113,9 @@ ENSEMBLE_RULES_2 = [
 ]
 
 ENSEMBLE_RULES_3 = [
-    ("OR",       lambda a, b, c: 'YES' if 'YES' in (a, b, c)                    else 'NO'),
-    ("AND",      lambda a, b, c: 'YES' if a == b == c == 'YES'                  else 'NO'),
-    ("MAJORITY", lambda a, b, c: 'YES' if (a, b, c).count('YES') >= 2           else 'NO'),
+    ("OR",       lambda a, b, c: 'YES' if 'YES' in (a, b, c)           else 'NO'),
+    ("AND",      lambda a, b, c: 'YES' if a == b == c == 'YES'          else 'NO'),
+    ("MAJORITY", lambda a, b, c: 'YES' if (a, b, c).count('YES') >= 2   else 'NO'),
 ]
 
 
@@ -115,10 +138,43 @@ def discover_files(seed_path, seed_pid):
     return found
 
 
-def run_two_file(path_a, path_b):
-    data_a, results_a = parse_result_file(path_a)
-    data_b, results_b = parse_result_file(path_b)
+# --- default (diff) output ---
 
+def print_explicit_default(pid_a, results_a, pid_b, results_b):
+    d = compute_pair_diff(results_a, results_b)
+    s1, s2 = d['s1'], d['s2']
+    print(f"\n{pid_a}:  FP: {s1['fp']}  FN: {s1['fn']}")
+    print(f"{pid_b}:  FP: {s2['fp']}  FN: {s2['fn']}")
+    print(f"\nFixedFP: {d['fixed_fp']}  FixedFN: {d['fixed_fn']}  "
+          f"NewFP: {d['new_fp']}  NewFN: {d['new_fn']}")
+    print(f"Score: {d['score']:+d}")
+    print()
+
+
+def print_discovery_default(seed_pid, results0, files, pids):
+    rows = []
+    for pid in pids:
+        if pid == seed_pid:
+            continue
+        _, results_other = files[pid]
+        d = compute_pair_diff(results0, results_other)
+        rows.append((pid, d))
+    rows.sort(key=lambda x: x[1]['score'], reverse=True)
+
+    print(f"  {'label':<10s}  {'score':>6s}  {'FixFP':>6s}  {'FixFN':>6s}  "
+          f"{'NewFP':>6s}  {'NewFN':>6s}  {'A corr':>8s}  {'B corr':>8s}")
+    print(f"  {'─'*72}")
+    for pid, d in rows:
+        s1, s2 = d['s1'], d['s2']
+        print(f"  {seed_pid}→{pid:<7s}  {d['score']:>+6d}  {d['fixed_fp']:>6d}  "
+              f"{d['fixed_fn']:>6d}  {d['new_fp']:>6d}  {d['new_fn']:>6d}  "
+              f"{s1['correct']:3d}/{s1['total']:3d}  {s2['correct']:3d}/{s2['total']:3d}")
+    print()
+
+
+# --- ensemble output ---
+
+def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b):
     pid_a = data_a.get('prompt_id', '?')
     pid_b = data_b.get('prompt_id', '?')
 
@@ -130,48 +186,26 @@ def run_two_file(path_a, path_b):
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
         print(f"\n  (A has {len(results_a)} pairs, B has {len(results_b)}, "
-              f"{n_common} in common — ensemble uses common pairs only)")
+              f"{n_common} in common)")
 
     print(f"\n{'':>26s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
     print(f"  {'─'*64}")
-
     print("  Individual:")
     print_stats(f"A ({pid_a})", compute_stats(results_a))
     print_stats(f"B ({pid_b})", compute_stats(results_b))
-
     print("  Ensemble (common pairs):")
     for label, rule in ENSEMBLE_RULES_2:
         combined = apply_ensemble(results_a, results_b, rule)
         print_stats(label, compute_stats(combined))
-
     print()
 
 
-def run_discovery(seed_path, three_way=False):
-    data0, _ = parse_result_file(seed_path)
-    seed_pid  = data0.get('prompt_id', '')
-    if not seed_pid:
-        print("Error: could not determine prompt_id from file", file=sys.stderr)
-        sys.exit(1)
-
-    files = discover_files(seed_path, seed_pid)
-    if not files:
-        print("No files found.", file=sys.stderr)
-        sys.exit(1)
-
-    pids = sorted(files.keys())
-    print(f"\nPattern: {Path(seed_path).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
-    print(f"Found: {', '.join(pids)}\n")
-
-    # Collect all rows: label -> stats
+def print_discovery_ensemble(seed_pid, files, pids, three_way):
     rows = {}
-
-    # Baselines
     for pid in pids:
-        d, r = files[pid]
+        _, r = files[pid]
         rows[pid] = compute_stats(r)
 
-    # Pairwise ensembles over every combination
     for pid_a, pid_b in combinations(pids, 2):
         _, results_a = files[pid_a]
         _, results_b = files[pid_b]
@@ -190,9 +224,7 @@ def run_discovery(seed_path, three_way=False):
                 combined = apply_ensemble_3(results_a, results_b, results_c, rule)
                 rows[f"{triple_key} {method}"] = compute_stats(combined)
 
-    # Sort by correct count descending
     sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
-
     print(f"  {'label':<24s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
     print(f"  {'─'*64}")
     for label, stats in sorted_rows:
@@ -200,18 +232,57 @@ def run_discovery(seed_path, three_way=False):
     print()
 
 
+# --- top-level runners ---
+
+def run_explicit(args):
+    data_a, results_a = parse_result_file(args.files[0])
+    data_b, results_b = parse_result_file(args.files[1])
+    pid_a = data_a.get('prompt_id', '?')
+    pid_b = data_b.get('prompt_id', '?')
+    if not args.ensemble:
+        print_explicit_default(pid_a, results_a, pid_b, results_b)
+    else:
+        print_explicit_ensemble(args.files[0], data_a, results_a,
+                                args.files[1], data_b, results_b)
+
+
+def run_discovery(args):
+    data0, results0 = parse_result_file(args.files[0])
+    seed_pid = data0.get('prompt_id', '')
+    if not seed_pid:
+        print("Error: could not determine prompt_id from file", file=sys.stderr)
+        sys.exit(1)
+
+    files = discover_files(args.files[0], seed_pid)
+    if not files:
+        print("No files found.", file=sys.stderr)
+        sys.exit(1)
+
+    pids = sorted(files.keys())
+    print(f"\nPattern: {Path(args.files[0]).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
+    print(f"Found: {', '.join(pids)}\n")
+
+    if not args.ensemble:
+        print(f"Anchor (file1): {seed_pid}\n")
+        print_discovery_default(seed_pid, results0, files, pids)
+    else:
+        print_discovery_ensemble(seed_pid, files, pids, args.three_way)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='+', metavar='file')
     parser.add_argument('-3', '--three-way', action='store_true',
-                        help='include 3-way ensemble combinations (discovery mode only)')
+                        help='include 3-way ensemble combinations (ensemble discovery mode only)')
+    parser.add_argument('-e', '--ensemble', action='store_true',
+                        help='ensemble mode: show all combination statistics')
     args = parser.parse_args()
 
     if len(args.files) == 1:
-        run_discovery(args.files[0], three_way=args.three_way)
+        run_discovery(args)
     elif len(args.files) == 2:
-        run_two_file(args.files[0], args.files[1])
+        run_explicit(args)
     else:
         parser.error('specify 1 or 2 files')
 
