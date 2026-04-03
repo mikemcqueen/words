@@ -1,19 +1,19 @@
 [
     {
         "id": "p1",
-        "text": "Consider whether '{PAIR}' is a good intermediate-level crossword-puzzle clue. Does it have one or more obvious 'solutions' that would be widely recognized? Do not fabricate — if nothing comes to mind, answer NO. Be especially wary of inventing technical terms or specialized vocabulary that may not actually exist. Answer with YES or NO only."
+        "text": "Consider whether '{PAIR}' is a good intermediate-level crossword-puzzle clue. Does it have one or more obvious 'solutions' that would be widely recognized? Do not fabricate \u2014 if nothing comes to mind, answer NO. Be especially wary of inventing technical terms or specialized vocabulary that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p2",
-        "text": "Does '{PAIR}' work as a crossword-style clue — that is, do these words together point to a specific, well-known answer? Do not fabricate or guess; if no clear answer comes to mind, say NO. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Does '{PAIR}' work as a crossword-style clue \u2014 that is, do these words together point to a specific, well-known answer? Do not fabricate or guess; if no clear answer comes to mind, say NO. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p3",
-        "text": "Could '{PAIR}' work as a clue that points to a specific, widely recognized answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a clue that points to a specific, widely recognized answer? Do not speculate or guess \u2014 if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p4",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Do not speculate or guess \u2014 if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p5",
@@ -21,19 +21,19 @@
     },
     {
         "id": "p6",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a specific, widely recognized answer? Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a specific, widely recognized answer? Do not speculate or guess \u2014 if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p7",
-        "text": "Does '{PAIR}' signify something specific and well-known — either as a name, description, or clue? Do not speculate or guess — if nothing identifiable comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Does '{PAIR}' signify something specific and well-known \u2014 either as a name, description, or clue? Do not speculate or guess \u2014 if nothing identifiable comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p8",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Only answer YES if you are certain the answer exists and is well-known. Do not speculate or guess — if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Only answer YES if you are certain the answer exists and is well-known. Do not speculate or guess \u2014 if nothing obvious comes to mind immediately, answer NO. Be especially wary of inventing product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p9",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Answer quickly — do not overthink this. If no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Answer quickly \u2014 do not overthink this. If no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p10",
@@ -41,54 +41,542 @@
     },
     {
         "id": "p11",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p12",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical, but some reference well-known things from various fields — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Many word pairs are nonsensical, but some reference well-known things from various fields \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p13",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Not all word pairs have valid answers — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with a clear answer? Not all word pairs have valid answers \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p14",
-        "text": "Could '{PAIR}' work as a crossword-style clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword-style clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p15",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p16",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a clear, well-known answer? Many word pairs are nonsensical and have no valid answer — if no clear answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a clear, well-known answer? Many word pairs are nonsensical and have no valid answer \u2014 if no clear answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p17",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Answer quickly. Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Answer quickly. Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p18",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer is obvious, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue where the words together point to a well-known answer? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer is obvious, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p19",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue? Consider what the words mean together. Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue? Consider what the words mean together. Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p20",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue with one or more obvious solutions? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue with one or more obvious solutions? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p21",
-        "text": "Does '{PAIR}' have a well-known crossword puzzle solution? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Does '{PAIR}' have a well-known crossword puzzle solution? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p22",
-        "text": "Could '{PAIR}' work as a crossword puzzle clue — as a name, description, or hint for a clear answer? Many word pairs are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
+        "text": "Could '{PAIR}' work as a crossword puzzle clue \u2014 as a name, description, or hint for a clear answer? Many word pairs are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only."
     },
     {
         "id": "p23",
-        "text": "Evaluate whether the following words work as a crossword puzzle clue — as a name, description, or hint for a clear answer? Many word sequences are nonsensical and have no valid answer — if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only.\nThe words are: {PAIR}"
+        "text": "Evaluate whether the following words work as a crossword puzzle clue \u2014 as a name, description, or hint for a clear answer? Many word sequences are nonsensical and have no valid answer \u2014 if no well-known answer comes to mind immediately, answer NO. Do not invent product names, brand names, connections, or technical terms that may not actually exist. Answer with YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p24",
+        "text": "Do the following words, in any order, form or point to something well-known \u2014 a name, phrase, title, compound word, or clear crossword answer? Answer YES only if you immediately recognize it. Do not fabricate or invent answers \u2014 if nothing obvious comes to mind, answer NO. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p25",
+        "text": "You will see a crossword clue below. Is it a valid crossword clue with an obvious, well-known answer? Do not fabricate or invent answers. If nothing comes to mind, answer NO. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p26",
+        "text": "Consider the words below as a crossword-style clue. The words may need to be rearranged, combined, or read as a description. Answer YES if they point to any well-known person, place, thing, phrase, title, or concept. Answer NO only if you genuinely cannot identify what they refer to \u2014 do not fabricate answers, but do not be overly cautious either. Answer YES or NO only.\n{PAIR}"
+    },
+    {
+        "id": "p27",
+        "text": "Is the following a valid crossword clue \u2014 do these words, in any order, directly name or describe a specific real thing without requiring word associations through intermediate steps? Do not fabricate answers. If nothing real comes to mind, answer NO. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p28",
+        "text": "Is the following a valid crossword clue \u2014 do these words form or directly describe the same real thing, in any order? The connection must be direct, not through each word separately pointing to different things. Do not fabricate answers. If nothing clear comes to mind, answer NO. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p29",
+        "text": "Is the following a valid crossword clue? Answer YES only if a specific, well-known answer exists. Do not fabricate \u2014 be especially wary of invented connections between the words. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p30",
+        "text": "Is the following a valid crossword clue? Answer YES if the words clearly name or describe a specific, real thing. Answer NO if you can only find vague or tenuous associations between the words. Do not fabricate. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p31",
+        "text": "Does the following word pair make a valid crossword clue \u2014 is there a well-known answer that clearly exists, such as a compound word, proper name, or familiar expression? Do not fabricate. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p32",
+        "text": "Do the following words immediately call to mind a specific, well-known thing \u2014 as if they were a clue for it? Do not fabricate. Answer YES or NO only.\nThe words are: {PAIR}"
+    },
+    {
+        "id": "p33",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Do not fabricate \u2014 and do not chain word associations to reach an answer. Answer YES or NO only."
+    },
+    {
+        "id": "p34",
+        "text": "Is there a well-known thing that '{PAIR}' directly describes or names? Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p35",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Answer NO if you have to stretch to find a connection. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p36",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES if the words together form a compound, name, title, or straightforward description of something well-known. Answer NO if they can only be linked through elaborate reasoning. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p37",
+        "text": "Is '{PAIR}' a valid crossword clue? Without analyzing the words separately, does a specific, well-known answer immediately come to mind? Answer YES or NO only."
+    },
+    {
+        "id": "p38",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES if the words together immediately call to mind a well-known thing \u2014 without needing multiple inferential steps. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p39",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Do not fabricate or invent answers. Answer YES or NO only."
+    },
+    {
+        "id": "p40",
+        "text": "Is this a valid crossword clue? Answer YES only if an obvious, well-known answer exists \u2014 direct compounds, recognized names, and established phrases all count. Do not fabricate or chain word associations to reach an answer. Answer YES or NO only. Clue: '{PAIR}'"
+    },
+    {
+        "id": "p41",
+        "text": "Is the following a valid crossword clue \u2014 does an obvious, well-known answer exist? Do not fabricate or invent answers \u2014 be especially wary of inventing product names, brand names, or technical terms that may not actually exist. Answer YES or NO only.\nClue: '{PAIR}'"
+    },
+    {
+        "id": "p42",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists that these words directly point to. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p43",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES if these words together name or describe one clear, well-known thing. Answer NO if the connection requires following associations through multiple concepts. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p44",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Answer NO if the connection requires following associations through multiple concepts. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p45",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if the words combine to form a well-known name, compound, or phrase \u2014 not if each word merely relates to a shared concept. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p46",
+        "text": "Is '{PAIR}' a valid crossword clue? If an obvious, well-known answer immediately comes to mind, say YES. If you find yourself reasoning through associations to get there, say NO. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p47",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if these words are widely recognized as going together \u2014 as a name, phrase, or established term. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p48",
+        "text": "Is '{PAIR}' a valid crossword clue? A good clue uniquely identifies one well-known answer. Answer YES only if that answer is immediately obvious \u2014 not if you have to work to find it. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p49",
+        "text": "Is '{PAIR}' a valid crossword clue? If a specific, well-known answer immediately comes to mind, say YES. If you cannot immediately name the answer, say NO. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p50",
+        "text": "Is '{PAIR}' a valid crossword clue \u2014 as a proper name, compound, phrase, or description of something well-known? Answer YES only if an obvious answer exists. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p51",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if these words clearly belong together as part of one well-known thing. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p52",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES if at least one specific, famous answer immediately comes to mind. Answer NO if the connection is vague or requires multiple associative steps. Do not fabricate. Answer YES or NO only."
+    },
+    {
+        "id": "p53",
+        "text": "Is this a valid crossword clue? Answer YES only if the words together immediately suggest a specific, well-known answer. Answer NO if you have to reason through associations or stretch to make them fit. Do not fabricate. {PAIR}"
+    },
+    {
+        "id": "p54",
+        "text": "Is this a valid crossword clue? Answer YES only if it directly and immediately suggests one specific, well-known answer. Answer NO if you have to reason through associations or if multiple answers seem plausible. Do not fabricate. {PAIR}"
+    },
+    {
+        "id": "p55",
+        "text": "Is this a valid crossword clue? Answer YES only if a specific, well-known answer immediately comes to mind and the words are recognized as going together. Answer NO if you have to reason through associations. Do not fabricate. {PAIR}"
+    },
+    {
+        "id": "p56",
+        "text": "Is this a valid crossword clue? Answer YES only if the words themselves immediately suggest a specific, well-known answer. Answer NO if you have to piece together separate associations to get there. Do not fabricate. {PAIR}"
+    },
+    {
+        "id": "p57",
+        "text": "Is this a valid crossword clue? Answer YES only if the words read as one coherent clue that directly evokes a specific, well-known answer. Answer NO if they feel like separate hints that only meet through association. Do not fabricate. Clue: {PAIR}"
+    },
+    {
+        "id": "p58",
+        "text": "Is this ready to use as a standard crossword clue? Answer YES only if the wording already reads like one natural clue for a familiar answer. Answer NO if it feels like separate hint words that need to be mentally combined or bridged. Do not fabricate. Clue: {PAIR}"
+    },
+    {
+        "id": "p59",
+        "text": "Is this a valid crossword clue? Crossword clues are often terse fragments rather than full phrases. Answer YES only if these words belong together as one recognizable clue idea for a familiar answer. Answer NO if they are just separate hints that need an extra bridge or chain of associations. Do not fabricate. Clue: {PAIR}"
+    },
+    {
+        "id": "p60",
+        "text": "Is '{PAIR}' a valid crossword clue? Answer YES only if an obvious, well-known answer exists and the words work together as one clue, not as two separate clue fragments. Do not fabricate or invent answers. Answer YES or NO only."
+    },
+    {
+        "id": "p61",
+        "text": "You are judging whether this wording is already crossword-ready. Answer YES only if it reads as one compact, publishable clue for a familiar answer, with no extra mental bridge needed between the words. If it feels like two separate hint words that only become useful after piecing together associations, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p62",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already hang together as one recognizable clue idea for something familiar. Terse fragments, names, and established expressions count. Answer NO if the words feel like separate stepping stones that only become useful after you build a bridge between them. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p63",
+        "text": "Is this a valid crossword clue? Answer YES only if these words already belong together as a familiar name, phrase, compound, or stock description, so that one obvious answer comes to mind at once. Answer NO if they work only by combining separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p64",
+        "text": "Judge this by two gates. Gate 1: one specific, familiar answer should come to mind immediately. Gate 2: the words should already function as one coherent clue, not as two separate hints that need to be bridged through association. If either gate fails, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p65",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if you have to piece together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p66",
+        "text": "Treat this as a quick accept-or-reject screen, not a puzzle to work out. Answer YES only if these words already read like a real crossword clue and a familiar answer pops out immediately. If you need to unpack the words separately, build a bridge between them, or hunt for a clever interpretation, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p67",
+        "text": "Use a one-hop test. Answer YES only if these words together point straight to one obvious, well-known answer. Answer NO if you have to use the words as separate stepping-stones or follow associations to get there. Do not fabricate. Answer YES or NO only. Clue: {PAIR}"
+    },
+    {
+        "id": "p68",
+        "text": "Apply a quick two-part check. First, the words should work as one natural crossword clue, not as two separate hints. Second, one familiar, specific answer should come to mind immediately. If either part fails, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p69",
+        "text": "Is this a valid crossword clue? Answer YES only if the words naturally hang together and one obvious, well-known answer comes to mind immediately. If you start linking separate associations to make them fit, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p70",
+        "text": "Treat this as pattern recognition, not problem solving. Answer YES only if the clue as a whole triggers an obvious, well-known answer before any step-by-step interpretation. If you need to unpack the words, bridge them, or test possibilities, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p71",
+        "text": "Use your first-pass reaction. Answer YES only if the clue as a whole immediately brings to mind one obvious, well-known answer. If you have to search for possibilities, translate the wording into a different clue, or connect the words through associations, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p72",
+        "text": "Think like a crossword solver, not an editor. Answer YES if these words would fairly lead straight to one familiar answer on first read, even if the wording is terse. Answer NO if getting there requires guessing, chaining associations, or inventing a connection. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p73",
+        "text": "Is this a clue-answer link people would recognize, rather than puzzle out? Answer YES only if it cleanly points to one obvious, well-known answer. Do not fabricate or force a connection. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p74",
+        "text": "Use a solver-not-constructor test. Answer YES only if a crossword solver could get from this clue to one familiar answer without already knowing the answer, even if the clue is terse. Answer NO if it only seems valid in reverse, after backsolving from an answer or treating the words as separate hint fragments. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p75",
+        "text": "Think like a crossword solver. Clues can be short fragments, not full phrases. Answer YES if, on first read, these words would fairly lead a solver to one familiar answer. Answer NO if you would need to backsolve from an answer or stitch the words together as separate hint fragments. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p76",
+        "text": "Think like a crossword solver. Clues can be terse fragments. Answer YES only if these words read as one clue and immediately suggest an obvious, well-known answer. Answer NO if you have to test candidate answers, backsolve from one, or stitch the words together as separate hint fragments. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p77",
+        "text": "Is this a valid crossword clue? Treat it as a clue, not a word-association game. Answer YES only if one obvious, well-known answer comes to mind. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p78",
+        "text": "Use a crossword-solver test. Answer YES only if these words either are themselves a familiar name, phrase, or term, or would directly lead a solver to one obvious, well-known answer. Answer NO if the connection comes only from combining separate associations or forcing a bridge. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p79",
+        "text": "Quick crossword test:\nYES if these words, taken together, immediately suggest one obvious, well-known answer.\nNO if you have to bridge from one word to the other, follow associations, or force a reading.\nDo not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p80",
+        "text": "Quick clue-recognition test.\nAnswer YES if either these words already read like familiar clue wording, or they directly suggest one obvious, well-known answer on first read.\nAnswer NO if you have to treat the words as separate hints, bridge them through associations, or force a reading.\nDo not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p81",
+        "text": "Publication test. Answer YES only if this exact wording could plausibly appear as a short published crossword clue for some familiar answer, even if terse. Answer NO if it feels like an improvised mash-up of two separate hint words, or if the connection appears only after associative reasoning. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p82",
+        "text": "Quick clue test. Answer YES if either these words already read like a familiar clue fragment, label, title, or stock description, or they directly point to one obvious, well-known answer on first read. Answer NO if they feel like two separate prompt words that only become useful after you combine associations or force a reading. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p83",
+        "text": "Is this a valid crossword clue? Terse clue fragments, names, titles, and stock descriptions can count. Answer YES only if one obvious, well-known answer comes to mind and the words function as one clue rather than two separate hint words. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p84",
+        "text": "Use a same-entry test. Answer YES if these words could fairly clue one familiar crossword answer either because they already read like one clue fragment or because each word could independently point to that same answer. Answer NO if they only share a theme, category, or fictional universe, or if you have to chain associations to connect them. Do not fabricate. Answer YES or NO only. Clue words: {PAIR}"
+    },
+    {
+        "id": "p85",
+        "text": "Use a one-answer test. If one obvious, well-known crossword answer immediately comes to mind, answer YES. Answer NO if the words only suggest a shared topic, category, fictional universe, or chain of associations rather than one exact answer. Do not fabricate. Answer YES or NO only. Clue words: {PAIR}"
+    },
+    {
+        "id": "p86",
+        "text": "Quick exact-answer test. Answer YES if these words immediately suggest one specific, familiar crossword answer. Answer NO if they only suggest a topic, franchise, set of related answers, or a near miss. Do not fabricate. Answer YES or NO only. Clue words: {PAIR}"
+    },
+    {
+        "id": "p87",
+        "text": "Use an answer-first test. Answer YES if these words fairly converge on one specific, familiar crossword entry, whether by already reading like a clue fragment or by each being a valid handle to that same answer. Answer NO if they merely share a topic, setting, or chain of associations without pointing to one exact entry. Do not fabricate. Answer YES or NO only.\nClue words: {PAIR}"
+    },
+    {
+        "id": "p88",
+        "text": "Crossword fairness check. Answer YES if a solver could reasonably take these words as clue wording for one familiar answer, even if the wording is telegraphic or slightly inverted. Answer NO if they are only a theme, a pair of related words, or an association chain rather than one clue. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p89",
+        "text": "Use a one-hop clue test. Answer YES if a solver could jump straight from these words to one obvious, familiar answer. Answer NO if you need an intermediate idea or chain of associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p90",
+        "text": "Crossword editor check. Say YES only if this wording could fairly be published as a clue for one familiar answer, even if terse. Say NO if it only works by jumping through separate associations. Do not fabricate. Answer YES or NO only.\\nClue: {PAIR}"
+    },
+    {
+        "id": "p91",
+        "text": "Use a one-idea clue test. Answer YES if these words feel like one short clue for a familiar answer, or like two handles on that same answer. Answer NO if each word pulls toward a different idea and you have to merge them. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p92",
+        "text": "Quick clue check. Say YES if these words read as one piece of clue wording and a familiar answer pops out at once. Say NO if you would need to combine separate hint words or chase associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p93",
+        "text": "Single-pass crossword test. Answer YES if these words read as one clue surface and would make a solver think of one familiar, well-known entry right away, even if the wording is terse. Answer NO if you have to combine the words as separate hints, bridge them through associations, or force a reading. Do not fabricate. Answer YES or NO only. Clue: {PAIR}"
+    },
+    {
+        "id": "p94",
+        "text": "Quick desk check. ACCEPT only if these words could fairly cue an obvious, well-known crossword answer you already know. REJECT if they are merely related words from the same topic, or if you have to invent the link. No inventing. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p95",
+        "text": "Is this a valid crossword clue? Answer YES only if these words point to an obvious, well-known answer. Mere relatedness is not enough. Do not fabricate or invent answers. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p96",
+        "text": "Quick answer check. Say YES if one obvious, well-known answer immediately comes to mind. Say NO if the words merely seem connected and no answer pops out. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p97",
+        "text": "Is this a valid crossword clue? If an obvious, well-known answer immediately comes to mind, say YES. If you would only say YES because the words seem related, say NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p98",
+        "text": "Is this a valid crossword clue? Answer YES only if one obvious, well-known answer comes to mind on first read, usually because the words already sound like familiar clue wording, a name, a phrase, a title, or a stock description. Answer NO if they are merely related words and you would have to build the link yourself. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p99",
+        "text": "Editorial check. Terse crossword clue wording is allowed. Say YES only if these words could directly clue one specific, familiar answer you already know. Say NO if you would have to bridge the words through associations or invent the link. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p100",
+        "text": "Is this a valid crossword clue? Very short, elliptical clue wording can still be valid. Answer YES only if an obvious, familiar answer comes to mind. Answer NO if you only get there by chaining associations or inventing the connection. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p101",
+        "text": "Is this a valid crossword clue? Short, telegraphic clue fragments can still be valid. Answer YES only if the words already hang together as one clue and an obvious, familiar answer comes to mind. Do not fabricate or invent answers. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p102",
+        "text": "Is this a valid crossword clue? If an obvious, well-known answer immediately comes to mind, say YES. If you find yourself reasoning through associations to get there, say NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p103",
+        "text": "Is this a valid crossword clue? Answer YES only if the words work together as one clue and an obvious, well-known answer comes to mind at once. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p104",
+        "text": "Use a quick identification test. Answer YES only if these words immediately identify one familiar, specific answer, not just a topic or a cluster of related ideas. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p105",
+        "text": "Quick crossword check. Answer YES only if these words cue one obvious, well-known answer right away. Answer NO if they merely feel related or suggest a likely phrase without actually calling up an answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p106",
+        "text": "Use retrieval, not construction. Answer YES only if this clue immediately retrieves one obvious, well-known answer from memory. If no such answer appears at once, answer NO. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p107",
+        "text": "Quick solver check. Answer YES if these words are a familiar name or term, or a plain-language clue most solvers would recognize as pointing to one answer. Answer NO if the link depends on niche trivia or stitched-together associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p108",
+        "text": "Is this a valid crossword clue? Crossword clues can be bare descriptors, not just fixed phrases. Answer YES if these words would naturally be understood together as a description of one familiar answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p109",
+        "text": "Is this a valid crossword clue? Answer YES if both words are directly associated with the same well-known person, place, thing, or phrase \u2014 as parts of its name, description, or title. Answer NO if their connection is indirect or imaginary. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p110",
+        "text": "Is this a valid crossword clue? Answer YES if these words are widely recognized as belonging together \u2014 as a compound word, a proper name, or an established phrase \u2014 with an obvious answer. Answer NO if no answer is obvious, or you would need to reason through associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p111",
+        "text": "Is this a valid crossword clue? Answer YES only if these words are widely recognized as going together \u2014 as a name, phrase, or established term. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p112",
+        "text": "Is this a valid crossword clue? Answer YES if a well-known answer comes to mind for these words. Answer NO if no answer comes to mind or you would need to invent one. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p113",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer exists. Answer NO if you have to piece together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p114",
+        "text": "Is this a valid crossword clue? Answer YES only if these words together are recognized as referring to a specific, real person, place, title, or concept. Answer NO if the connection is vague, obscure, or invented. Do not fabricate or speculate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p115",
+        "text": "Do these words combine into a well-known compound word, proper name, title, or established phrase? Answer YES if such a combination immediately comes to mind. Answer NO if you must construct the connection. Do not fabricate. YES or NO only.\nWords: {PAIR}"
+    },
+    {
+        "id": "p116",
+        "text": "Is this a valid crossword clue? Answer YES if an obvious answer immediately comes to mind \u2014 it might be a compound word, proper name, or well-known phrase formed by these words. Answer NO if you must reason through associations. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p117",
+        "text": "Is this a valid crossword clue? Answer YES only if an obvious, well-known answer comes to mind immediately. Answer NO if you have to piece together separate associations to find an answer. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p118",
+        "text": "Is this a valid crossword clue? Answer YES only if a specific, well-known answer immediately comes to you. Answer NO if you cannot name an obvious answer right now. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p119",
+        "text": "Is this a valid crossword clue? Answer YES if the words directly name or form a well-known answer. Answer NO if you need to connect each word separately to reach an answer. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p120",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind. Answer NO if you have to piece together separate associations. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p121",
+        "text": "Is this a valid crossword clue? Answer YES only if the words are widely known together \u2014 whether as a compound answer or a well-known description. Answer NO if you would have to construct an answer from scratch. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p122",
+        "text": "Is this a valid crossword clue? Answer YES only if an obvious, well-known answer exists. Do not fabricate or invent answers. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p123",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue \u2014 including any compound word they form \u2014 and an obvious, well-known answer comes to mind at once. Answer NO if you have to piece together separate associations. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p124",
+        "text": "Does this clue have an obvious, well-known answer? Do not fabricate. YES or NO.\nClue: {PAIR}"
+    },
+    {
+        "id": "p125",
+        "text": "Do these words form a valid crossword clue? Answer YES if they combine into one specific real-world thing — a person, place, title, term, or established phrase that most people would recognize. Answer NO if they are merely related or associated without forming a single recognized thing. Do not fabricate. Answer YES or NO only.\nWords: {PAIR}"
+    },
+    {
+        "id": "p126",
+        "text": "Is this a valid crossword clue? Answer YES only if an obvious, well-known answer exists and you can name that answer right now. Answer NO if you cannot name a specific answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p127",
+        "text": "Is this a valid crossword clue? Answer YES only if these words, taken together as a unit, immediately name or describe one specific well-known thing. Answer NO if the words only connect through separate associations or if nothing specific comes to mind. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p128",
+        "text": "Is there one specific, well-known thing that these words together refer to? Answer YES if you immediately know what that is. Answer NO if nothing specific comes to mind or if the connection seems forced. Do not fabricate. Answer YES or NO only.\nWords: {PAIR}"
+    },
+    {
+        "id": "p129",
+        "text": "Is this a valid crossword clue? Answer YES only if these words are widely recognized as going together and an obvious answer immediately comes to mind. Answer NO if no recognized answer exists. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p130",
+        "text": "Is this a valid crossword clue? Answer YES if an obvious, well-known answer comes to mind at once — including any compound or name these words might form. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p131",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p132",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind. Answer NO if the connection requires an intermediate concept not stated in the clue. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p133",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if the answer requires assembling unrelated ideas. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p134",
+        "text": "Is this a valid crossword clue? Answer YES only if both words belong to one single well-known answer, name, or phrase. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p135",
+        "text": "Would a knowledgeable person immediately recognize these words as a real name, title, phrase, or established description? Answer YES if so. Answer NO if the connection seems invented or uncertain. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p136",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if you have to chain together unrelated ideas to reach an answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p137",
+        "text": "Is this a valid crossword clue? Answer YES if these words form a recognized compound word or name, OR if an obvious, well-known answer comes to mind at once without piecing together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p138",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue — as a compound word, name, or description pointing to one specific known answer — and that answer comes to mind at once. Answer NO if you have to piece together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p139",
+        "text": "If someone used these words as a crossword clue hint, would it be immediately clear what they meant? Answer YES if one obvious answer comes to mind at once. Answer NO if you would be confused or unsure. Do not fabricate. YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p140",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if you have to bridge separate associations to reach an answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p141",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if you have to piece together separate associations. Be especially wary of inventing character names, titles, or terms that may not actually exist. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p142",
+        "text": "Is this a valid crossword clue? Answer YES only if a specific, well-known answer comes to mind at once. Answer NO if you have to piece together separate associations to reach an answer. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p143",
+        "text": "Is this a valid crossword clue? Answer YES only if the words work together as one clue and an obvious, well-known answer comes to mind at once. Answer NO if you have to piece together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p144",
+        "text": "Is this a valid crossword clue? Answer YES if these words have a clear, direct connection to one well-known thing. Answer NO if the connection is vague, invented, or requires bridging unrelated ideas. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
+    },
+    {
+        "id": "p145",
+        "text": "Is this a valid crossword clue? Answer YES only if the words already work together as one clue, an obvious answer comes to mind at once, and that answer is real. Answer NO if you have to piece together separate associations. Do not fabricate. Answer YES or NO only.\nClue: {PAIR}"
     }
 ]

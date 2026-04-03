@@ -415,14 +415,14 @@ def make_result_prefix(args):
         pid = args.prompt_id
     else:
         prompt_source = "manual"
-        pid = "manual"
+        pid = ""
     base_name = f"{basename}_{prompt_source}_{pid}"
     server_name = get_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
         base_name += f"_{Path(args.system_prompt_filename).stem}"
-    base_name += f"_mc{args.max_concurrent}"
+    #base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
     return f"{results_dir}/{base_name}"
@@ -438,7 +438,7 @@ def get_expected_bad_metadata_suffix(args):
         pid = args.prompt_id
     else:
         prompt_source = "manual"
-        pid = "manual"
+        pid = ""
 
     suffix = f"_{prompt_source}_{pid}"
     server_name = get_server_name(args.host)

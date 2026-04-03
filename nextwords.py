@@ -3,7 +3,7 @@ import argparse
 from info import info
 from model import load_model, clear_cache
 from pathlib import Path
-from words import WordProbabilityExplorer
+from wpe import WordProbabilityExplorer
 
 # Write tuples to file (already sorted by probability)
 def dump_probs(filename, word_probs, args):
@@ -65,7 +65,7 @@ def main():
     parser.add_argument(      "--all", action="store_true", help=f"process all words in file; used with -f FILE")
     parser.add_argument("-c", "--context", type=str, default=DEFAULT_CONTEXT, help=f"context prefix, default: {DEFAULT_CONTEXT}")
     parser.add_argument("-d", "--data", type=str, default=DEFAULT_DATA_DIR, help=f"data directory, default: {DEFAULT_DATA_DIR}")    
-    parser.add_argument('-k', '--first-k', type=int, default=DEFAULT_FIRST_K, help=f"select topk first tokens, default: {DEFAULT_FIRST_K}")
+    parser.add_argument('-k', '--top-k', type=int, default=DEFAULT_FIRST_K, help=f"select top-k first tokens, default: {DEFAULT_FIRST_K}")
     parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help=f"select model, default: {DEFAULT_MODEL}")
     parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=0, help='show N top probabilities')
     parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA, help=f"typicality sigma, default: {DEFAULT_SIGMA}")

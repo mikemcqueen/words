@@ -73,9 +73,13 @@ def is_instruct(name: str):
     return "-it" in name or "-instruct" in name
 
 def is_instruct_model(model):
+    # hack for now
+    return True
+    """
     if getattr(model, 'is_mlx', False):
         return False
     return is_instruct(model.name_or_path.lower())
+    """
 
 def is_quantized(name: str):
     name = name.lower()
