@@ -2,12 +2,13 @@
 """Compare prompt result files and report individual + ensemble statistics.
 
 Usage:
-  compare_results.py <file_a> <file_b>   — compare two files explicitly
-  compare_results.py <file>              — auto-discover sibling files by prompt id,
-                                           report all baselines + pairwise ensembles
-                                           sorted by # correct
+  compare_results.py <file_a> <file_b>          — compare two files explicitly
+  compare_results.py [-3] <file>                — auto-discover sibling files by prompt id,
+                                                   report all baselines + pairwise ensembles
+                                                   sorted by # correct; -3 uses 3-way combos
 """
 
+import argparse
 import json
 import sys
 from itertools import combinations
@@ -54,7 +55,7 @@ def print_stats(label, stats):
 
 
 def apply_ensemble(results_a, results_b, rule):
-    """Apply pairwise rule(a_answer, b_answer) -> 'YES'/'NO' over common pairs."""
+    """Apply rule(a, b) -> 'YES'/'NO' over common pairs."""
     combined = {}
     for pair in set(results_a) & set(results_b):
         a = results_a[pair]
@@ -67,11 +68,31 @@ def apply_ensemble(results_a, results_b, rule):
     return combined
 
 
-ENSEMBLE_RULES = [
+def apply_ensemble_3(results_a, results_b, results_c, rule):
+    """Apply rule(a, b, c) -> 'YES'/'NO' over common pairs."""
+    combined = {}
+    for pair in set(results_a) & set(results_b) & set(results_c):
+        a, b, c = results_a[pair], results_b[pair], results_c[pair]
+        expected = a['expected']
+        for other in (b, c):
+            if other['expected'] != expected:
+                print(f"  WARNING: expected mismatch for '{pair}'", file=sys.stderr)
+        combined[pair] = {'answer': rule(a['answer'], b['answer'], c['answer']),
+                          'expected': expected}
+    return combined
+
+
+ENSEMBLE_RULES_2 = [
     ("OR",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
     ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO'),
     ("A=Y,B=N", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
     ("A=N,B=Y", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
+]
+
+ENSEMBLE_RULES_3 = [
+    ("OR",       lambda a, b, c: 'YES' if 'YES' in (a, b, c)                    else 'NO'),
+    ("AND",      lambda a, b, c: 'YES' if a == b == c == 'YES'                  else 'NO'),
+    ("MAJORITY", lambda a, b, c: 'YES' if (a, b, c).count('YES') >= 2           else 'NO'),
 ]
 
 
@@ -119,14 +140,14 @@ def run_two_file(path_a, path_b):
     print_stats(f"B ({pid_b})", compute_stats(results_b))
 
     print("  Ensemble (common pairs):")
-    for label, rule in ENSEMBLE_RULES:
+    for label, rule in ENSEMBLE_RULES_2:
         combined = apply_ensemble(results_a, results_b, rule)
         print_stats(label, compute_stats(combined))
 
     print()
 
 
-def run_discovery(seed_path):
+def run_discovery(seed_path, three_way=False):
     data0, _ = parse_result_file(seed_path)
     seed_pid  = data0.get('prompt_id', '')
     if not seed_pid:
@@ -155,9 +176,19 @@ def run_discovery(seed_path):
         _, results_a = files[pid_a]
         _, results_b = files[pid_b]
         pair_key = f"{pid_a},{pid_b}"
-        for method, rule in ENSEMBLE_RULES:
+        for method, rule in ENSEMBLE_RULES_2:
             combined = apply_ensemble(results_a, results_b, rule)
             rows[f"{pair_key} {method}"] = compute_stats(combined)
+
+    if three_way:
+        for pid_a, pid_b, pid_c in combinations(pids, 3):
+            _, results_a = files[pid_a]
+            _, results_b = files[pid_b]
+            _, results_c = files[pid_c]
+            triple_key = f"{pid_a},{pid_b},{pid_c}"
+            for method, rule in ENSEMBLE_RULES_3:
+                combined = apply_ensemble_3(results_a, results_b, results_c, rule)
+                rows[f"{triple_key} {method}"] = compute_stats(combined)
 
     # Sort by correct count descending
     sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
@@ -170,13 +201,19 @@ def run_discovery(seed_path):
 
 
 def main():
-    if len(sys.argv) == 2:
-        run_discovery(sys.argv[1])
-    elif len(sys.argv) == 3:
-        run_two_file(sys.argv[1], sys.argv[2])
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('files', nargs='+', metavar='file')
+    parser.add_argument('-3', '--three-way', action='store_true',
+                        help='include 3-way ensemble combinations (discovery mode only)')
+    args = parser.parse_args()
+
+    if len(args.files) == 1:
+        run_discovery(args.files[0], three_way=args.three_way)
+    elif len(args.files) == 2:
+        run_two_file(args.files[0], args.files[1])
     else:
-        print(f"Usage: {sys.argv[0]} <file_a> [file_b]")
-        sys.exit(1)
+        parser.error('specify 1 or 2 files')
 
 
 if __name__ == '__main__':
