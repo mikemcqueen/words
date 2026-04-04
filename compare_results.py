@@ -11,9 +11,20 @@ Usage:
 
 import argparse
 import json
+import re
+import signal
 import sys
+
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 from pathlib import Path
+
+try:
+    import numpy as np
+    _NUMPY = True
+except ImportError:
+    _NUMPY = False
 
 
 def parse_result_file(path):
@@ -50,8 +61,8 @@ def compute_stats(pair_results):
     return dict(correct=correct, total=total, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
 
 
-def print_stats(label, stats):
-    print(f"  {label:<24s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
+def print_stats(label, stats, w=24):
+    print(f"  {label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
           f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
 
 
@@ -72,7 +83,7 @@ def compute_pair_diff(results_1, results_2):
         if was_correct and is_fn:    new_fn += 1
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
-    score = (fixed_fp + fixed_fn) - (new_fp + new_fn)
+    score = 2 * (fixed_fn - new_fn) + (fixed_fp - new_fp)
     return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
                 score=score, s1=s1, s2=s2)
 
@@ -107,9 +118,9 @@ def apply_ensemble_3(results_a, results_b, results_c, rule):
 
 ENSEMBLE_RULES_2 = [
     ("OR",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
-    ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO'),
-    ("A=Y,B=N", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
-    ("A=N,B=Y", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
+    ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO')
+#    ("A=Y,B=N", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
+#    ("A=N,B=Y", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
 ]
 
 ENSEMBLE_RULES_3 = [
@@ -117,6 +128,81 @@ ENSEMBLE_RULES_3 = [
     ("AND",      lambda a, b, c: 'YES' if a == b == c == 'YES'          else 'NO'),
     ("MAJORITY", lambda a, b, c: 'YES' if (a, b, c).count('YES') >= 2   else 'NO'),
 ]
+
+
+def _build_vecs(files_dict):
+    """Return (exp_vec, yes_vecs, n_pairs) using a common pair ordering.
+    exp_vec and yes_vecs values are numpy bool arrays (or plain lists if numpy absent)."""
+    all_keys = list(files_dict.keys())
+    pair_sets = [set(files_dict[k][1].keys()) for k in all_keys]
+    common = sorted(set.intersection(*pair_sets))
+    n = len(common)
+    first_results = files_dict[all_keys[0]][1]
+    if _NUMPY:
+        exp_vec = np.array([first_results[p]['expected'] == 'YES' for p in common], dtype=np.bool_)
+        yes_vecs = {
+            k: np.array([files_dict[k][1][p]['answer'] == 'YES' for p in common], dtype=np.bool_)
+            for k in all_keys
+        }
+    else:
+        exp_vec = [first_results[p]['expected'] == 'YES' for p in common]
+        yes_vecs = {
+            k: [files_dict[k][1][p]['answer'] == 'YES' for p in common]
+            for k in all_keys
+        }
+    return exp_vec, yes_vecs, n
+
+
+def _stats_from_vec(yes_vec, exp_vec, n):
+    """Compute stats dict from boolean vectors."""
+    if _NUMPY:
+        tp = int((yes_vec & exp_vec).sum())
+        tn = int((~yes_vec & ~exp_vec).sum())
+        fp = int((yes_vec & ~exp_vec).sum())
+        fn = int((~yes_vec & exp_vec).sum())
+    else:
+        tp = sum(y and e for y, e in zip(yes_vec, exp_vec))
+        tn = sum(not y and not e for y, e in zip(yes_vec, exp_vec))
+        fp = sum(y and not e for y, e in zip(yes_vec, exp_vec))
+        fn = sum(not y and e for y, e in zip(yes_vec, exp_vec))
+    correct = tp + tn
+    pct = 100 * correct / n if n else 0.0
+    return dict(correct=correct, total=n, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
+
+
+def parse_result_filename(name):
+    """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}.json.
+    Returns (pair_file, prompt_file, prompt_id, host) or None if no match."""
+    stem = Path(name).stem
+    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+)$', stem)
+    return (m.group(1), m.group(2), m.group(3), m.group(4)) if m else None
+
+
+def discover_files_all(seed_path):
+    """Return {prompt_file.prompt_id: (data, results)} for all .json files in seed's directory."""
+    directory = Path(seed_path).parent
+    candidates = []
+    for json_file in sorted(directory.glob('*.json')):
+        parsed = parse_result_filename(json_file.name)
+        if parsed is None:
+            continue
+        _, prompt_file, prompt_id, _ = parsed
+        key = f"{prompt_file}.{prompt_id}"
+        candidates.append((key, json_file))
+
+    def _load(item):
+        key, json_file = item
+        try:
+            return key, parse_result_file(json_file)
+        except Exception:
+            return key, None
+
+    found = {}
+    with ThreadPoolExecutor() as executor:
+        for key, result in executor.map(_load, candidates):
+            if result is not None:
+                found[key] = result
+    return found
 
 
 def discover_files(seed_path, seed_pid):
@@ -131,6 +217,7 @@ def discover_files(seed_path, seed_pid):
     for n in range(1, 100):
         pid = f'p{n}'
         candidate = path.parent / path.name.replace(marker, f'_{pid}_', 1)
+        #print(f"trying: {candidate}")
         if candidate.exists():
             found[pid] = parse_result_file(candidate)
         else:
@@ -140,18 +227,45 @@ def discover_files(seed_path, seed_pid):
 
 # --- default (diff) output ---
 
-def print_explicit_default(pid_a, results_a, pid_b, results_b):
-    d = compute_pair_diff(results_a, results_b)
-    s1, s2 = d['s1'], d['s2']
-    print(f"\n{pid_a}:  FP: {s1['fp']}  FN: {s1['fn']}")
-    print(f"{pid_b}:  FP: {s2['fp']}  FN: {s2['fn']}")
-    print(f"\nFixedFP: {d['fixed_fp']}  FixedFN: {d['fixed_fn']}  "
-          f"NewFP: {d['new_fp']}  NewFN: {d['new_fn']}")
-    print(f"Score: {d['score']:+d}")
+def print_default_table(seed_pid, rows):
+    """Print diff table. rows is a list of (complement_pid, diff_dict)."""
+    wa = max(len(seed_pid), len('anchor'))
+    wc = max((len(pid) for pid, _ in rows), default=len('complement'))
+    wc = max(wc, len('complement'))
+    print(f"  {'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
+          f"{'complement':<{wc}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s} | "
+          f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s}")
+    print(f"  {'─'*(wa + wc + 68)}")
+    for pid, d in rows:
+        s1, s2 = d['s1'], d['s2']
+        print(f"  {seed_pid:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
+              f"{pid:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
+              f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
+              f"{d['new_fp']:>5d} {d['new_fn']:>5d}")
     print()
 
 
-def print_discovery_default(seed_pid, results0, files, pids):
+def print_explicit_default(pid_a, results_a, pid_b, results_b):
+    d = compute_pair_diff(results_a, results_b)
+    print_default_table(pid_a, [(pid_b, d)])
+
+
+SORT_DEFAULT_KEYS = {
+    'score':  ('score',    True),
+    'fixfp':  ('fixed_fp', True),
+    'fixfn':  ('fixed_fn', True),
+    'newfp':  ('new_fp',   False),
+    'newfn':  ('new_fn',   False),
+}
+
+SORT_ENSEMBLE_KEYS = {
+    'score': ('correct', True),
+    'fp':    ('fp',      False),
+    'fn':    ('fn',      False),
+}
+
+
+def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
     rows = []
     for pid in pids:
         if pid == seed_pid:
@@ -159,17 +273,13 @@ def print_discovery_default(seed_pid, results0, files, pids):
         _, results_other = files[pid]
         d = compute_pair_diff(results0, results_other)
         rows.append((pid, d))
-    rows.sort(key=lambda x: x[1]['score'], reverse=True)
+    sort_key, sort_rev = SORT_DEFAULT_KEYS[sort.lower()]
+    if sort_key == 'score':
+        rows.sort(key=lambda x: x[1]['score'], reverse=True)
+    else:
+        rows.sort(key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['score']))
 
-    print(f"  {'label':<10s}  {'score':>6s}  {'FixFP':>6s}  {'FixFN':>6s}  "
-          f"{'NewFP':>6s}  {'NewFN':>6s}  {'A corr':>8s}  {'B corr':>8s}")
-    print(f"  {'─'*72}")
-    for pid, d in rows:
-        s1, s2 = d['s1'], d['s2']
-        print(f"  {seed_pid}→{pid:<7s}  {d['score']:>+6d}  {d['fixed_fp']:>6d}  "
-              f"{d['fixed_fn']:>6d}  {d['new_fp']:>6d}  {d['new_fn']:>6d}  "
-              f"{s1['correct']:3d}/{s1['total']:3d}  {s2['correct']:3d}/{s2['total']:3d}")
-    print()
+    print_default_table(seed_pid, rows)
 
 
 # --- ensemble output ---
@@ -200,35 +310,48 @@ def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b
     print()
 
 
-def print_discovery_ensemble(seed_pid, files, pids, three_way):
+def print_discovery_ensemble(seed_pid, files, pids, three_way, sort='score'):
+    exp_vec, yes_vecs, n_pairs = _build_vecs({p: files[p] for p in pids})
     rows = {}
+
     for pid in pids:
-        _, r = files[pid]
-        rows[pid] = compute_stats(r)
+        rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
 
     for pid_a, pid_b in combinations(pids, 2):
-        _, results_a = files[pid_a]
-        _, results_b = files[pid_b]
+        ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
         pair_key = f"{pid_a},{pid_b}"
-        for method, rule in ENSEMBLE_RULES_2:
-            combined = apply_ensemble(results_a, results_b, rule)
-            rows[f"{pair_key} {method}"] = compute_stats(combined)
+        if _NUMPY:
+            rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
+            rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
+        else:
+            rows[f"{pair_key} OR"]  = _stats_from_vec([a or b  for a, b in zip(ya, yb)], exp_vec, n_pairs)
+            rows[f"{pair_key} AND"] = _stats_from_vec([a and b for a, b in zip(ya, yb)], exp_vec, n_pairs)
 
     if three_way:
         for pid_a, pid_b, pid_c in combinations(pids, 3):
-            _, results_a = files[pid_a]
-            _, results_b = files[pid_b]
-            _, results_c = files[pid_c]
+            ya, yb, yc = yes_vecs[pid_a], yes_vecs[pid_b], yes_vecs[pid_c]
             triple_key = f"{pid_a},{pid_b},{pid_c}"
-            for method, rule in ENSEMBLE_RULES_3:
-                combined = apply_ensemble_3(results_a, results_b, results_c, rule)
-                rows[f"{triple_key} {method}"] = compute_stats(combined)
+            if _NUMPY:
+                rows[f"{triple_key} OR"]       = _stats_from_vec(ya | yb | yc,           exp_vec, n_pairs)
+                rows[f"{triple_key} AND"]      = _stats_from_vec(ya & yb & yc,           exp_vec, n_pairs)
+                maj = (ya.astype(np.int8) + yb.astype(np.int8) + yc.astype(np.int8)) >= 2
+                rows[f"{triple_key} MAJORITY"] = _stats_from_vec(maj,                    exp_vec, n_pairs)
+            else:
+                rows[f"{triple_key} OR"]       = _stats_from_vec([a or b or c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
+                rows[f"{triple_key} AND"]      = _stats_from_vec([a and b and c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
+                rows[f"{triple_key} MAJORITY"] = _stats_from_vec([(a+b+c)>=2 for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
 
-    sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
-    print(f"  {'label':<24s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*64}")
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    if sort_key == 'correct':
+        sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
+    else:
+        sorted_rows = sorted(rows.items(), key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['correct']))
+    w = max((len(label) for label, _ in sorted_rows), default=5)
+    w = max(w, len('label'))
+    print(f"  {'label':<{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"  {'─'*(w + 28)}")
     for label, stats in sorted_rows:
-        print_stats(label, stats)
+        print_stats(label, stats, w)
     print()
 
 
@@ -248,25 +371,51 @@ def run_explicit(args):
 
 def run_discovery(args):
     data0, results0 = parse_result_file(args.files[0])
-    seed_pid = data0.get('prompt_id', '')
-    if not seed_pid:
-        print("Error: could not determine prompt_id from file", file=sys.stderr)
-        sys.exit(1)
 
-    files = discover_files(args.files[0], seed_pid)
-    if not files:
-        print("No files found.", file=sys.stderr)
-        sys.exit(1)
+    if args.all:
+        parsed = parse_result_filename(Path(args.files[0]).name)
+        if parsed is None:
+            print(f"Error: cannot parse filename '{Path(args.files[0]).name}' "
+                  f"as {{pair_file}}_{{prompt_file}}_{{prompt_id}}_{{host}}.json",
+                  file=sys.stderr)
+            sys.exit(1)
+        _, prompt_file0, prompt_id0, _ = parsed
+        seed_key = f"{prompt_file0}.{prompt_id0}"
 
-    pids = sorted(files.keys())
-    print(f"\nPattern: {Path(args.files[0]).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
-    print(f"Found: {', '.join(pids)}\n")
+        files = discover_files_all(args.files[0])
+        if not files:
+            print("No files found.", file=sys.stderr)
+            sys.exit(1)
 
-    if not args.ensemble:
-        print(f"Anchor (file1): {seed_pid}\n")
-        print_discovery_default(seed_pid, results0, files, pids)
+        keys = sorted(files.keys())
+        print(f"\nDirectory: {Path(args.files[0]).parent}")
+        print(f"Found: {', '.join(keys)}\n")
+
+        if not args.ensemble:
+            print(f"Anchor: {seed_key}\n")
+            print_discovery_default(seed_key, results0, files, keys, args.sort)
+        else:
+            print_discovery_ensemble(seed_key, files, keys, args.three_way, args.sort)
     else:
-        print_discovery_ensemble(seed_pid, files, pids, args.three_way)
+        seed_pid = data0.get('prompt_id', '')
+        if not seed_pid:
+            print("Error: could not determine prompt_id from file", file=sys.stderr)
+            sys.exit(1)
+
+        files = discover_files(args.files[0], seed_pid)
+        if not files:
+            print("No files found.", file=sys.stderr)
+            sys.exit(1)
+
+        pids = sorted(files.keys())
+        print(f"\nPattern: {Path(args.files[0]).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
+        print(f"Found: {', '.join(pids)}\n")
+
+        if not args.ensemble:
+            print(f"Anchor (file1): {seed_pid}\n")
+            print_discovery_default(seed_pid, results0, files, pids, args.sort)
+        else:
+            print_discovery_ensemble(seed_pid, files, pids, args.three_way, args.sort)
 
 
 def main():
@@ -275,9 +424,30 @@ def main():
     parser.add_argument('files', nargs='+', metavar='file')
     parser.add_argument('-3', '--three-way', action='store_true',
                         help='include 3-way ensemble combinations (ensemble discovery mode only)')
+    parser.add_argument('-a', '--all', action='store_true',
+                        help='discover all .json files in same directory as FILE '
+                             '(single-file mode only; keys shown as prompt_file.prompt_id)')
     parser.add_argument('-e', '--ensemble', action='store_true',
                         help='ensemble mode: show all combination statistics')
+    parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
+                        help='sort field: score (default); FP/FN (ensemble only); '
+                             'FixFP/FixFN/NewFP/NewFN (default mode only)')
     args = parser.parse_args()
+
+    if args.all and len(args.files) != 1:
+        parser.error('--all requires exactly one positional FILE')
+
+    sort_lc = args.sort.lower()
+    ensemble_only = {'fp', 'fn'}
+    default_only  = {'fixfp', 'fixfn', 'newfp', 'newfn'}
+    valid_sort    = {'score'} | ensemble_only | default_only
+    if sort_lc not in valid_sort:
+        parser.error(f'--sort: invalid value {args.sort!r}; '
+                     f'choices: score, FP, FN, FixFP, FixFN, NewFP, NewFN')
+    if sort_lc in ensemble_only and not args.ensemble:
+        parser.error(f'--sort {args.sort} is only valid in ensemble mode (-e)')
+    if sort_lc in default_only and args.ensemble:
+        parser.error(f'--sort {args.sort} is not valid in ensemble mode')
 
     if len(args.files) == 1:
         run_discovery(args)
