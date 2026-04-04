@@ -178,7 +178,22 @@ def print_explicit_default(pid_a, results_a, pid_b, results_b):
     print()
 
 
-def print_discovery_default(seed_pid, results0, files, pids):
+SORT_DEFAULT_KEYS = {
+    'score':  ('score',    True),
+    'fixfp':  ('fixed_fp', True),
+    'fixfn':  ('fixed_fn', True),
+    'newfp':  ('new_fp',   False),
+    'newfn':  ('new_fn',   False),
+}
+
+SORT_ENSEMBLE_KEYS = {
+    'score': ('correct', True),
+    'fp':    ('fp',      False),
+    'fn':    ('fn',      False),
+}
+
+
+def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
     rows = []
     for pid in pids:
         if pid == seed_pid:
@@ -186,7 +201,11 @@ def print_discovery_default(seed_pid, results0, files, pids):
         _, results_other = files[pid]
         d = compute_pair_diff(results0, results_other)
         rows.append((pid, d))
-    rows.sort(key=lambda x: x[1]['score'], reverse=True)
+    sort_key, sort_rev = SORT_DEFAULT_KEYS[sort.lower()]
+    if sort_key == 'score':
+        rows.sort(key=lambda x: x[1]['score'], reverse=True)
+    else:
+        rows.sort(key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['score']))
 
     w = max((len(seed_pid) + 1 + len(pid) for pid, _ in rows), default=5)
     w = max(w, len('label'))
@@ -230,7 +249,7 @@ def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b
     print()
 
 
-def print_discovery_ensemble(seed_pid, files, pids, three_way):
+def print_discovery_ensemble(seed_pid, files, pids, three_way, sort='score'):
     rows = {}
     for pid in pids:
         _, r = files[pid]
@@ -254,7 +273,11 @@ def print_discovery_ensemble(seed_pid, files, pids, three_way):
                 combined = apply_ensemble_3(results_a, results_b, results_c, rule)
                 rows[f"{triple_key} {method}"] = compute_stats(combined)
 
-    sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    if sort_key == 'correct':
+        sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
+    else:
+        sorted_rows = sorted(rows.items(), key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['correct']))
     w = max((len(label) for label, _ in sorted_rows), default=5)
     w = max(w, len('label'))
     print(f"  {'label':<{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
@@ -302,9 +325,9 @@ def run_discovery(args):
 
         if not args.ensemble:
             print(f"Anchor: {seed_key}\n")
-            print_discovery_default(seed_key, results0, files, keys)
+            print_discovery_default(seed_key, results0, files, keys, args.sort)
         else:
-            print_discovery_ensemble(seed_key, files, keys, args.three_way)
+            print_discovery_ensemble(seed_key, files, keys, args.three_way, args.sort)
     else:
         seed_pid = data0.get('prompt_id', '')
         if not seed_pid:
@@ -322,9 +345,9 @@ def run_discovery(args):
 
         if not args.ensemble:
             print(f"Anchor (file1): {seed_pid}\n")
-            print_discovery_default(seed_pid, results0, files, pids)
+            print_discovery_default(seed_pid, results0, files, pids, args.sort)
         else:
-            print_discovery_ensemble(seed_pid, files, pids, args.three_way)
+            print_discovery_ensemble(seed_pid, files, pids, args.three_way, args.sort)
 
 
 def main():
@@ -338,10 +361,25 @@ def main():
                              '(single-file mode only; keys shown as prompt_file.prompt_id)')
     parser.add_argument('-e', '--ensemble', action='store_true',
                         help='ensemble mode: show all combination statistics')
+    parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
+                        help='sort field: score (default); FP/FN (ensemble only); '
+                             'FixFP/FixFN/NewFP/NewFN (default mode only)')
     args = parser.parse_args()
 
     if args.all and len(args.files) != 1:
         parser.error('--all requires exactly one positional FILE')
+
+    sort_lc = args.sort.lower()
+    ensemble_only = {'fp', 'fn'}
+    default_only  = {'fixfp', 'fixfn', 'newfp', 'newfn'}
+    valid_sort    = {'score'} | ensemble_only | default_only
+    if sort_lc not in valid_sort:
+        parser.error(f'--sort: invalid value {args.sort!r}; '
+                     f'choices: score, FP, FN, FixFP, FixFN, NewFP, NewFN')
+    if sort_lc in ensemble_only and not args.ensemble:
+        parser.error(f'--sort {args.sort} is only valid in ensemble mode (-e)')
+    if sort_lc in default_only and args.ensemble:
+        parser.error(f'--sort {args.sort} is not valid in ensemble mode')
 
     if len(args.files) == 1:
         run_discovery(args)
@@ -352,4 +390,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
