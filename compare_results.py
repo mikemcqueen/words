@@ -17,7 +17,7 @@ import sys
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from concurrent.futures import ThreadPoolExecutor
-from itertools import combinations
+from itertools import combinations, islice
 from pathlib import Path
 
 try:
@@ -168,6 +168,30 @@ def _stats_from_vec(yes_vec, exp_vec, n):
     correct = tp + tn
     pct = 100 * correct / n if n else 0.0
     return dict(correct=correct, total=n, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
+
+
+def _combo_batches(n, r, batch_size):
+    """Yield lists of index tuples, batch_size at a time, for combinations(range(n), r)."""
+    gen = combinations(range(n), r)
+    while True:
+        batch = list(islice(gen, batch_size))
+        if not batch:
+            break
+        yield batch
+
+
+def _batch_stats_from_mat(mat, exp_vec, n):
+    """Compute stats for each row of mat (bool, shape batch x n_pairs).
+    Returns list of stats dicts."""
+    tp = ( mat &  exp_vec).sum(axis=1)
+    tn = (~mat & ~exp_vec).sum(axis=1)
+    fp = ( mat & ~exp_vec).sum(axis=1)
+    fn = (~mat &  exp_vec).sum(axis=1)
+    correct = tp + tn
+    pct = 100.0 * correct / n if n else np.zeros(len(correct), dtype=np.float64)
+    return [dict(correct=int(correct[i]), total=n, pct=float(pct[i]),
+                 tp=int(tp[i]), tn=int(tn[i]), fp=int(fp[i]), fn=int(fn[i]))
+            for i in range(len(correct))]
 
 
 def parse_result_filename(name):
@@ -328,15 +352,29 @@ def print_discovery_ensemble(seed_pid, files, pids, three_way, sort='score'):
             rows[f"{pair_key} AND"] = _stats_from_vec([a and b for a, b in zip(ya, yb)], exp_vec, n_pairs)
 
     if three_way:
-        for pid_a, pid_b, pid_c in combinations(pids, 3):
-            ya, yb, yc = yes_vecs[pid_a], yes_vecs[pid_b], yes_vecs[pid_c]
-            triple_key = f"{pid_a},{pid_b},{pid_c}"
-            if _NUMPY:
-                rows[f"{triple_key} OR"]       = _stats_from_vec(ya | yb | yc,           exp_vec, n_pairs)
-                rows[f"{triple_key} AND"]      = _stats_from_vec(ya & yb & yc,           exp_vec, n_pairs)
-                maj = (ya.astype(np.int8) + yb.astype(np.int8) + yc.astype(np.int8)) >= 2
-                rows[f"{triple_key} MAJORITY"] = _stats_from_vec(maj,                    exp_vec, n_pairs)
-            else:
+        if _NUMPY:
+            M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
+            pid_list = list(pids)
+            for batch in _combo_batches(len(pid_list), 3, 100_000):
+                idx = np.array(batch, dtype=np.intp)
+                ya = M[idx[:, 0]]
+                yb = M[idx[:, 1]]
+                yc = M[idx[:, 2]]
+                and_mat = ya & yb & yc
+                or_mat  = ya | yb | yc
+                maj_mat = (ya.view(np.uint8) + yb.view(np.uint8) + yc.view(np.uint8)) >= 2
+                and_stats = _batch_stats_from_mat(and_mat, exp_vec, n_pairs)
+                or_stats  = _batch_stats_from_mat(or_mat,  exp_vec, n_pairs)
+                maj_stats = _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)
+                for i, (ia, ib, ic) in enumerate(batch):
+                    triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
+                    rows[f"{triple_key} OR"]       = or_stats[i]
+                    rows[f"{triple_key} AND"]      = and_stats[i]
+                    rows[f"{triple_key} MAJORITY"] = maj_stats[i]
+        else:
+            for pid_a, pid_b, pid_c in combinations(pids, 3):
+                ya, yb, yc = yes_vecs[pid_a], yes_vecs[pid_b], yes_vecs[pid_c]
+                triple_key = f"{pid_a},{pid_b},{pid_c}"
                 rows[f"{triple_key} OR"]       = _stats_from_vec([a or b or c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
                 rows[f"{triple_key} AND"]      = _stats_from_vec([a and b and c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
                 rows[f"{triple_key} MAJORITY"] = _stats_from_vec([(a+b+c)>=2 for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
