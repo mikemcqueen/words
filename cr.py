@@ -12,7 +12,10 @@ Usage:
 import argparse
 import json
 import re
+import signal
 import sys
+
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from itertools import combinations
 from pathlib import Path
 
@@ -73,7 +76,7 @@ def compute_pair_diff(results_1, results_2):
         if was_correct and is_fn:    new_fn += 1
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
-    score = (fixed_fp + fixed_fn) - (new_fp + new_fn)
+    score = 2 * (fixed_fn - new_fn) + (fixed_fp - new_fp)
     return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
                 score=score, s1=s1, s2=s2)
 
@@ -167,15 +170,27 @@ def discover_files(seed_path, seed_pid):
 
 # --- default (diff) output ---
 
+def print_default_table(seed_pid, rows):
+    """Print diff table. rows is a list of (complement_pid, diff_dict)."""
+    wa = max(len(seed_pid), len('anchor'))
+    wc = max((len(pid) for pid, _ in rows), default=len('complement'))
+    wc = max(wc, len('complement'))
+    print(f"  {'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
+          f"{'complement':<{wc}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s} | "
+          f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s}")
+    print(f"  {'─'*(wa + wc + 68)}")
+    for pid, d in rows:
+        s1, s2 = d['s1'], d['s2']
+        print(f"  {seed_pid:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
+              f"{pid:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
+              f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
+              f"{d['new_fp']:>5d} {d['new_fn']:>5d}")
+    print()
+
+
 def print_explicit_default(pid_a, results_a, pid_b, results_b):
     d = compute_pair_diff(results_a, results_b)
-    s1, s2 = d['s1'], d['s2']
-    print(f"\n{pid_a}:  FP: {s1['fp']}  FN: {s1['fn']}")
-    print(f"{pid_b}:  FP: {s2['fp']}  FN: {s2['fn']}")
-    print(f"\nFixedFP: {d['fixed_fp']}  FixedFN: {d['fixed_fn']}  "
-          f"NewFP: {d['new_fp']}  NewFN: {d['new_fn']}")
-    print(f"Score: {d['score']:+d}")
-    print()
+    print_default_table(pid_a, [(pid_b, d)])
 
 
 SORT_DEFAULT_KEYS = {
@@ -207,18 +222,7 @@ def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
     else:
         rows.sort(key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['score']))
 
-    w = max((len(seed_pid) + 1 + len(pid) for pid, _ in rows), default=5)
-    w = max(w, len('label'))
-    print(f"  {'label':<{w}s}  {'score':>6s}  {'FixFP':>6s}  {'FixFN':>6s}  "
-          f"{'NewFP':>6s}  {'NewFN':>6s}  {'A corr':>8s}  {'B corr':>8s}")
-    print(f"  {'─'*(w + 48)}")
-    for pid, d in rows:
-        s1, s2 = d['s1'], d['s2']
-        label = f"{seed_pid}→{pid}"
-        print(f"  {label:<{w}s}  {d['score']:>+6d}  {d['fixed_fp']:>6d}  "
-              f"{d['fixed_fn']:>6d}  {d['new_fp']:>6d}  {d['new_fn']:>6d}  "
-              f"{s1['correct']:3d}/{s1['total']:3d}  {s2['correct']:3d}/{s2['total']:3d}")
-    print()
+    print_default_table(seed_pid, rows)
 
 
 # --- ensemble output ---
@@ -390,7 +394,4 @@ def main():
 
 
 if __name__ == '__main__':
-    try:
-        main()
-    except BrokenPipeError:
-        sys.exit(0)
+    main()
