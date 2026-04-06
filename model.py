@@ -1,15 +1,20 @@
 # model.py
 
 Q3 =        "Qwen/Qwen3-1.7B"
-L2 =        "meta-llama/Llama-2-7b-hf"
+"""
 G2_2 =      "google/gemma-2-2b"
 G2_2b_it =  "google/gemma-2-2b-it"
 G3_4b_it =  "google/gemma-3-4b-it"
 G3_12b_it = "google/gemma-3-12b-it"
-GLM47 =    "mlx-community/GLM-4.7-Flash-4bit"
+"""
+G4_2b_it =  "google/gemma-4-E2B-it"
+G4_4b_it =  "google/gemma-4-E4B-it"
+GLM47 =     "mlx-community/GLM-4.7-Flash-4bit"
 
 from info import info
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM, AutoProcessor
+from types import SimpleNamespace
+import sys
 import torch
 
 try:
@@ -28,10 +33,9 @@ print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 
 def get_model_name(abbrev_name: str) -> str:
     name = abbrev_name.lower()
-    if name == 'l2':
-        return L2
     if name == 'q3':
         return Q3
+    """
     if name == 'g2':
         return G2_2
     if name == 'g2it':
@@ -40,19 +44,25 @@ def get_model_name(abbrev_name: str) -> str:
         return G3_4b_it
     if name == 'g312it':
         return G3_12b_it
+    """
+    if name == 'g4it':
+        return G4_2b_it
     if name == 'glm47':
         return GLM47
     print(f"get_model_name(): unknown model name: '{name}'")
     exit()
 
 def is_gemma_2(name: str):
-    return name.startswith("google/gemma-2")
+    return "gemma-2" in name
 
 def is_gemma_3(name: str):
-    return "gemma-3" in name #name.startswith("google/gemma-3")
+    return "gemma-3" in name
+
+def is_gemma_4(name: str):
+    return "gemma-4" in name
 
 def is_gemma(name: str):
-    return name.startswith("google/gemma")
+    return "gemma" in name
 
 def is_mlx_model(name: str) -> bool:
     return name.startswith("mlx-community/")
@@ -135,8 +145,8 @@ def _load_model_mlx(name: str):
     model.model_name = name
     return model, tokenizer
 
-def _load_model(name: str, device):
-    if name == Q3 or is_gemma_2(name):
+def _load_model(name: str):
+    if name == Q3 or is_gemma_2(name) or is_gemma_4(name):
         model = AutoModelForCausalLM.from_pretrained(
             name,
             dtype=torch.bfloat16,
@@ -207,10 +217,17 @@ def load_model(name):
         device = torch.device("cpu")
         info("Using CPU")
 
+    if not is_gemma_4(model_name):
+        print(f"not sure AutoProcessor works for anything but gemma 4, check model card: {model_name}")
+        sys.exit()
+
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model, to = _load_model(model_name, device)
+    #processor = AutoProcessor.from_pretrained(model_name)
+    assert tokenizer, "no tokenizer"
+    model, to = _load_model(model_name)
 
     if to:
+        assert False, ".to() not supported atm"
         model, tokenizer = model.to(device)
 
     #torch.set_float32_matmul_precision('high')
@@ -220,7 +237,7 @@ def load_model(name):
 
     info(f"Model loaded successfully on {device}")
 
-    return device, model, tokenizer
+    return SimpleNamespace(model=model, tokenizer=tokenizer)
 
 def clear_cache(device):
     if device is None:

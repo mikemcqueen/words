@@ -56,7 +56,7 @@ def word_generator(filepath: str):
 
 def main():
     DEFAULT_CONTEXT = "<|en-us|>"
-    DEFAULT_MODEL = "g2"
+    DEFAULT_MODEL = "g4it"
     DEFAULT_FIRST_K = 1000
     DEFAULT_SIGMA = 1.0
     DEFAULT_DATA_DIR = "./data"
@@ -66,7 +66,7 @@ def main():
     parser.add_argument("-c", "--context", type=str, default=DEFAULT_CONTEXT, help=f"context prefix, default: {DEFAULT_CONTEXT}")
     parser.add_argument("-d", "--data", type=str, default=DEFAULT_DATA_DIR, help=f"data directory, default: {DEFAULT_DATA_DIR}")    
     parser.add_argument('-k', '--top-k', type=int, default=DEFAULT_FIRST_K, help=f"select top-k first tokens, default: {DEFAULT_FIRST_K}")
-    parser.add_argument("-m", "--model", metavar='q3|l2|g2', type=str, default=DEFAULT_MODEL, help=f"select model, default: {DEFAULT_MODEL}")
+    parser.add_argument("-m", "--model", metavar='q3|g4', type=str, default=DEFAULT_MODEL, help=f"select model, default: {DEFAULT_MODEL}")
     parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=0, help='show N top probabilities')
     parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA, help=f"typicality sigma, default: {DEFAULT_SIGMA}")
     parser.add_argument("-x", "--x-factor", action="store_true", help=f"alternate approach")
