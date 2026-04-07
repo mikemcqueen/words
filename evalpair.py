@@ -18,7 +18,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file
+from common import load_prompts_from_file, single_pair_generator, file_pair_generator
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text
 
@@ -369,18 +369,6 @@ def flip(pair: str) -> str:
     assert len(flipped) == 2, f"{pair} len: {len(flipped)}"
     flipped = [flipped[1], flipped[0]]
     return ",".join(flipped)
-
-def single_pair_generator(pair_string):
-    """Generator that yields a single pair string, then ends."""
-    yield pair_string
-
-def file_pair_generator(filename):
-    """Generator that yields pairs from a file."""
-    with open(filename, 'r') as f:
-        for line in f:
-            pair = line.strip()
-            if pair:
-                yield pair
 
 
 class IncrementalWriter:

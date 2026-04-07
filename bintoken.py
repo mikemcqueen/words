@@ -1,7 +1,14 @@
 # binary classify next token
 
 import argparse
+import asyncio
+import httpx
+import json
+import math
+import sys
+import torch
 
+from common import file_pair_generator, single_pair_generator
 from info import info
 from model import load_model, clear_cache
 from pathlib import Path
@@ -73,61 +80,110 @@ def llm_prefill(mpd, prompt: str):
     inputs = mpd.tokenizer(text, return_tensors="pt").to(mpd.model.device)
     return inputs
 
-def determine_yesno_tokens(mpd, args):
-    prompt = "Is 1 + 1 equal to 2? Answer YES or NO only."
-    inputs = llm_prefill(mpd, prompt) 
-    # Generate output
-    outputs = mpd.model.generate(**inputs, max_new_tokens=50)
+async def _remote_logprobs(args, prompt: str):
+    from client import send_openai_request
+    async with httpx.AsyncClient() as client:
+        _, _, payload = await send_openai_request(
+            client, args, prompt,
+            model=args.model_id,
+            extra_payload={"max_tokens": 1, "logprobs": True, "top_logprobs": 20},
+        )
+    return payload
 
-    response = mpd.tokenizer.decode(outputs[0], skip_special_tokens=False)
-    #input_len = inputs["input_ids"].shape[-1]
-    #response = mpd.processor.decode(outputs[0][input_len:], skip_special_tokens=False)
+def determine_yesno_tokens_remote(prompt: str, args):
+    payload = asyncio.run(_remote_logprobs(args, prompt))
+    content = payload["logprobs"]["content"]
+    top_token = content[0]["token"]
+    top_logprob = content[0]["logprob"]
+    print(f"response: {repr(top_token)}  logprob={top_logprob:.7f}  prob={math.exp(top_logprob):.7f}")
+    print()
+    for entry in content[0]["top_logprobs"]:
+        token = entry["token"]
+        lp = entry["logprob"]
+        print(f"  {repr(token):<12} logprob={lp:>10.4f}  prob={math.exp(lp):.7f}")
+
+
+def determine_yesno_tokens(mpd, prompt: str, args):
+    inputs = llm_prefill(mpd, prompt)
+
+    # Generate and print response
+    outputs = mpd.model.generate(**inputs, max_new_tokens=50)
+    input_len = inputs["input_ids"].shape[-1]
+    response = mpd.tokenizer.decode(outputs[0][input_len:], skip_special_tokens=False)
     print(f"response:\n{response}")
 
-    # Parse output
-    #processor.parse_response(response)
-    #print(f"parsed response:\n{response}")
+    # Get next-token logits via forward pass
+    with torch.no_grad():
+        logits = mpd.model(**inputs).logits[0, -1, :]
+
+    logits = logits.float()  # avoid float16 overflow in softmax (exp saturates at ~65504)
+    topk_logits, topk_ids = torch.topk(logits, args.top_k)
+    all_probs = torch.softmax(logits, dim=-1)
+    topk_probs = torch.softmax(topk_logits, dim=-1)
+
+    for i, token_id in enumerate(topk_ids.tolist()):
+        decoded = mpd.tokenizer.decode([token_id])
+        logit_val = topk_logits[i].item()
+        all_prob = all_probs[token_id].item()
+        topk_prob = topk_probs[i].item()
+        print(f"{token_id:>6}: {decoded:<10} logit={logit_val:>10.4f}  vocab={all_prob:.9f}  top{args.top_k}={topk_prob:.9f}")
 
 
 def main():
-    DEFAULT_CONTEXT = "" #"<|en-us|>"
     DEFAULT_MODEL = "g4it"
     DEFAULT_TOP_K = 50
-    #DEFAULT_SIGMA = 1.0
-    DEFAULT_DATA_DIR = "./data"
+    DEFAULT_PORT = 8001
 
     parser = argparse.ArgumentParser(description='Determine next-word probability for a word or all unprocessed words in a file')
-    #parser.add_argument(      "--all", action="store_true", help=f"process all words in file; used with -f FILE")
-    #parser.add_argument("-c", "--context", type=str, default=DEFAULT_CONTEXT, help=f"context prefix, default: {DEFAULT_CONTEXT}")
-    #parser.add_argument("-d", "--data", type=str, default=DEFAULT_DATA_DIR, help=f"data directory, default: {DEFAULT_DATA_DIR}")    
-    #parser.add_argument('-k', '--top-k', type=int, default=DEFAULT_FIRST_K, help=f"select top-k first tokens, default: {DEFAULT_FIRST_K}")
-    parser.add_argument("-m", "--model", metavar='q3|g4it', type=str, default=DEFAULT_MODEL, help=f"select model, default: {DEFAULT_MODEL}")
-    #parser.add_argument("-p", "--show-probs", metavar='N', type=int, default=0, help='show N top probabilities')
-    #parser.add_argument("-s", "--sigma", type=float, default=DEFAULT_SIGMA, help=f"typicality sigma, default: {DEFAULT_SIGMA}")
-    #parser.add_argument("-x", "--x-factor", action="store_true", help=f"alternate approach")
-    #parser.add_argument("-y", "--dry-run", action="store_true", help=f"dry run (no data written to file)")
+    parser.add_argument('-k', '--top-k', type=int, default=DEFAULT_TOP_K, help=f"select top-k tokens, default: {DEFAULT_TOP_K}")
 
-    #group = parser.add_mutually_exclusive_group(required=True)
-    #group.add_argument('-w', '--word', type=str, help='A single word')
-    #group.add_argument('-f', '--file', type=str, help='Path to a text file')
+    pair_group = parser.add_mutually_exclusive_group(required=True)
+    pair_group.add_argument("-p", "--pair", type=str, help='single pair to evaluate (e.g., "foo,bar")')
+    pair_group.add_argument("--pair-file", type=str, help='file containing pairs (one per line)')
+
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"server port (default: {DEFAULT_PORT})")
+
+    hostmodel = parser.add_mutually_exclusive_group()
+    hostmodel.add_argument("--host", type=str, help="remote server host; mutually exclusive with --model")
+    hostmodel.add_argument("-m", "--model", metavar='q3|g4it', type=str, default=DEFAULT_MODEL, help=f"local model, default: {DEFAULT_MODEL}")
+    parser.add_argument("--key", type=str, help="API key")
+    parser.add_argument("-s", "--system-prompt", type=str, help="system prompt file (optional)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
+    parser.add_argument("--thinking", type=str, choices=("on", "off"), default="off",
+                        help="control model thinking/reasoning (default: off)")
 
     yngroup = parser.add_mutually_exclusive_group(required=True)
     yngroup.add_argument('-y', '--yes', action="store_true", help='Determine yes tokens')
     yngroup.add_argument('-n', '--no', action="store_true", help='Determine no tokens')
 
     args = parser.parse_args()
+    args.thinking = args.thinking == "on"
 
-    """
-    path = Path(args.data)
-    if not path.exists():
-        print(f"Data dir '${args.data}' doesn't exist.")
-        exit()
-    args.data = path
-    """
+    if args.system_prompt:
+        p = Path(args.system_prompt)
+        if not p.is_file():
+            print(f"Error: system prompt file not found: {args.system_prompt}", file=sys.stderr)
+            sys.exit(1)
+        args.system_prompt = p.read_text().strip()
 
-    mt = load_model(args.model)
-    #mtd = dict(device=device, model=model, processor=processor)
-    determine_yesno_tokens(mt, args)
+    def make_pair_prompt(pair):
+        words = pair.replace(',', ' ')
+        return (f"Judge by recall, not invention. Answer YES when the pair already sounds like standard crossword shorthand for a familiar answer: an exact name or compound, a direct answer fragment such as a simple definition or negation, or a plain headword paired with its exact well-known identifier in ordinary clue or listing style. Answer NO when the wording is merely thematic, just piled-up description, or depends on paraphrase, synonym swap, branding, technical jargon, or obscurity. Answer YES or NO only.\nClue: '{words}'")
+
+    pairs = single_pair_generator(args.pair) if args.pair else file_pair_generator(args.pair_file)
+
+    if args.host:
+        from client import resolve_host, query_model_id
+        args.host = resolve_host(args.host)
+        args.model_id = query_model_id(args.host, args.port, args.key)
+        for pair in pairs:
+            print(f"Testing {pair}")
+            determine_yesno_tokens_remote(make_pair_prompt(pair), args)
+    else:
+        mt = load_model(args.model)
+        for pair in pairs:
+            print(f"Testing {pair}")
+            determine_yesno_tokens(mt, make_pair_prompt(pair), args)
 
 
 if __name__ == '__main__':

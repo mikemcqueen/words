@@ -278,17 +278,23 @@ async def _post_with_retry(client, *args, label=None, **kwargs):
 
 
 def add_inference_options(payload: dict, args) -> dict:
-    """Populate a request payload with shared inference options."""
-    payload.update({
-        "temperature": args.temp,
-        "top_p": args.top_p,
-        "top_k": args.top_k,
-        "min_p": args.min_p,
-        "repeat_penalty": args.repeat_penalty,
-        "repeat_last_n": args.repeat_last_n,
-        "presence_penalty": args.presence_penalty,
-    })
-    adjust_thinking(payload, args.model_id, args.thinking)
+    """Populate a request payload with shared inference options (skips any not present in args)."""
+    for attr, key in [
+        ("temp",            "temperature"),
+        ("top_p",           "top_p"),
+        ("top_k",           "top_k"),
+        ("min_p",           "min_p"),
+        ("repeat_penalty",  "repeat_penalty"),
+        ("repeat_last_n",   "repeat_last_n"),
+        ("presence_penalty","presence_penalty"),
+    ]:
+        val = getattr(args, attr, None)
+        if val is not None:
+            payload[key] = val
+    thinking = getattr(args, "thinking", None)
+    model_id = getattr(args, "model_id", None)
+    if thinking is not None and model_id is not None:
+        adjust_thinking(payload, model_id, thinking)
     return payload
 
 
@@ -331,7 +337,7 @@ def query_model_id(host: str, port: int, key: str = None) -> str:
     return data[0]["id"]
 
 
-async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None) -> tuple[str, dict]:
+async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None, extra_payload: dict = None) -> tuple[str, dict]:
     """POST {base_url}/v1/chat/completions with OpenAI chat format"""
     url = f"{args.host}:{args.port}/v1/chat/completions"
 
@@ -340,14 +346,17 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, mode
         headers["Authorization"] = f"Bearer {args.key}"
 
     messages = []
-    if args.system_prompt:
-            messages.append({"role": "system", "content": args.system_prompt})
+    system_prompt = getattr(args, "system_prompt", None)
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     payload = add_inference_options({
         "model": model,
         "messages": messages,
     }, args)
-    if args.verbose:
+    if extra_payload:
+        payload.update(extra_payload)
+    if getattr(args, "verbose", False):
         print(json.dumps(payload, indent=2))
     response = await _post_with_retry(client, url, headers=headers, json=payload, label=label)
     upstream = _extract_upstream(response)
