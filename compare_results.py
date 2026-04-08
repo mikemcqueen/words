@@ -20,11 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations, islice
 from pathlib import Path
 
-try:
-    import numpy as np
-    _NUMPY = True
-except ImportError:
-    _NUMPY = False
+import numpy as np
 
 
 def parse_result_file(path):
@@ -132,39 +128,26 @@ ENSEMBLE_RULES_3 = [
 
 def _build_vecs(files_dict):
     """Return (exp_vec, yes_vecs, n_pairs) using a common pair ordering.
-    exp_vec and yes_vecs values are numpy bool arrays (or plain lists if numpy absent)."""
+    exp_vec and yes_vecs values are numpy bool arrays."""
     all_keys = list(files_dict.keys())
     pair_sets = [set(files_dict[k][1].keys()) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
     n = len(common)
     first_results = files_dict[all_keys[0]][1]
-    if _NUMPY:
-        exp_vec = np.array([first_results[p]['expected'] == 'YES' for p in common], dtype=np.bool_)
-        yes_vecs = {
-            k: np.array([files_dict[k][1][p]['answer'] == 'YES' for p in common], dtype=np.bool_)
-            for k in all_keys
-        }
-    else:
-        exp_vec = [first_results[p]['expected'] == 'YES' for p in common]
-        yes_vecs = {
-            k: [files_dict[k][1][p]['answer'] == 'YES' for p in common]
-            for k in all_keys
-        }
+    exp_vec = np.array([first_results[p]['expected'] == 'YES' for p in common], dtype=np.bool_)
+    yes_vecs = {
+        k: np.array([files_dict[k][1][p]['answer'] == 'YES' for p in common], dtype=np.bool_)
+        for k in all_keys
+    }
     return exp_vec, yes_vecs, n
 
 
 def _stats_from_vec(yes_vec, exp_vec, n):
     """Compute stats dict from boolean vectors."""
-    if _NUMPY:
-        tp = int((yes_vec & exp_vec).sum())
-        tn = int((~yes_vec & ~exp_vec).sum())
-        fp = int((yes_vec & ~exp_vec).sum())
-        fn = int((~yes_vec & exp_vec).sum())
-    else:
-        tp = sum(y and e for y, e in zip(yes_vec, exp_vec))
-        tn = sum(not y and not e for y, e in zip(yes_vec, exp_vec))
-        fp = sum(y and not e for y, e in zip(yes_vec, exp_vec))
-        fn = sum(not y and e for y, e in zip(yes_vec, exp_vec))
+    tp = int((yes_vec & exp_vec).sum())
+    tn = int((~yes_vec & ~exp_vec).sum())
+    fp = int((yes_vec & ~exp_vec).sum())
+    fn = int((~yes_vec & exp_vec).sum())
     correct = tp + tn
     pct = 100 * correct / n if n else 0.0
     return dict(correct=correct, total=n, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
@@ -334,25 +317,21 @@ def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b
     print()
 
 
-def print_discovery_ensemble(seed_pid, files, pids, three_way, sort='score'):
+def print_discovery_ensemble(args, seed_pid, files, pids):
     exp_vec, yes_vecs, n_pairs = _build_vecs({p: files[p] for p in pids})
     rows = {}
 
     for pid in pids:
         rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
 
-    for pid_a, pid_b in combinations(pids, 2):
-        ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
-        pair_key = f"{pid_a},{pid_b}"
-        if _NUMPY:
+    if not args.rank:
+        for pid_a, pid_b in combinations(pids, 2):
+            ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
+            pair_key = f"{pid_a},{pid_b}"
             rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
             rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
-        else:
-            rows[f"{pair_key} OR"]  = _stats_from_vec([a or b  for a, b in zip(ya, yb)], exp_vec, n_pairs)
-            rows[f"{pair_key} AND"] = _stats_from_vec([a and b for a, b in zip(ya, yb)], exp_vec, n_pairs)
 
-    if three_way:
-        if _NUMPY:
+        if args.three_way:
             M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
             pid_list = list(pids)
             for batch in _combo_batches(len(pid_list), 3, 100_000):
@@ -371,15 +350,8 @@ def print_discovery_ensemble(seed_pid, files, pids, three_way, sort='score'):
                     rows[f"{triple_key} OR"]       = or_stats[i]
                     rows[f"{triple_key} AND"]      = and_stats[i]
                     rows[f"{triple_key} MAJORITY"] = maj_stats[i]
-        else:
-            for pid_a, pid_b, pid_c in combinations(pids, 3):
-                ya, yb, yc = yes_vecs[pid_a], yes_vecs[pid_b], yes_vecs[pid_c]
-                triple_key = f"{pid_a},{pid_b},{pid_c}"
-                rows[f"{triple_key} OR"]       = _stats_from_vec([a or b or c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
-                rows[f"{triple_key} AND"]      = _stats_from_vec([a and b and c for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
-                rows[f"{triple_key} MAJORITY"] = _stats_from_vec([(a+b+c)>=2 for a,b,c in zip(ya,yb,yc)], exp_vec, n_pairs)
 
-    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
         sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
     else:
@@ -429,11 +401,11 @@ def run_discovery(args):
         print(f"\nDirectory: {Path(args.files[0]).parent}")
         print(f"Found: {', '.join(keys)}\n")
 
-        if not args.ensemble:
+        if not (args.ensemble or args.rank):
             print(f"Anchor: {seed_key}\n")
             print_discovery_default(seed_key, results0, files, keys, args.sort)
         else:
-            print_discovery_ensemble(seed_key, files, keys, args.three_way, args.sort)
+            print_discovery_ensemble(args, seed_key, files, keys)
     else:
         seed_pid = data0.get('prompt_id', '')
         if not seed_pid:
@@ -453,20 +425,23 @@ def run_discovery(args):
             print(f"Anchor (file1): {seed_pid}\n")
             print_discovery_default(seed_pid, results0, files, pids, args.sort)
         else:
-            print_discovery_ensemble(seed_pid, files, pids, args.three_way, args.sort)
+            print_discovery_ensemble(args, seed_pid, files, pids)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='+', metavar='file')
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument('-e', '--ensemble', action='store_true',
+                            help='ensemble mode: show all combination statistics')
+    mode_group.add_argument('-r', '--rank', action='store_true',
+                            help='rank mode: show only per-file statistics (discovery --all mode only)')
     parser.add_argument('-3', '--three-way', action='store_true',
                         help='include 3-way ensemble combinations (ensemble discovery mode only)')
     parser.add_argument('-a', '--all', action='store_true',
                         help='discover all .json files in same directory as FILE '
                              '(single-file mode only; keys shown as prompt_file.prompt_id)')
-    parser.add_argument('-e', '--ensemble', action='store_true',
-                        help='ensemble mode: show all combination statistics')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
                         help='sort field: score (default); FP/FN (ensemble only); '
                              'FixFP/FixFN/NewFP/NewFN (default mode only)')
@@ -474,6 +449,10 @@ def main():
 
     if args.all and len(args.files) != 1:
         parser.error('--all requires exactly one positional FILE')
+    if args.rank and not args.all:
+        parser.error('--rank requires --all')
+    if args.three_way and not args.ensemble:
+        parser.error('--three-way requires --ensemble')
 
     sort_lc = args.sort.lower()
     ensemble_only = {'fp', 'fn'}
