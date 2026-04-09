@@ -18,7 +18,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file, single_pair_generator, file_pair_generator
+from common import load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text
 
@@ -158,30 +158,32 @@ async def async_request_and_classify(client, args, prompt, label=None):
 
 
 async def process_pair_async(client: httpx.AsyncClient, args, ctx: str, orig_pair: str) -> tuple:
-    """Process a single pair with retry on flipped pair if NO."""
-    pair = orig_pair.replace(',', ' ')
-    prompt = ctx.replace("{PAIR}", pair)
-    yes, upstream, orig_retries = await async_request_and_classify(client, args, prompt, label=orig_pair)
-    flipped = False
+    """Process a single pair with retry on flipped pair unless the first result is YES."""
     retry_map = {}
 
-    if orig_retries:
-        retry_map[orig_pair] = orig_retries
+    async def attempt_fn(candidate_pair: str, prompt: str, flipped: bool) -> dict:
+        yes, upstream, retries = await async_request_and_classify(client, args, prompt, label=candidate_pair)
+        normalized = "YES" if yes is True else "NO" if yes is False else None
+        if retries:
+            retry_map[candidate_pair] = retries
+        return {
+            "pair": candidate_pair,
+            "flipped": flipped,
+            "raw": normalized,
+            "normalized": normalized,
+            "upstream": upstream,
+        }
 
-    if not yes:
-        orig_yes = yes
-        flipped_pair = flip(orig_pair)
-        pair = flipped_pair.replace(',', ' ')
-        prompt = ctx.replace("{PAIR}", pair)
-        flip_yes, upstream, flip_retries = await async_request_and_classify(client, args, prompt, label=flipped_pair)
-        if flip_yes:
-            yes = flipped = True
-        elif orig_yes is None:
-            yes = None  # orig was bad, flip wasn't YES — can't trust it
-        if flip_retries:
-            retry_map[flipped_pair] = flip_retries
+    evaluation = await eval_with_flipped_retry(ctx, orig_pair, attempt_fn)
+    yes = evaluation["normalized"] == "YES" if evaluation["normalized"] is not None else None
+    attempts = evaluation["attempts"]
+    upstream = None
+    if evaluation["decision_source"] == "flipped" and len(attempts) > 1:
+        upstream = attempts[1].get("upstream")
+    else:
+        upstream = attempts[0].get("upstream")
 
-    return orig_pair, yes, flipped, upstream, retry_map
+    return orig_pair, yes, evaluation["flipped"], upstream, retry_map
 
 
 async def process_pairs_async(ctx: str, pairs, args, writer=None, on_result=None):
@@ -261,7 +263,7 @@ def evaluate_pair_sync(model, tokenizer, args, ctx, orig_pair):
     yes = is_yes_response(model, response)
     flipped = False
     if yes is False:
-        pair = flip(orig_pair).replace(',', ' ')
+        pair = flip_pair(orig_pair).replace(',', ' ')
         _, response = custom_context(model, tokenizer, args, ctx, pair)
         yes = is_yes_response(model, response)
         if yes:
@@ -365,10 +367,7 @@ def parse_args():
     return args
 
 def flip(pair: str) -> str:
-    flipped = pair.split(',')
-    assert len(flipped) == 2, f"{pair} len: {len(flipped)}"
-    flipped = [flipped[1], flipped[0]]
-    return ",".join(flipped)
+    return flip_pair(pair)
 
 
 class IncrementalWriter:

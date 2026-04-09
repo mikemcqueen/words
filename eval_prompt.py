@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file
+from common import load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
 # Configuration
 PAIRS_FILE = "pairs.json"
 RESULTS_DIR = Path("results")
@@ -49,56 +49,72 @@ def load_pairs_from_args(args) -> List[Dict]:
 
 
 
-def parse_yesno_response(yesno: str) -> str | None:
-    """Return normalized YES/NO for exact matches, else None."""
-    if yesno:
-        yesno = yesno.strip().upper()
-        if yesno.startswith("YES"):
-            return "YES"
-        elif yesno.startswith("NO"):
-            return "NO"
-    return None
-
-
 async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                                  pair: str, expected: str, args) -> dict:
     """
     Test a pair against a prompt.
     Returns dict with pair, expected, and correct fields.
     """
-    prompt = prompt_text.replace("{PAIR}", pair)
+    started_at = time.time()
     try:
-        finish_reason = None
-        reasoning = None
-        payload = None
-        start_time = time.time()
-        if args.client == "yesno":
-            response, message, _ = await send_yesno_request(client, args, prompt)
+        async def attempt_fn(candidate_pair: str, prompt: str, flipped: bool) -> dict:
+            finish_reason = None
+            reasoning = None
+            payload = None
+            start_time = time.time()
+            if args.client == "yesno":
+                response, message, _ = await send_yesno_request(client, args, prompt)
+            else:
+                response, message, payload = await send_openai_request(client, args, prompt, MODEL)
+                reasoning = message.get("reasoning_content")
+                message.pop("reasoning_content", None)
+                finish_reason = payload["finish_reason"]
+            return {
+                "pair": candidate_pair,
+                "flipped": flipped,
+                "raw": response,
+                "normalized": parse_yesno_response(response),
+                "message": message,
+                "reasoning": reasoning,
+                "finish_reason": finish_reason,
+                "seconds_elapsed": time.time() - start_time,
+            }
+
+        evaluation = await eval_with_flipped_retry(prompt_text, pair, attempt_fn)
+        attempts = evaluation["attempts"]
+        orig_attempt = attempts[0]
+        flip_attempt = attempts[1] if len(attempts) > 1 else None
+
+        if evaluation["decision_source"] == "flipped":
+            final_attempt = flip_attempt
         else:
-            response, message, payload = await send_openai_request(client, args, prompt, MODEL)
-            reasoning = message.get("reasoning_content")
-            message.pop("reasoning_content", None)
-            finish_reason = payload["finish_reason"]
-        seconds_elapsed = time.time() - start_time
-        yesno = parse_yesno_response(response)
+            final_attempt = orig_attempt
+
+        yesno = evaluation["normalized"]
         expected = expected.upper()
         if expected == "ANY":
             correct = yesno in ("YES", "NO")
         else:
             correct = yesno == expected
+        finish_reason = final_attempt["finish_reason"]
         if finish_reason:
             correct = correct and finish_reason == "stop"
         if args.verbose:
             print(f"{pair}: {'✓' if correct else '✗'}")
-            print(f"  content: {response}")
-            if reasoning:
-                print(f"  reasoning:\n===============\n{reasoning}\n===============")
-            if payload:
-                print(f"  payload: {payload}")
-            print(f"  message: {message}")
+            print(f"  content: {final_attempt['raw']}")
+            if final_attempt["reasoning"]:
+                print(f"  reasoning:\n===============\n{final_attempt['reasoning']}\n===============")
+            print(f"  message: {final_attempt['message']}")
         return {"pair": pair, "expected": expected, "correct": correct,
-                "actual": response, "message": message, "reasoning": reasoning,
-                "finish_reason": finish_reason, "seconds_elapsed": seconds_elapsed}
+                "actual": final_attempt["raw"], "actual_normalized": yesno,
+                "message": final_attempt["message"], "reasoning": final_attempt["reasoning"],
+                "finish_reason": finish_reason, "seconds_elapsed": sum(a["seconds_elapsed"] for a in attempts),
+                "flipped": evaluation["flipped"],
+                "attempts": attempts,
+                "original_actual": orig_attempt["raw"],
+                "original_normalized": orig_attempt["normalized"],
+                "flipped_actual": flip_attempt["raw"] if flip_attempt else None,
+                "flipped_normalized": flip_attempt["normalized"] if flip_attempt else None}
     except Exception as e:
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}]   ERROR posting {pair}: {repr(e)}")
@@ -106,7 +122,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             await asyncio.sleep(5)
         return {"pair": pair, "expected": expected, "correct": False, "actual": None,
                 "message": None, "reasoning": None, "finish_reason": repr(e),
-                "seconds_elapsed": time.time() - start_time}
+                "seconds_elapsed": time.time() - started_at}
 
 
 async def eval_all_pairs(prompt_text: str, pairs: list, args) -> list:
@@ -159,6 +175,8 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
                 status += '✗'
             else:
                 status += f"[{d['finish_reason']}]"
+            if d.get("flipped"):
+                status += " [flipped]"
 
             line = f"{d['pair']}: {status}"
             if not args.quiet:
