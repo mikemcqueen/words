@@ -181,8 +181,10 @@ def parse_result_filename(name):
     """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}.json.
     Returns (pair_file, prompt_file, prompt_id, host) or None if no match."""
     stem = Path(name).stem
-    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+)$', stem)
-    return (m.group(1), m.group(2), m.group(3), m.group(4)) if m else None
+
+    #m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+)$', stem)
+    m =  re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
+    return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)) if m else None
 
 
 def discover_files_all(seed_path):
@@ -193,8 +195,10 @@ def discover_files_all(seed_path):
         parsed = parse_result_filename(json_file.name)
         if parsed is None:
             continue
-        _, prompt_file, prompt_id, _ = parsed
-        key = f"{prompt_file}.{prompt_id}"
+        _, prompt_file, prompt_id, _, tag = parsed
+        if not tag:
+            tag = ""
+        key = f"{prompt_file}.{prompt_id}.{tag}"
         candidates.append((key, json_file))
 
     def _load(item):
@@ -386,11 +390,11 @@ def run_discovery(args):
         parsed = parse_result_filename(Path(args.files[0]).name)
         if parsed is None:
             print(f"Error: cannot parse filename '{Path(args.files[0]).name}' "
-                  f"as {{pair_file}}_{{prompt_file}}_{{prompt_id}}_{{host}}.json",
+                  f"as {{pair_file}}_{{prompt_file}}_{{prompt_id}}_{{host}}[.{{tag}}].json",
                   file=sys.stderr)
             sys.exit(1)
-        _, prompt_file0, prompt_id0, _ = parsed
-        seed_key = f"{prompt_file0}.{prompt_id0}"
+        _, prompt_file0, prompt_id0, _, tag0 = parsed
+        seed_key = f"{prompt_file0}.{prompt_id0}.{tag0}"
 
         files = discover_files_all(args.files[0])
         if not files:

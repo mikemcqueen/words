@@ -8,7 +8,7 @@ import math
 import sys
 import torch
 
-from common import file_pair_generator, single_pair_generator
+from common import file_pair_generator, single_pair_generator, parse_yesno_response
 from info import info
 from model import load_model, clear_cache
 from pathlib import Path
@@ -37,7 +37,7 @@ def do(explorer, word: str, args):
 
     word_log_probs, t = explorer.find_word_log_probs(args.context + word, args)
     top_words = explorer.to_word_probs(word_log_probs)
-        
+
     if not args.dry_run:
         dump_probs(f"{word}.probs", top_words, args)
         dump_words(f"{word}.all", top_words, args)
@@ -95,13 +95,14 @@ def determine_yesno_tokens_remote(prompt: str, args):
     content = payload["logprobs"]["content"]
     top_token = content[0]["token"]
     top_logprob = content[0]["logprob"]
-    print(f"response: {repr(top_token)}  logprob={top_logprob:.7f}  prob={math.exp(top_logprob):.7f}")
-    print()
+    print(f"response: {repr(top_token)}  logprob={top_logprob:.7f}  prob={math.exp(top_logprob):.7f}", file=sys.stderr)
+    #print()
     for entry in content[0]["top_logprobs"]:
         token = entry["token"]
         lp = entry["logprob"]
-        print(f"  {repr(token):<12} logprob={lp:>10.4f}  prob={math.exp(lp):.7f}")
+        print(f"  {repr(token):<12} logprob={lp:>10.4f}  prob={math.exp(lp):.7f}", file=sys.stderr)
 
+    return parse_yesno_response(top_token)
 
 def determine_yesno_tokens(mpd, prompt: str, args):
     inputs = llm_prefill(mpd, prompt)
@@ -166,9 +167,25 @@ def main():
             sys.exit(1)
         args.system_prompt = p.read_text().strip()
 
+
+    def yes_no_none_str(fst: str, snd: str):
+        if fst == "YES" or snd == "YES":
+            return "YES"
+        if fst == "NO" or snd == "NO":
+            return "NO"
+        return "None"
+        
+
     def make_pair_prompt(pair):
-        words = pair.replace(',', ' ')
-        return (f"Judge by recall, not invention. Answer YES when the pair already sounds like standard crossword shorthand for a familiar answer: an exact name or compound, a direct answer fragment such as a simple definition or negation, or a plain headword paired with its exact well-known identifier in ordinary clue or listing style. Answer NO when the wording is merely thematic, just piled-up description, or depends on paraphrase, synonym swap, branding, technical jargon, or obscurity. Answer YES or NO only.\nClue: '{words}'")
+        third_p4 = f"Is this a valid crossword clue? If an obvious, well-known answer immediately comes to mind, say YES. If you find yourself reasoning through associations to get there, say NO. Do not fabricate. Answer YES or NO only.\nClue: {pair}"
+
+        third_p3 = f"Quick clue test. Answer YES if either these words already read like a familiar clue fragment, label, title, or stock description, or they directly point to one obvious, well-known answer on first read. Answer NO if they feel like two separate prompt words that only become useful after you combine associations or force a reading. Do not fabricate. Answer YES or NO only.\nClue: {pair}"
+
+        third_p4_p2 = f"Is this a valid crossword clue? If an obvious, well-known answer immediately comes to mind, say YES. If you find yourself reasoning through associations to get there, say NO. Do not fabricate. Answer YES or NO only.\nClue: '{pair}'"
+
+        fourth_p66 = f"Judge by recall, not invention. Answer YES when the pair already sounds like standard crossword shorthand for a familiar answer: an exact name or compound, a direct answer fragment such as a simple definition or negation, or a plain headword paired with its exact well-known identifier in ordinary clue or listing style. Answer NO when the wording is merely thematic, just piled-up description, or depends on paraphrase, synonym swap, branding, technical jargon, or obscurity. Answer YES or NO only.\nClue: '{pair}'\nAnswer: "
+
+        return third_p3
 
     pairs = single_pair_generator(args.pair) if args.pair else file_pair_generator(args.pair_file)
 
@@ -176,9 +193,15 @@ def main():
         from client import resolve_host, query_model_id
         args.host = resolve_host(args.host)
         args.model_id = query_model_id(args.host, args.port, args.key)
-        for pair in pairs:
-            print(f"Testing {pair}")
-            determine_yesno_tokens_remote(make_pair_prompt(pair), args)
+        for csv_pair in pairs:
+            pair = csv_pair.replace(',', ' ')
+            print(f"Testing {pair}", file=sys.stderr)
+            fst = determine_yesno_tokens_remote(make_pair_prompt(pair), args)
+            pair = ' '.join(reversed(csv_pair.split(',')))
+            print(f"Testing {pair}", file=sys.stderr)
+            snd = determine_yesno_tokens_remote(make_pair_prompt(pair), args)
+            print(f"{csv_pair:<20} {yes_no_none_str(fst, snd)}")
+            print("-----", file=sys.stderr)
     else:
         mt = load_model(args.model)
         for pair in pairs:
