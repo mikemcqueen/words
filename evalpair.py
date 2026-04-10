@@ -18,7 +18,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry
+from common import load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
 from info import info
 from model import load_model, is_gemma_model, specialize_prompt, generate_text
 
@@ -132,6 +132,16 @@ def format_result(orig_pair, yes, flipped, upstream=None):
 
 async def async_request_and_classify(client, args, prompt, label=None):
     """Send request and return (YES/NO/None, upstream, retries) classification."""
+    if args.logprobs:
+        _, _, payload = await send_openai_request(
+            client, args, prompt, label=label,
+            extra_payload={"max_tokens": 1, "logprobs": True, "top_logprobs": args.top_logprobs},
+        )
+        top_token = payload["logprobs"]["content"][0]["token"]
+        result_str = parse_yesno_response(top_token)
+        yes = True if result_str == "YES" else (False if result_str == "NO" else None)
+        return yes, payload.get('upstream'), {}
+
     if args.client == "yesno":
         response, _, meta = await send_yesno_request(client, args, prompt, label=label)
         return is_yes_response(None, response), meta.get('upstream'), {}
@@ -230,6 +240,25 @@ async def process_pairs_async(ctx: str, pairs, args, writer=None, on_result=None
 
     successful = len(yes_pairs) + flips + 2 * (len(no_pairs) + len(bad_pairs))
     return yes_pairs, no_pairs, bad_pairs, retry_map, successful
+
+
+def send_anchor_prefix(args, ctx: str) -> None:
+    """Send prompt prefix up to 'Clue' to v1/completions for KV cache warming."""
+    m = re.search(r'^(.*?Clue)', ctx, re.DOTALL)
+    if not m:
+        raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
+    prefix = "<|im_start|>user\n" + m.group(1)
+    url = f"{args.host}:{args.port}/v1/completions"
+    headers = {"Content-Type": "application/json"}
+    if args.key:
+        headers["Authorization"] = f"Bearer {args.key}"
+    payload = {"prompt": prefix, "cache_prefix": True}
+    if not args.thinking:
+        payload["reasoning_budget_tokens"] = 0
+        payload["reasoning_budget_start_tag"] = "<think>"
+        payload["reasoning_budget_end_tag"] = "</think>"
+    response = httpx.post(url, headers=headers, json=payload, timeout=args.timeout)
+    response.raise_for_status()
 
 
 def get_first_line(text: str) -> str:
@@ -339,8 +368,17 @@ def parse_args():
                       help="Show actual response and message")
     parser.add_argument("-q", "--quiet", action="store_true",
                       help="Suppress REQUEST START/END messages")
+    parser.add_argument('--lp', '--logprobs', dest='logprobs', action='store_true',
+                        help='Evaluate using single-token logprobs instead of full generation (server only; forces thinking off)')
+    parser.add_argument('--tlp', '--top-logprobs', dest='top_logprobs', type=int, default=20,
+                        help='Number of top logprobs to request in --lp mode (default: 20)')
 
     args = parser.parse_args()
+
+    if args.logprobs:
+        args.thinking = False
+        if args.model is not None:
+            parser.error("--lp/--logprobs requires server mode (omit -m/--model)")
 
     if args.system_prompt:
         p = Path(args.system_prompt)
@@ -565,6 +603,9 @@ def main():
         if not prompt_obj:
             raise ValueError(f"Prompt ID '{args.prompt_id}' not found in {args.prompt_file}")
         ctx = prompt_obj['text']
+
+    if args.model is None:
+        send_anchor_prefix(args, ctx)
 
     # When --save, count existing results and resume from where we left off
     skip = 0
