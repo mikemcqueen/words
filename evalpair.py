@@ -126,12 +126,14 @@ def parse_args():
                         help="Request timeout in seconds (default: 300)")
     parser.add_argument('--save', action='store_true',
                         help="Save YES/NO/BAD pairs to results/ directory (auto-resumes from existing files)")
+    parser.add_argument('-r', '--results-dir', type=Path, default=Path("results"),
+                        help="Directory for result files (default: results/)")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
                         help="Max concurrent requests (default: 1)")
     parser.add_argument('--nginx-config', type=str,
                         help='Path to nginx upstream config (auto-detected if omitted)')
     parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
-                        help='Process only N pairs from pair-file')
+                        help='Process at most N pairs from pair-file')
     parser.add_argument('--tag', type=str,
                         help='Tag to append to result filename')
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -190,6 +192,7 @@ class JsonlWriter:
             p, r = self.buffer.pop(self.next_seq)
             self.file.write(json.dumps({"pair": p, "seq": self.next_seq, "logprobs": r}) + "\n")
             self.file.flush()
+            print(f"{self.next_seq}: {p}")
             self.next_seq += 1
 
     def close(self):
@@ -253,8 +256,8 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
 
 def make_result_prefix(args):
     """Build the result file prefix from args."""
-    results_dir = "results"
-    os.makedirs(results_dir, exist_ok=True)
+    results_dir = args.results_dir
+    results_dir.mkdir(exist_ok=True)
     basename = os.path.basename(args.pair_file)
     if args.prompt_file:
         prompt_source = Path(args.prompt_file).stem
@@ -271,7 +274,7 @@ def make_result_prefix(args):
     #base_name += f"_mc{args.max_concurrent}"
     if args.tag:
         base_name += f".{args.tag}"
-    return f"{results_dir}/{base_name}"
+    return str(results_dir / base_name)
 
 
 def count_lines(filename):
@@ -351,6 +354,7 @@ def main():
     t0 = time.monotonic()
     try:
         if not args.logprobs:
+            print(f"Thinking: {args.thinking}")
             retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
         else:
             orders = ["fwd", "rvs"]
@@ -368,6 +372,7 @@ def main():
         print_retries(retry_map)
 
     handle_results(args, writer)
+
 
 if __name__ == "__main__":
     main()

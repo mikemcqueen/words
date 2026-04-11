@@ -49,9 +49,9 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--presence-penalty", "--pp", dest="presence_penalty",
                         type=float, default=0.0,
                         help="Presence penalty (default: 0.0)")
-    parser.add_argument("--thinking", type=parse_on_off, choices=(True, False), default=True,
+    parser.add_argument("--thinking", type=parse_on_off, choices=(True, False), default=False,
                         metavar="on|off",
-                        help="Control API thinking mode (default: on)")
+                        help="Control API thinking mode (default: off)")
 
 
 def parse_nginx_upstream(config_path=None):

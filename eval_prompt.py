@@ -64,8 +64,10 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             start_time = time.time()
             if args.client == "yesno":
                 response, message, _ = await send_yesno_request(client, args, prompt)
+                elapsed = time.time() - start_time
             else:
                 response, message, payload = await send_openai_request(client, args, prompt, MODEL)
+                elapsed = time.time() - start_time
                 reasoning = message.get("reasoning_content")
                 message.pop("reasoning_content", None)
                 finish_reason = payload["finish_reason"]
@@ -77,7 +79,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                 "message": message,
                 "reasoning": reasoning,
                 "finish_reason": finish_reason,
-                "seconds_elapsed": time.time() - start_time,
+                "seconds_elapsed": elapsed
             }
 
         evaluation = await eval_with_flipped_retry(prompt_text, pair, attempt_fn)

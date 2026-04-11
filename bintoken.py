@@ -85,8 +85,7 @@ async def _remote_logprobs(args, prompt: str):
     async with httpx.AsyncClient() as client:
         _, _, payload = await send_openai_request(
             client, args, prompt,
-            model=args.model_id,
-            extra_payload={"max_tokens": 1, "logprobs": True, "top_logprobs": 20},
+            model=args.model_id
         )
     return payload
 
@@ -96,11 +95,18 @@ def determine_yesno_tokens_remote(prompt: str, args):
     top_token = content[0]["token"]
     top_logprob = content[0]["logprob"]
     print(f"response: {repr(top_token)}  logprob={top_logprob:.7f}  prob={math.exp(top_logprob):.7f}", file=sys.stderr)
-    #print()
-    for entry in content[0]["top_logprobs"]:
+    top = min(args.top_k, args.top_logprobs)
+    top_prob_sum = 0.0
+    prob_sum = 0.0
+    for i, entry in enumerate(content[0]["top_logprobs"]):
         token = entry["token"]
         lp = entry["logprob"]
-        print(f"  {repr(token):<12} logprob={lp:>10.4f}  prob={math.exp(lp):.7f}", file=sys.stderr)
+        prob = math.exp(lp)
+        prob_sum += prob
+        if i < top:
+            top_prob_sum += prob
+        print(f"  {repr(token):<12} logprob={lp:>10.4f}  prob={prob:.7f}", file=sys.stderr)
+    print(f"cumulative prob={prob_sum:.7f} top{top}={top_prob_sum:.7f}")
 
     return parse_yesno_response(top_token)
 
@@ -157,8 +163,12 @@ def main():
     yngroup.add_argument('-y', '--yes', action="store_true", help='Determine yes tokens')
     yngroup.add_argument('-n', '--no', action="store_true", help='Determine no tokens')
 
+    parser.add_argument("--tlp", "--top-logprobs", dest="top_logprobs", type=int, default=20,
+                        metavar='N', help="number of top log probs to request (default: 20)")
+
     args = parser.parse_args()
     args.thinking = args.thinking == "on"
+    args.logprobs = True
 
     if args.system_prompt:
         p = Path(args.system_prompt)
@@ -198,7 +208,7 @@ def main():
             print(f"Testing {pair}", file=sys.stderr)
             fst = determine_yesno_tokens_remote(make_pair_prompt(pair), args)
             pair = ' '.join(reversed(csv_pair.split(',')))
-            print(f"Testing {pair}", file=sys.stderr)
+            print(f"\nTesting {pair}", file=sys.stderr)
             snd = determine_yesno_tokens_remote(make_pair_prompt(pair), args)
             print(f"{csv_pair:<20} {yes_no_none_str(fst, snd)}")
             print("-----", file=sys.stderr)
