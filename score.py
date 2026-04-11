@@ -10,9 +10,12 @@ Usage:
 import argparse
 import json
 import sys
+from collections import namedtuple
 from pathlib import Path
 
-from common import parse_yesno_response
+from common import load_expected_pairs, load_result_records, parse_yesno_response
+
+ScoreResult = namedtuple("ScoreResult", ["score", "correct", "total", "fp", "fn"])
 
 METHODS = {}
 
@@ -42,13 +45,6 @@ def method_any_yes(fwd: str | None, rvs: str | None) -> str | None:
 
 
 
-def load_expected_pairs(filepath: str) -> dict:
-    """Load a pairs JSON file and return a {pair: expected} dict (space-separated keys)."""
-    with open(filepath) as f:
-        data = json.load(f)
-    return {entry["pair"].replace(",", " "): entry["expected"].upper() for entry in data}
-
-
 def score_record(record: dict, method_fn) -> dict:
     """Score a single evalpair record. Returns None if pair not in expected."""
     pair = record["pair"]
@@ -57,6 +53,40 @@ def score_record(record: dict, method_fn) -> dict:
     rvs = extract_top_token(logprobs.get("rvs", []))
     actual = method_fn(fwd, rvs)
     return {"pair": pair, "fwd": fwd, "rvs": rvs, "actual": actual}
+
+
+def compute_score(records: list, expected: dict, method: str) -> ScoreResult:
+    """Score records against expected dict and return a ScoreResult namedtuple."""
+    method_fn = METHODS[method]
+    correct = 0
+    total = 0
+    fp = 0
+    fn = 0
+
+    for record in records:
+        lookup_key = record["pair"].replace(",", " ")
+        if lookup_key not in expected:
+            continue
+
+        exp = expected[lookup_key]
+        result = score_record(record, method_fn)
+        actual = result["actual"]
+
+        if exp == "ANY":
+            is_correct = actual in ("YES", "NO")
+        else:
+            is_correct = actual == exp
+
+        total += 1
+        if is_correct:
+            correct += 1
+        elif actual == "YES":
+            fp += 1
+        elif actual == "NO" or actual is None:
+            fn += 1
+
+    score = (correct / total * 100) if total > 0 else 0.0
+    return ScoreResult(score=score, correct=correct, total=total, fp=fp, fn=fn)
 
 
 def main():
@@ -84,17 +114,9 @@ Examples:
         sys.exit(1)
 
     expected = load_expected_pairs(args.pairs)
-    method_fn = METHODS[args.method]
+    method_fn = METHODS[args.method]  # still needed for per-row verbose scoring
 
-    records = []
-    with open(args.input) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-
-    # Sort by seq so output order matches input order
-    records.sort(key=lambda r: r.get("seq", 0))
+    records = load_result_records(args.input)
 
     def fmt_tok(tok: str | None) -> str:
         if tok == "YES":
@@ -103,10 +125,6 @@ Examples:
             return "NO "
         return "---"
 
-    correct = 0
-    total = 0
-    fp = 0
-    fn = 0
     rows = []  # (pair, row_str | None) — None means skipped
 
     for record in records:
@@ -125,16 +143,10 @@ Examples:
         else:
             is_correct = actual == exp
 
-        total += 1
-        if is_correct:
-            correct += 1
-        elif actual == "YES":
-            fp += 1
-        elif actual == "NO" or actual is None:
-            fn += 1
-
         mark = "\033[32m✓\033[0m" if is_correct else "\033[31m✗\033[0m"
         rows.append((pair, (result["fwd"], result["rvs"], actual, mark)))
+
+    sr = compute_score(records, expected, args.method)
 
     if args.verbose:
         max_pair = max((len(p) for p, _ in rows), default=0)
@@ -150,12 +162,11 @@ Examples:
     if skipped and not args.verbose:
         print(f"Skipped {skipped} pairs not found in {args.pairs}")
 
-    if total == 0:
+    if sr.total == 0:
         print("No pairs scored.")
         sys.exit(1)
 
-    score = (correct / total) * 100
-    print(f"Score: {score:.1f}% ({correct}/{total})  FP: {fp}  FN: {fn}")
+    print(f"Score: {sr.score:.1f}% ({sr.correct}/{sr.total})  FP: {sr.fp}  FN: {sr.fn}")
 
 
 if __name__ == "__main__":

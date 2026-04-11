@@ -22,6 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
+from common import load_expected_pairs, load_result_records
+from score import compute_score
+
 
 def parse_result_file(path):
     """Parse result file. Returns (metadata_dict, {pair: {answer, expected}})."""
@@ -188,23 +191,23 @@ def parse_result_filename(name):
 
 
 def discover_files_all(seed_path):
-    """Return {prompt_file.prompt_id: (data, results)} for all .json files in seed's directory."""
+    """Return {prompt_file.prompt_id[.tag]: records_list} for all .jsonl files in seed's directory."""
     directory = Path(seed_path).parent
     candidates = []
-    for json_file in sorted(directory.glob('*.json')):
-        parsed = parse_result_filename(json_file.name)
+    for jsonl_file in sorted(directory.glob('*.jsonl')):
+        parsed = parse_result_filename(jsonl_file.name)
         if parsed is None:
             continue
         _, prompt_file, prompt_id, _, tag = parsed
         if not tag:
             tag = ""
         key = f"{prompt_file}.{prompt_id}.{tag}"
-        candidates.append((key, json_file))
+        candidates.append((key, jsonl_file))
 
     def _load(item):
-        key, json_file = item
+        key, jsonl_file = item
         try:
-            return key, parse_result_file(json_file)
+            return key, load_result_records(jsonl_file)
         except Exception:
             return key, None
 
@@ -369,6 +372,32 @@ def print_discovery_ensemble(args, seed_pid, files, pids):
     print()
 
 
+# --- ranked discovery output (jsonl path) ---
+
+def print_discovery_ranked(files_dict, expected, method, sort='score'):
+    """Score each file and print a ranked table: key | score% | correct/total | FP | FN."""
+    rows = []
+    for key, records in files_dict.items():
+        sr = compute_score(records, expected, method)
+        rows.append((key, sr))
+
+    sort_lc = sort.lower()
+    if sort_lc == 'fp':
+        rows.sort(key=lambda x: (x[1].fp, -x[1].score))
+    elif sort_lc == 'fn':
+        rows.sort(key=lambda x: (x[1].fn, -x[1].score))
+    else:
+        rows.sort(key=lambda x: x[1].score, reverse=True)
+
+    w = max((len(k) for k, _ in rows), default=5)
+    w = max(w, len('key'))
+    print(f"  {'key':<{w}s}  {'score':>7s}  {'corr':>9s}  {'FP':>4s}  {'FN':>4s}")
+    print(f"  {'─'*(w + 32)}")
+    for key, sr in rows:
+        print(f"  {key:<{w}s}  {sr.score:6.1f}%  {sr.correct:4d}/{sr.total:<4d}  {sr.fp:4d}  {sr.fn:4d}")
+    print()
+
+
 # --- top-level runners ---
 
 def run_explicit(args):
@@ -384,58 +413,26 @@ def run_explicit(args):
 
 
 def run_discovery(args):
-    data0, results0 = parse_result_file(args.files[0])
+    expected = load_expected_pairs(args.pairs)
 
-    if args.all:
-        parsed = parse_result_filename(Path(args.files[0]).name)
-        if parsed is None:
-            print(f"Error: cannot parse filename '{Path(args.files[0]).name}' "
-                  f"as {{pair_file}}_{{prompt_file}}_{{prompt_id}}_{{host}}[.{{tag}}].json",
-                  file=sys.stderr)
-            sys.exit(1)
-        _, prompt_file0, prompt_id0, _, tag0 = parsed
-        seed_key = f"{prompt_file0}.{prompt_id0}.{tag0}"
+    files = discover_files_all(args.files[0])
+    if not files:
+        print("No files found.", file=sys.stderr)
+        sys.exit(1)
 
-        files = discover_files_all(args.files[0])
-        if not files:
-            print("No files found.", file=sys.stderr)
-            sys.exit(1)
-
-        keys = sorted(files.keys())
-        print(f"\nDirectory: {Path(args.files[0]).parent}")
-        print(f"Found: {', '.join(keys)}\n")
-
-        if not (args.ensemble or args.rank):
-            print(f"Anchor: {seed_key}\n")
-            print_discovery_default(seed_key, results0, files, keys, args.sort)
-        else:
-            print_discovery_ensemble(args, seed_key, files, keys)
-    else:
-        seed_pid = data0.get('prompt_id', '')
-        if not seed_pid:
-            print("Error: could not determine prompt_id from file", file=sys.stderr)
-            sys.exit(1)
-
-        files = discover_files(args.files[0], seed_pid)
-        if not files:
-            print("No files found.", file=sys.stderr)
-            sys.exit(1)
-
-        pids = sorted(files.keys())
-        print(f"\nPattern: {Path(args.files[0]).name.replace(f'_{seed_pid}_', '_pN_', 1)}")
-        print(f"Found: {', '.join(pids)}\n")
-
-        if not args.ensemble:
-            print(f"Anchor (file1): {seed_pid}\n")
-            print_discovery_default(seed_pid, results0, files, pids, args.sort)
-        else:
-            print_discovery_ensemble(args, seed_pid, files, pids)
+    print(f"\nDirectory: {Path(args.files[0]).parent}")
+    print(f"Found: {len(files)} file(s)\n")
+    print_discovery_ranked(files, expected, args.method, args.sort)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='+', metavar='file')
+    parser.add_argument('--pairs', required=True, metavar='PAIRS_JSON',
+                        help='pairs JSON file with expected values')
+    parser.add_argument('--method', default='any-yes', metavar='METHOD',
+                        help='scoring method (default: any-yes)')
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument('-e', '--ensemble', action='store_true',
                             help='ensemble mode: show all combination statistics')
@@ -444,11 +441,10 @@ def main():
     parser.add_argument('-3', '--three-way', action='store_true',
                         help='include 3-way ensemble combinations (ensemble discovery mode only)')
     parser.add_argument('-a', '--all', action='store_true',
-                        help='discover all .json files in same directory as FILE '
+                        help='discover all .jsonl files in same directory as FILE '
                              '(single-file mode only; keys shown as prompt_file.prompt_id)')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
-                        help='sort field: score (default); FP/FN (ensemble only); '
-                             'FixFP/FixFN/NewFP/NewFN (default mode only)')
+                        help='sort field: score (default), FP, FN')
     args = parser.parse_args()
 
     if args.all and len(args.files) != 1:
@@ -459,16 +455,9 @@ def main():
         parser.error('--three-way requires --ensemble')
 
     sort_lc = args.sort.lower()
-    ensemble_only = {'fp', 'fn'}
-    default_only  = {'fixfp', 'fixfn', 'newfp', 'newfn'}
-    valid_sort    = {'score'} | ensemble_only | default_only
+    valid_sort = {'score', 'fp', 'fn'}
     if sort_lc not in valid_sort:
-        parser.error(f'--sort: invalid value {args.sort!r}; '
-                     f'choices: score, FP, FN, FixFP, FixFN, NewFP, NewFN')
-    if sort_lc in ensemble_only and not args.ensemble:
-        parser.error(f'--sort {args.sort} is only valid in ensemble mode (-e)')
-    if sort_lc in default_only and args.ensemble:
-        parser.error(f'--sort {args.sort} is not valid in ensemble mode')
+        parser.error(f'--sort: invalid value {args.sort!r}; choices: score, FP, FN')
 
     if len(args.files) == 1:
         run_discovery(args)

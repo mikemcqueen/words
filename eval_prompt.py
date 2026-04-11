@@ -17,8 +17,8 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import add_inference_args, run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
+from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from common import add_inference_args, load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
 # Configuration
 PAIRS_FILE = "pairs.json"
 RESULTS_DIR = Path("results")

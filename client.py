@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 
+from common import add_inference_args, parse_on_off
 from model import adjust_thinking
 
 SERVERS = {
@@ -21,37 +22,6 @@ SERVERS = {
 }
 SERVER_IPS = {ip: name for name, ip in SERVERS.items()}
 
-
-def parse_on_off(value: str) -> bool:
-    """Parse an on/off CLI value into a boolean."""
-    normalized = value.lower()
-    if normalized == "on":
-        return True
-    if normalized == "off":
-        return False
-    raise argparse.ArgumentTypeError("expected 'on' or 'off'")
-
-
-def add_inference_args(parser: argparse.ArgumentParser) -> None:
-    """Add shared inference-related CLI arguments to a parser."""
-    parser.add_argument("--temp", type=float, default=1.0,
-                        help="Sampling temperature (default: 1.0)")
-    parser.add_argument("--top-p", "--top_p", dest="top_p", type=float, default=0.95,
-                        help="Top-p sampling (default: 0.95)")
-    parser.add_argument("--top-k", "--top_k", dest="top_k", type=int, default=20,
-                        help="Top-k sampling (default: 20)")
-    parser.add_argument("--min-p", "--min_p", dest="min_p", type=float, default=0.01,
-                        help="Min-p sampling (default: 0.01)")
-    parser.add_argument("--repeat-penalty", "--rp", dest="repeat_penalty", type=float, default=1.0,
-                        help="Repeat penalty (default: 1.0)")
-    parser.add_argument("--repeat-last-n", "--rln", dest="repeat_last_n", type=int, default=32,
-                        help="Repeat last n tokens (default: 32)")
-    parser.add_argument("--presence-penalty", "--pp", dest="presence_penalty",
-                        type=float, default=0.0,
-                        help="Presence penalty (default: 0.0)")
-    parser.add_argument("--thinking", type=parse_on_off, choices=(True, False), default=False,
-                        metavar="on|off",
-                        help="Control API thinking mode (default: off)")
 
 
 def parse_nginx_upstream(config_path=None):
