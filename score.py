@@ -15,7 +15,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
-                    discover_files_all, print_discovery_ranked)
+                    discover_files_all, compute_stats, print_discovery_ranked)
 
 ScoreResult = namedtuple("ScoreResult", ["score", "correct", "total", "fp", "fn"])
 
@@ -104,9 +104,15 @@ Examples:
                         help="Scoring methodology (default: any-yes)")
     parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
                         help="sort field for directory mode: score (default), FP, FN")
+    parser.add_argument("--pk", "--print-keys", dest="print_keys", type=int, default=None,
+                        metavar="N", help="print top N keys as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-pair results (single-file mode only)")
     args = parser.parse_args()
+
+    if args.print_keys is not None:
+        if args.print_keys <= 0:
+            parser.error("--print-keys N must be > 0")
 
     if not args.input.exists():
         print(f"Error: input not found: {args.input}", file=sys.stderr)
@@ -121,7 +127,20 @@ Examples:
         for eval_results in files.values():
             label_eval_results(eval_results, expected, args.method)
         print_discovery_ranked(files, args.sort)
+        if args.print_keys is not None:
+            rows = [(key, compute_stats(records)) for key, records in files.items()]
+            sort_lc = args.sort.lower()
+            if sort_lc == 'fp':
+                rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
+            elif sort_lc == 'fn':
+                rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
+            else:
+                rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+            print(','.join(key for key, _ in rows[:args.print_keys]))
         return
+
+    if args.print_keys is not None:
+        parser.error("--print-keys requires a directory input")
 
     expected = load_expected_pairs(args.pairs)
     eval_results = load_eval_results(args.input)
