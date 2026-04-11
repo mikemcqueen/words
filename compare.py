@@ -2,12 +2,13 @@
 """Compare prompt result files and report statistics.
 
 Usage:
-  compare.py <file>                          — discover all .jsonl files in same directory; ranked scores
-  compare.py <file_a> <file_b>              — compare two files: Fixed/New FP/FN table
-  compare.py -e <file>                       — discover + show pairwise ensemble combinations
-  compare.py -e <file_a> <file_b>           — explicit 2-way ensemble (OR, AND)
-  compare.py -e -3 <file>                    — discover + include 3-way ensemble combinations
-  compare.py -k key1,key2,key3 <dir>        — explicit 3-way ensemble from discovery keys
+  compare.py <file>                           — discover all .jsonl files in same directory; ranked scores
+  compare.py <file_a> <file_b>               — compare two files: Fixed/New FP/FN table
+  compare.py -e <file>                        — discover + show pairwise ensemble combinations
+  compare.py -e <file_a> <file_b>            — explicit 2-way ensemble (OR, AND)
+  compare.py -e -3 <file>                     — discover + include 3-way ensemble combinations
+  compare.py -k key1,key2[,...] -2 <dir>     — explicit 2-way ensemble across all key combinations
+  compare.py -k key1,key2,key3[,...] -3 <dir> — explicit 3-way ensemble across all key combinations
 """
 
 import argparse
@@ -16,6 +17,7 @@ import json
 import re
 import signal
 import sys
+import types
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from concurrent.futures import ThreadPoolExecutor
@@ -467,7 +469,7 @@ def print_discovery_ensemble(args, files):
         if args.ensemble in ('ALL', 'AND'):
             rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
 
-        if args.three_way:
+        if args.n_way >= 3:
             M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
             pid_list = list(pids)
             sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
@@ -564,17 +566,40 @@ def run_explicit(args):
                                 args.ensemble)
 
 
-def run_explicit_3(args):
+def load_files_from_keys(args):
+    """Resolve keys to files, load and label eval results. Returns {key: labeled_results}."""
     keys = [k.strip() for k in args.keys.split(',')]
     directory = args.files[0]
-    paths = [resolve_key(directory, k) for k in keys]
     expected = load_expected_pairs(args.pairs)
-    results_list = []
-    for path in paths:
+    files = {}
+    for key in keys:
+        path = resolve_key(directory, key)
         r = load_eval_results(path)
         label_eval_results(r, expected, args.method)
-        results_list.append(r)
-    print_explicit_ensemble_3(keys, results_list, args.sort, args.ensemble or 'ALL')
+        files[key] = r
+    return files
+
+
+def run_explicit_3way(args):
+    files = load_files_from_keys(args)
+    ens_args = types.SimpleNamespace(
+        ensemble=args.ensemble or 'ALL',
+        n_way=3,
+        sort=args.sort,
+        top=args.top,
+    )
+    print_discovery_ensemble(ens_args, files)
+
+
+def run_explicit_2way(args):
+    files = load_files_from_keys(args)
+    ens_args = types.SimpleNamespace(
+        ensemble=args.ensemble or 'ALL',
+        n_way=2,
+        sort=args.sort,
+        top=args.top,
+    )
+    print_discovery_ensemble(ens_args, files)
 
 
 def run_discovery(args):
@@ -592,6 +617,7 @@ def run_discovery(args):
     print(f"Found: {len(files)} file(s)\n")
 
     if args.ensemble:
+        args.n_way = 3 if args.three_way else 2
         print_discovery_ensemble(args, files)
     else:
         print_discovery_ranked(files, args.sort)
@@ -611,8 +637,10 @@ def main():
                         help='ensemble type: ALL (default), AND, OR, MAJORITY (case-insensitive)')
     parser.add_argument('-3', '--three-way', action='store_true',
                         help='include 3-way combinations in discovery ensemble mode')
+    parser.add_argument('-2', '--two-way', action='store_true',
+                        help='2-way ensemble across all pairwise key combinations (use with -k)')
     parser.add_argument('-k', '--keys', metavar='KEYS',
-                        help='3 comma-separated discovery keys for explicit 3-way ensemble; '
+                        help='comma-separated discovery keys for explicit ensemble; '
                              'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
                         help='sort field: score (default), FP, FN')
@@ -625,10 +653,21 @@ def main():
             parser.error('--keys requires exactly one positional argument (a directory)')
         if not Path(args.files[0]).is_dir():
             parser.error(f'--keys: {args.files[0]!r} is not a directory')
+        if args.two_way and args.three_way:
+            parser.error('-2 and -3 are mutually exclusive')
+        if not args.two_way and not args.three_way:
+            parser.error('-k requires -2 or -3')
         keys = [k.strip() for k in args.keys.split(',')]
-        if len(keys) != 3:
-            parser.error(f'--keys requires exactly 3 comma-separated keys, got {len(keys)}')
-        run_explicit_3(args)
+        if args.two_way:
+            if len(keys) < 2:
+                parser.error(f'-2 requires at least 2 keys, got {len(keys)}')
+            if args.ensemble == 'MAJORITY':
+                parser.error('--ensemble MAJORITY is not valid with -2')
+            run_explicit_2way(args)
+        else:
+            if len(keys) < 3:
+                parser.error(f'-3 requires at least 3 keys, got {len(keys)}')
+            run_explicit_3way(args)
         return
 
     if args.three_way and not args.ensemble:
