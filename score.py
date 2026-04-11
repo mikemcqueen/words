@@ -89,7 +89,7 @@ def label_eval_results(eval_results: dict, expected: dict, method: str) -> Score
     return ScoreResult(score=score, correct=correct, total=total, fp=fp, fn=fn)
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Score evalpair JSONL output against expected values",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -116,54 +116,59 @@ Examples:
                         help="print displayed keys as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-pair results (single-file mode only)")
+    parser.add_argument("--bad", action="store_true",
+                        help="Only display incorrect results; implies --verbose (single-file mode only)")
     args = parser.parse_args()
 
     if args.top_k is not None and args.top_k <= 0:
         parser.error("--top-k K must be > 0")
-
     if not args.input.exists():
         print(f"Error: input not found: {args.input}", file=sys.stderr)
         sys.exit(1)
-
-    if args.input.is_dir():
-        files = discover_files_all(args.input)
-        if not files:
-            print("No .jsonl files found.", file=sys.stderr)
-            sys.exit(1)
-        expected = load_expected_pairs(args.pairs)
-        for eval_results in files.values():
-            label_eval_results(eval_results, expected, args.method)
-
-        rows = [(key, compute_stats(records)) for key, records in files.items()]
-        sort_lc = args.sort.lower()
-        if sort_lc == 'fp':
-            rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
-        elif sort_lc == 'fn':
-            rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
-        else:
-            rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+    if not args.input.is_dir():
         if args.top_k is not None:
-            rows = rows[:args.top_k]
-        elif args.min_score is not None:
-            rows = [(k, s) for k, s in rows if s['pct'] >= args.min_score]
-        files = {key: files[key] for key, _ in rows}
-
-        print_discovery_ranked(files, args.sort)
+            parser.error("--top-k requires a directory input")
+        if args.min_score is not None:
+            parser.error("--min-score requires a directory input")
         if args.print_keys:
-            print(','.join(key for key, _ in rows))
-        return
+            parser.error("--print-keys requires a directory input")
+    if args.bad:
+        if args.input.is_dir():
+            parser.error("--bad is not valid in directory mode")
+        args.verbose = True
+    return args
 
-    if args.top_k is not None:
-        parser.error("--top-k requires a directory input")
-    if args.min_score is not None:
-        parser.error("--min-score requires a directory input")
-    if args.print_keys:
-        parser.error("--print-keys requires a directory input")
 
+def print_discovery_table(args):
+    files = discover_files_all(args.input)
+    if not files:
+        print("No .jsonl files found.", file=sys.stderr)
+        sys.exit(1)
     expected = load_expected_pairs(args.pairs)
-    eval_results = load_eval_results(args.input)
-    sr = label_eval_results(eval_results, expected, args.method)
+    for eval_results in files.values():
+        label_eval_results(eval_results, expected, args.method)
 
+    rows = [(key, compute_stats(records)) for key, records in files.items()]
+    sort_lc = args.sort.lower()
+    if sort_lc == 'fp':
+        rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
+    elif sort_lc == 'fn':
+        rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
+    else:
+        rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+    if args.top_k is not None:
+        rows = rows[:args.top_k]
+    elif args.min_score is not None:
+        rows = [(k, s) for k, s in rows if s['pct'] >= args.min_score]
+    files = {key: files[key] for key, _ in rows}
+
+    print_discovery_ranked(files, args.sort)
+    if args.print_keys:
+        print(','.join(key for key, _ in rows))
+
+
+def print_details(eval_results, args):
+    """Print per-pair verbose table if requested. Returns count of skipped pairs."""
     def fmt_tok(tok: str | None) -> str:
         if tok == "YES":
             return "YES"
@@ -171,8 +176,8 @@ Examples:
             return "NO "
         return "---"
 
-    rows = []  # (pair, row_str | None) — None means skipped
-
+    PairRow = namedtuple('PairRow', ['fwd', 'rvs', 'actual', 'mark', 'correct'])
+    rows = []  # (pair, PairRow | None) — None means skipped
     for pair, data in eval_results.items():
         if "label" not in data:
             rows.append((pair, None))
@@ -180,28 +185,41 @@ Examples:
         logprobs = data.get("logprobs", {})
         fwd = extract_top_token(logprobs.get("fwd", []))
         rvs = extract_top_token(logprobs.get("rvs", []))
-        mark = "\033[32m✓\033[0m" if data["label"] == "correct" else "\033[31m✗\033[0m"
-        rows.append((pair, (fwd, rvs, data["actual"], mark)))
+        correct = data["label"] == "correct"
+        mark = "\033[32m✓\033[0m" if correct else "\033[31m✗\033[0m"
+        rows.append((pair, PairRow(fwd, rvs, data["actual"], mark, correct)))
 
     if args.verbose:
-        max_pair = max((len(p) for p, _ in rows), default=0)
-        for pair, data in rows:
+        display = [(p, d) for p, d in rows if not args.bad or (d is not None and not d.correct)]
+        max_pair = max((len(p) for p, _ in display), default=0)
+        for pair, data in display:
             p = pair.ljust(max_pair)
             if data is None:
                 print(f"  {p}  [skipped]")
             else:
-                fwd, rvs, actual, mark = data
-                print(f"  {p}  fwd={fmt_tok(fwd)}  rvs={fmt_tok(rvs)}  {fmt_tok(actual)}  {mark}")
+                print(f"  {p}  fwd={fmt_tok(data.fwd)}  rvs={fmt_tok(data.rvs)}  {fmt_tok(data.actual)}  {data.mark}")
 
-    skipped = sum(1 for _, d in rows if d is None)
+    return sum(1 for _, d in rows if d is None)
+
+
+def main():
+    args = parse_args()
+
+    if args.input.is_dir():
+        print_discovery_table(args)
+        return
+
+    expected = load_expected_pairs(args.pairs)
+    eval_results = load_eval_results(args.input)
+    sr = label_eval_results(eval_results, expected, args.method)
+    skipped = print_details(eval_results, args)
     if skipped:
         print(f"Skipped {skipped} pairs not found in {args.pairs}")
 
     if sr.total == 0:
         print("No pairs scored.")
-        sys.exit(1)
-
-    print(f"Score: {sr.score:.1f}% ({sr.correct}/{sr.total})  FP: {sr.fp}  FN: {sr.fn}")
+    else:
+        print(f"Score: {sr.score:.1f}% ({sr.correct}/{sr.total})  FP: {sr.fp}  FN: {sr.fn}")
 
 
 if __name__ == "__main__":
