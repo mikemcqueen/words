@@ -10,9 +10,12 @@ Usage:
 
 import argparse
 import json
+import signal
 import sys
 from collections import namedtuple
 from pathlib import Path
+
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
                     discover_files_all, compute_stats, print_discovery_ranked)
@@ -104,15 +107,19 @@ Examples:
                         help="Scoring methodology (default: any-yes)")
     parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
                         help="sort field for directory mode: score (default), FP, FN")
-    parser.add_argument("--pk", "--print-keys", dest="print_keys", type=int, default=None,
-                        metavar="N", help="print top N keys as a comma-separated list (directory mode only)")
+    limit_group = parser.add_mutually_exclusive_group()
+    limit_group.add_argument("--top-k", type=int, default=None, metavar="K",
+                             help="limit display to top K results (directory mode only)")
+    limit_group.add_argument("--min-score", type=float, default=None, metavar="M.N",
+                             help="limit display to results with score >= M.N (directory mode only)")
+    parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
+                        help="print displayed keys as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-pair results (single-file mode only)")
     args = parser.parse_args()
 
-    if args.print_keys is not None:
-        if args.print_keys <= 0:
-            parser.error("--print-keys N must be > 0")
+    if args.top_k is not None and args.top_k <= 0:
+        parser.error("--top-k K must be > 0")
 
     if not args.input.exists():
         print(f"Error: input not found: {args.input}", file=sys.stderr)
@@ -126,20 +133,31 @@ Examples:
         expected = load_expected_pairs(args.pairs)
         for eval_results in files.values():
             label_eval_results(eval_results, expected, args.method)
+
+        rows = [(key, compute_stats(records)) for key, records in files.items()]
+        sort_lc = args.sort.lower()
+        if sort_lc == 'fp':
+            rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
+        elif sort_lc == 'fn':
+            rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
+        else:
+            rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+        if args.top_k is not None:
+            rows = rows[:args.top_k]
+        elif args.min_score is not None:
+            rows = [(k, s) for k, s in rows if s['pct'] >= args.min_score]
+        files = {key: files[key] for key, _ in rows}
+
         print_discovery_ranked(files, args.sort)
-        if args.print_keys is not None:
-            rows = [(key, compute_stats(records)) for key, records in files.items()]
-            sort_lc = args.sort.lower()
-            if sort_lc == 'fp':
-                rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
-            elif sort_lc == 'fn':
-                rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
-            else:
-                rows.sort(key=lambda x: x[1]['pct'], reverse=True)
-            print(','.join(key for key, _ in rows[:args.print_keys]))
+        if args.print_keys:
+            print(','.join(key for key, _ in rows))
         return
 
-    if args.print_keys is not None:
+    if args.top_k is not None:
+        parser.error("--top-k requires a directory input")
+    if args.min_score is not None:
+        parser.error("--min-score requires a directory input")
+    if args.print_keys:
         parser.error("--print-keys requires a directory input")
 
     expected = load_expected_pairs(args.pairs)

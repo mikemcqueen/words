@@ -416,44 +416,44 @@ def print_discovery_ensemble(args, files):
         if args.ensemble in ('ALL', 'AND'):
             rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
 
-        if args.n_way >= 3:
-            M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
-            pid_list = list(pids)
-            sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
-            top_k = args.top
-            heap = []   # min-heap of (heap_val, counter, label, stats)
-            counter = 0
-            for batch in _combo_batches(len(pid_list), 3, 10_000):
-                idx = np.array(batch, dtype=np.intp)
-                ya = M[idx[:, 0]]
-                yb = M[idx[:, 1]]
-                yc = M[idx[:, 2]]
-                batch_results = []
-                if args.ensemble in ('ALL', 'OR'):
-                    or_mat = ya | yb | yc
-                    batch_results.append((" OR", _batch_stats_from_mat(or_mat, exp_vec, n_pairs)))
-                    del or_mat
-                if args.ensemble in ('ALL', 'AND'):
-                    and_mat = ya & yb & yc
-                    batch_results.append((" AND", _batch_stats_from_mat(and_mat, exp_vec, n_pairs)))
-                    del and_mat
-                if args.ensemble in ('ALL', 'MAJORITY'):
-                    maj_mat = (ya.view(np.uint8) + yb.view(np.uint8) + yc.view(np.uint8)) >= 2
-                    batch_results.append((" MAJORITY", _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)))
-                    del maj_mat
-                del ya, yb, yc
-                for i, (ia, ib, ic) in enumerate(batch):
-                    triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
-                    for suffix, stats_arr in batch_results:
-                        s = stats_arr[i]
-                        hv = s[sort_key] if sort_rev else -s[sort_key]
-                        if len(heap) < top_k:
-                            heapq.heappush(heap, (hv, counter, triple_key + suffix, s))
-                        elif hv > heap[0][0]:
-                            heapq.heapreplace(heap, (hv, counter, triple_key + suffix, s))
-                        counter += 1
-            for _, _, label, stats in heap:
-                rows[label] = stats
+    if args.n_way >= 3:
+        M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
+        pid_list = list(pids)
+        sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
+        top_k = args.top
+        heap = []   # min-heap of (heap_val, counter, label, stats)
+        counter = 0
+        for batch in _combo_batches(len(pid_list), 3, 10_000):
+            idx = np.array(batch, dtype=np.intp)
+            ma = M[idx[:, 0]]
+            mb = M[idx[:, 1]]
+            mc = M[idx[:, 2]]
+            batch_results = []
+            if args.ensemble in ('ALL', 'OR'):
+                or_mat = ma | mb | mc
+                batch_results.append((" OR", _batch_stats_from_mat(or_mat, exp_vec, n_pairs)))
+                del or_mat
+            if args.ensemble in ('ALL', 'AND'):
+                and_mat = ma & mb & mc
+                batch_results.append((" AND", _batch_stats_from_mat(and_mat, exp_vec, n_pairs)))
+                del and_mat
+            if args.ensemble in ('ALL', 'MAJORITY'):
+                maj_mat = (ma.view(np.uint8) + mb.view(np.uint8) + mc.view(np.uint8)) >= 2
+                batch_results.append((" MAJORITY", _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)))
+                del maj_mat
+            del ma, mb, mc
+            for i, (ia, ib, ic) in enumerate(batch):
+                triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
+                for suffix, stats_arr in batch_results:
+                    s = stats_arr[i]
+                    hv = s[sort_key] if sort_rev else -s[sort_key]
+                    if len(heap) < top_k:
+                        heapq.heappush(heap, (hv, counter, triple_key + suffix, s))
+                    elif hv > heap[0][0]:
+                        heapq.heapreplace(heap, (hv, counter, triple_key + suffix, s))
+                    counter += 1
+        for _, _, label, stats in heap:
+            rows[label] = stats
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
