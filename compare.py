@@ -61,7 +61,7 @@ def compute_stats(eval_results):
 
 
 def print_stats(label, stats, w=24):
-    print(f"  {label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
+    print(f"{label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
           f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
 
 
@@ -302,13 +302,13 @@ def print_default_table(seed_pid, rows):
     wa = max(len(seed_pid), len('anchor'))
     wc = max((len(pid) for pid, _ in rows), default=len('complement'))
     wc = max(wc, len('complement'))
-    print(f"  {'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
+    print(f"{'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
           f"{'complement':<{wc}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s} | "
           f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s}")
-    print(f"  {'─'*(wa + wc + 68)}")
+    print(f"{'─'*(wa + wc + 68)}")
     for pid, d in rows:
         s1, s2 = d['s1'], d['s2']
-        print(f"  {seed_pid:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
+        print(f"{seed_pid:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
               f"{pid:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
               f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
               f"{d['new_fp']:>5d} {d['new_fn']:>5d}")
@@ -354,15 +354,23 @@ def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
 
 # --- ensemble output ---
 
-def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, sort='score'):
+def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, sort, ensemble):
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
         print(f"\n  ({pid_a} has {len(results_a)} pairs, {pid_b} has {len(results_b)}, "
               f"{n_common} in common)")
 
     ind_rows = [(pid_a, compute_stats(results_a)), (pid_b, compute_stats(results_b))]
-    ens_rows = [(lbl, compute_stats(apply_ensemble(results_a, results_b, rule)))
-                for lbl, rule in ENSEMBLE_RULES_2]
+    rules = [(lbl, rule) for lbl, rule in ENSEMBLE_RULES_2
+             if ensemble == 'ALL' or lbl == ensemble]
+    if ensemble != 'ALL':
+        lbl, rule = rules[0]
+        combined = apply_ensemble(results_a, results_b, rule)
+        ens_rows = [(lbl, compute_stats(combined))]
+    else:
+        combined = None
+        ens_rows = [(lbl, compute_stats(apply_ensemble(results_a, results_b, rule)))
+                    for lbl, rule in rules]
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
     ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
@@ -370,18 +378,31 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
 
     w = max(len(lbl) + 2 for lbl, _ in ind_rows + ens_rows)
 
-    print(f"\n{'':>{w+2}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*(w + 28)}")
-    print("  Individual:")
+    print(f"\n{'':>{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"{'─'*(w + 28)}")
+    print("Individual:")
     for lbl, stats in ind_rows:
         print_stats(f"  {lbl}", stats, w)
-    print("  Ensemble:")
+    print("Ensemble:")
     for lbl, stats in ens_rows:
         print_stats(f"  {lbl}", stats, w)
     print()
 
+    if combined is not None:
+        fp_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fp')
+        fn_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fn')
+        if fp_pairs:
+            print("FP:")
+            for pair in fp_pairs:
+                print(f"  {pair}")
+        if fn_pairs:
+            print("FN:")
+            for pair in fn_pairs:
+                print(f"  {pair}")
+        print()
 
-def print_explicit_ensemble_3(keys, results_list, sort='score'):
+
+def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
     sizes = [len(r) for r in results_list]
     n_common = len(set(results_list[0]) & set(results_list[1]) & set(results_list[2]))
     if n_common < min(sizes):
@@ -389,8 +410,16 @@ def print_explicit_ensemble_3(keys, results_list, sort='score'):
               f"{n_common} in common)")
 
     ind_rows = [(k, compute_stats(r)) for k, r in zip(keys, results_list)]
-    ens_rows = [(lbl, compute_stats(apply_ensemble_3_labeled(*results_list, rule)))
-                for lbl, rule in ENSEMBLE_RULES_3]
+    rules = [(lbl, rule) for lbl, rule in ENSEMBLE_RULES_3
+             if ensemble == 'ALL' or lbl == ensemble]
+    if ensemble != 'ALL':
+        lbl, rule = rules[0]
+        combined = apply_ensemble_3_labeled(*results_list, rule)
+        ens_rows = [(lbl, compute_stats(combined))]
+    else:
+        combined = None
+        ens_rows = [(lbl, compute_stats(apply_ensemble_3_labeled(*results_list, rule)))
+                    for lbl, rule in rules]
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
     ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
@@ -398,15 +427,28 @@ def print_explicit_ensemble_3(keys, results_list, sort='score'):
 
     w = max(len(lbl) + 2 for lbl, _ in ind_rows + ens_rows)
 
-    print(f"\n{'':>{w+2}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*(w + 28)}")
-    print("  Individual:")
+    print(f"\n{'':>{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"{'─'*(w + 28)}")
+    print("Individual:")
     for lbl, stats in ind_rows:
         print_stats(f"  {lbl}", stats, w)
-    print("  Ensemble:")
+    print("Ensemble:")
     for lbl, stats in ens_rows:
         print_stats(f"  {lbl}", stats, w)
     print()
+
+    if combined is not None:
+        fp_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fp')
+        fn_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fn')
+        if fp_pairs:
+            print("FP:")
+            for pair in fp_pairs:
+                print(f"  {pair}")
+        if fn_pairs:
+            print("FN:")
+            for pair in fn_pairs:
+                print(f"  {pair}")
+        print()
 
 
 def print_discovery_ensemble(args, files):
@@ -420,8 +462,10 @@ def print_discovery_ensemble(args, files):
     for pid_a, pid_b in combinations(pids, 2):
         ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
         pair_key = f"{pid_a},{pid_b}"
-        rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
-        rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
+        if args.ensemble in ('ALL', 'OR'):
+            rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
+        if args.ensemble in ('ALL', 'AND'):
+            rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
 
         if args.three_way:
             M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
@@ -435,17 +479,24 @@ def print_discovery_ensemble(args, files):
                 ya = M[idx[:, 0]]
                 yb = M[idx[:, 1]]
                 yc = M[idx[:, 2]]
-                and_mat = ya & yb & yc
-                or_mat  = ya | yb | yc
-                maj_mat = (ya.view(np.uint8) + yb.view(np.uint8) + yc.view(np.uint8)) >= 2
-                and_stats = _batch_stats_from_mat(and_mat, exp_vec, n_pairs)
-                or_stats  = _batch_stats_from_mat(or_mat,  exp_vec, n_pairs)
-                maj_stats = _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)
-                del ya, yb, yc, and_mat, or_mat, maj_mat
+                batch_results = []
+                if args.ensemble in ('ALL', 'OR'):
+                    or_mat = ya | yb | yc
+                    batch_results.append((" OR", _batch_stats_from_mat(or_mat, exp_vec, n_pairs)))
+                    del or_mat
+                if args.ensemble in ('ALL', 'AND'):
+                    and_mat = ya & yb & yc
+                    batch_results.append((" AND", _batch_stats_from_mat(and_mat, exp_vec, n_pairs)))
+                    del and_mat
+                if args.ensemble in ('ALL', 'MAJORITY'):
+                    maj_mat = (ya.view(np.uint8) + yb.view(np.uint8) + yc.view(np.uint8)) >= 2
+                    batch_results.append((" MAJORITY", _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)))
+                    del maj_mat
+                del ya, yb, yc
                 for i, (ia, ib, ic) in enumerate(batch):
                     triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
-                    for suffix, s in ((" OR", or_stats[i]), (" AND", and_stats[i]),
-                                      (" MAJORITY", maj_stats[i])):
+                    for suffix, stats_arr in batch_results:
+                        s = stats_arr[i]
                         hv = s[sort_key] if sort_rev else -s[sort_key]
                         if len(heap) < top_k:
                             heapq.heappush(heap, (hv, counter, triple_key + suffix, s))
@@ -462,8 +513,8 @@ def print_discovery_ensemble(args, files):
         sorted_rows = sorted(rows.items(), key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['correct']))
     w = max((len(label) for label, _ in sorted_rows), default=5)
     w = max(w, len('label'))
-    print(f"  {'label':<{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*(w + 28)}")
+    print(f"{'label':<{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"{'─'*(w + 28)}")
     for label, stats in sorted_rows:
         print_stats(label, stats, w)
     print()
@@ -485,10 +536,10 @@ def print_discovery_ranked(files_dict, sort='score'):
 
     w = max((len(k) for k, _ in rows), default=5)
     w = max(w, len('key'))
-    print(f"  {'key':<{w}s}  {'score':>7s}  {'corr':>9s}  {'FP':>4s}  {'FN':>4s}")
-    print(f"  {'─'*(w + 32)}")
+    print(f"{'key':<{w}s}  {'score':>7s}  {'corr':>9s}  {'FP':>4s}  {'FN':>4s}")
+    print(f"{'─'*(w + 32)}")
     for key, s in rows:
-        print(f"  {key:<{w}s}  {s['pct']:6.1f}%  {s['correct']:4d}/{s['total']:<4d}  {s['fp']:4d}  {s['fn']:4d}")
+        print(f"{key:<{w}s}  {s['pct']:6.1f}%  {s['correct']:4d}/{s['total']:<4d}  {s['fp']:4d}  {s['fn']:4d}")
     print()
 
 
@@ -509,7 +560,8 @@ def run_explicit(args):
         print_explicit_default(pid_a, results_a, pid_b, results_b)
     else:
         print_explicit_ensemble(args.files[0], pid_a, results_a,
-                                args.files[1], pid_b, results_b, args.sort)
+                                args.files[1], pid_b, results_b, args.sort,
+                                args.ensemble)
 
 
 def run_explicit_3(args):
@@ -522,7 +574,7 @@ def run_explicit_3(args):
         r = load_eval_results(path)
         label_eval_results(r, expected, args.method)
         results_list.append(r)
-    print_explicit_ensemble_3(keys, results_list, args.sort)
+    print_explicit_ensemble_3(keys, results_list, args.sort, args.ensemble or 'ALL')
 
 
 def run_discovery(args):
@@ -553,9 +605,10 @@ def main():
                         help='pairs JSON file with expected values')
     parser.add_argument('--method', default='any-yes', metavar='METHOD',
                         help='scoring method (default: any-yes)')
-    parser.add_argument('-e', '--ensemble', action='store_true',
-                        help='discovery: show pairwise ensemble combinations; '
-                             'explicit: show OR/AND stats')
+    parser.add_argument('-e', '--ensemble', type=str.upper,
+                        choices=['ALL', 'AND', 'OR', 'MAJORITY'],
+                        default=None, metavar='TYPE',
+                        help='ensemble type: ALL (default), AND, OR, MAJORITY (case-insensitive)')
     parser.add_argument('-3', '--three-way', action='store_true',
                         help='include 3-way combinations in discovery ensemble mode')
     parser.add_argument('-k', '--keys', metavar='KEYS',
@@ -580,6 +633,9 @@ def main():
 
     if args.three_way and not args.ensemble:
         parser.error('--three-way requires --ensemble')
+
+    if args.ensemble == 'MAJORITY' and not args.three_way:
+        parser.error('--ensemble MAJORITY requires --three-way or --keys')
 
     sort_lc = args.sort.lower()
     valid_sort = {'score', 'fp', 'fn'}
