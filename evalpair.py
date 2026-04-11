@@ -20,8 +20,8 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from classify import classify_pairs_async
-from client import add_inference_args, run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
+from client import run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
 from info import info
 
 def fmt_duration(s):
@@ -76,7 +76,7 @@ def print_retries(retry_map, file=sys.stdout, successful_requests=None):
 
 def send_anchor_prefix(args, ctx: str) -> None:
     """Send prompt prefix up to 'Clue' to v1/completions for KV cache warming."""
-    m = re.search(r'^(.*?Clue)', ctx, re.DOTALL)
+    m = re.search(r'^(.*Clue)', ctx, re.DOTALL)
     if not m:
         raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
     prefix = "<|im_start|>user\n" + m.group(1)
@@ -106,8 +106,11 @@ def parse_args():
     prompt_group.add_argument('--prompt', type=str, help='Prompt context (use {PAIR} as placeholder)')
     prompt_group.add_argument('--prompt-file', type=str, help='JSON file containing prompts')
 
-    parser.add_argument('--pid', '--prompt-id', type=str, dest='prompt_id',
-                        help='Prompt ID to use from prompt file')
+    pid_group = parser.add_mutually_exclusive_group()
+    pid_group.add_argument('--pid', '--prompt-id', type=str, dest='prompt_id',
+                           help='Prompt ID to use from prompt file')
+    pid_group.add_argument('--all', action='store_true',
+                           help='Run all prompts in prompt file; with --save, creates one result file per prompt')
 
     # Model: omit for server (default), provide for local model
     parser.add_argument('-m', '--model', metavar='MODEL', type=str, default=None,
@@ -140,8 +143,9 @@ def parse_args():
                       help="Show actual response and message")
     parser.add_argument("-q", "--quiet", action="store_true",
                       help="Suppress REQUEST START/END messages")
-    parser.add_argument('--lp', '--logprobs', dest='logprobs', action='store_true',
-                        help='Evaluate using single-token logprobs instead of full generation (server only; forces thinking off)')
+    parser.add_argument('--lp', '--logprobs', dest='logprobs', type=parse_on_off,
+                        choices=(True, False), default=True, metavar="on|off",
+                        help='Evaluate using single-token logprobs instead of full generation (server only; forces thinking off) (default: on)')
     parser.add_argument('--tlp', '--top-logprobs', dest='top_logprobs', type=int, default=2,
                         help='Number of top logprobs to request in --lp mode (default: 2)')
 
@@ -160,9 +164,11 @@ def parse_args():
     else:
         args.system_prompt_filename = None
 
-    # Validate --prompt-file requires --pid
-    if args.prompt_file and not args.prompt_id:
-        parser.error("--prompt-file requires --pid/--prompt-id")
+    # Validate --prompt-file requires --pid or --all
+    if args.prompt_file and not args.prompt_id and not args.all:
+        parser.error("--prompt-file requires --pid/--prompt-id or --all")
+    if args.all and not args.prompt_file:
+        parser.error("--all requires --prompt-file")
 
     # --save requires --pair-file
     if args.save and not args.pair_file:
@@ -243,6 +249,9 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
             seq, pair, results  = result
             if writer:
                 writer.submit_logprob(seq, pair, results)
+            else:
+                print(f"{pair}")
+                
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
             print(f"\n{type(e).__name__}: {e}")
@@ -254,14 +263,14 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
     return True
 
 
-def make_result_prefix(args):
+def make_result_prefix(args, prompt_id=None):
     """Build the result file prefix from args."""
     results_dir = args.results_dir
     results_dir.mkdir(exist_ok=True)
     basename = os.path.basename(args.pair_file)
     if args.prompt_file:
         prompt_source = Path(args.prompt_file).stem
-        pid = args.prompt_id
+        pid = prompt_id if prompt_id is not None else args.prompt_id
     else:
         prompt_source = "manual"
         pid = ""
@@ -283,6 +292,17 @@ def count_lines(filename):
         with open(filename) as f:
             count += sum(1 for line in f if line.strip())
     return count
+
+
+def single_prompt_generator(prompts, prompt_id):
+    prompt_obj = next((p for p in prompts if p.get('id') == prompt_id), None)
+    if not prompt_obj:
+        raise ValueError(f"Prompt ID '{prompt_id}' not found")
+    yield prompt_obj
+
+
+def all_prompts_generator(prompts):
+    yield from prompts
 
 
 def get_pairs(args, skip=0):
@@ -328,50 +348,59 @@ def main():
     auto_detect_max_concurrent(args)
     args.model_id = query_model_id(args.host, args.port, args.key)
 
-    ctx = args.prompt
     if args.prompt_file:
-        prompts = load_prompts_from_file(args.prompt_file)
-        prompt_obj = next((p for p in prompts if p.get('id') == args.prompt_id), None)
-        if not prompt_obj:
-            raise ValueError(f"Prompt ID '{args.prompt_id}' not found in {args.prompt_file}")
-        ctx = prompt_obj['text']
-
-    send_anchor_prefix(args, ctx)
-
-    # When --save, count existing results and resume from where we left off
-    skip = 0
-    writer = None
-    if args.save:  # args.logprobs guaranteed by parse_args
-        filename = f"{make_result_prefix(args)}.jsonl"
-        skip = count_lines(filename)
-        if skip:
-            print(f"Skipping {skip} pairs")
-        writer = JsonlWriter(filename, next_seq=skip)
-
-    pairs = get_pairs(args, skip=skip)
-    retry_map = None
-
-    t0 = time.monotonic()
-    try:
-        if not args.logprobs:
-            print(f"Thinking: {args.thinking}")
-            retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
+        all_prompts = load_prompts_from_file(args.prompt_file)
+        if args.all:
+            prompt_gen = all_prompts_generator(all_prompts)
         else:
-            orders = ["fwd", "rvs"]
-            asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer))
-    finally:
-        if writer:
-            writer.close()
-    duration = time.monotonic() - t0
+            prompt_gen = single_prompt_generator(all_prompts, args.prompt_id)
+    else:
+        prompt_gen = iter([{'id': None, 'text': args.prompt}])
 
-    num_pairs = (writer.next_seq - skip) if writer else 0
-    total_retries, _ = get_retry_stats(retry_map) if retry_map else (0, 0)
-    total_requests = (num_pairs * len(orders) + total_retries) if args.logprobs else total_retries
-    print(f"Total {num_pairs} pairs ({total_requests} requests) in {fmt_duration(duration)}")
-    if retry_map:
-        print_retries(retry_map)
+    for prompt_obj in prompt_gen:
+        ctx = prompt_obj['text']
+        current_pid = prompt_obj.get('id')
+        if args.all:
+            print(f"\n=== Prompt: {current_pid} ===")
 
-    handle_results(args, writer)
+        send_anchor_prefix(args, ctx)
+
+        # When --save, count existing results and resume from where we left off
+        skip = 0
+        writer = None
+        if args.save:  # args.logprobs guaranteed by parse_args
+            filename = f"{make_result_prefix(args, prompt_id=current_pid)}.jsonl"
+            skip = count_lines(filename)
+            if skip:
+                print(f"Skipping {skip} pairs")
+            writer = JsonlWriter(filename, next_seq=skip)
+
+        pairs = get_pairs(args, skip=skip)
+        retry_map = None
+
+        t0 = time.monotonic()
+        try:
+            if not args.logprobs:
+                print(f"Thinking: {args.thinking}")
+                retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
+            else:
+                orders = ["fwd", "rvs"]
+                asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer))
+        finally:
+            if writer:
+                writer.close()
+        duration = time.monotonic() - t0
+
+        num_pairs = (writer.next_seq - skip) if writer else 0
+        total_retries, _ = get_retry_stats(retry_map) if retry_map else (0, 0)
+        total_requests = (num_pairs * len(orders) + total_retries) if args.logprobs else total_retries
+        print(f"Total {num_pairs} pairs ({total_requests} requests) in {fmt_duration(duration)}")
+        if retry_map:
+            print_retries(retry_map)
+        if args.save and num_pairs > 0:
+            print(f"{num_pairs} results saved to: {writer.path}")
+
+        handle_results(args, writer)
 
 
 if __name__ == "__main__":
