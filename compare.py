@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import heapq
 import json
 import re
 import signal
@@ -22,8 +23,8 @@ from pathlib import Path
 
 import numpy as np
 
-from common import load_expected_pairs, load_result_records
-from score import compute_score
+from common import load_expected_pairs, load_eval_results
+from score import label_eval_results
 
 
 def parse_result_file(path):
@@ -46,18 +47,16 @@ def parse_result_file(path):
     return data, results
 
 
-def compute_stats(pair_results):
-    tp = tn = fp = fn = 0
-    for r in pair_results.values():
-        a, e = r['answer'], r['expected']
-        if   e == 'YES' and a == 'YES': tp += 1
-        elif e == 'NO'  and a == 'NO':  tn += 1
-        elif e == 'NO'  and a == 'YES': fp += 1
-        elif e == 'YES' and a == 'NO':  fn += 1
-    total   = tp + tn + fp + fn
-    correct = tp + tn
-    pct     = 100 * correct / total if total else 0.0
-    return dict(correct=correct, total=total, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
+def compute_stats(eval_results):
+    correct = fp = fn = 0
+    for data in eval_results.values():
+        label = data.get('label')
+        if label == 'correct': correct += 1
+        elif label == 'fp':    fp += 1
+        elif label == 'fn':    fn += 1
+    total = correct + fp + fn
+    pct   = 100 * correct / total if total else 0.0
+    return dict(correct=correct, total=total, pct=pct, fp=fp, fn=fn)
 
 
 def print_stats(label, stats, w=24):
@@ -71,11 +70,13 @@ def compute_pair_diff(results_1, results_2):
     fixed_fp = fixed_fn = new_fp = new_fn = 0
     for pair in common:
         r1, r2 = results_1[pair], results_2[pair]
-        was_fp = r1['answer'] == 'YES' and r1['expected'] == 'NO'
-        was_fn = r1['answer'] == 'NO'  and r1['expected'] == 'YES'
-        is_fp  = r2['answer'] == 'YES' and r2['expected'] == 'NO'
-        is_fn  = r2['answer'] == 'NO'  and r2['expected'] == 'YES'
-        was_correct = not was_fp and not was_fn
+        if 'label' not in r1 or 'label' not in r2:
+            continue
+        was_fp      = r1['label'] == 'fp'
+        was_fn      = r1['label'] == 'fn'
+        was_correct = r1['label'] == 'correct'
+        is_fp       = r2['label'] == 'fp'
+        is_fn       = r2['label'] == 'fn'
         if was_fp and not is_fp:     fixed_fp += 1
         if was_fn and not is_fn:     fixed_fn += 1
         if was_correct and is_fp:    new_fp += 1
@@ -88,16 +89,18 @@ def compute_pair_diff(results_1, results_2):
 
 
 def apply_ensemble(results_a, results_b, rule):
-    """Apply rule(a, b) -> 'YES'/'NO' over common pairs."""
+    """Apply rule(a_actual, b_actual) -> 'YES'/'NO' over common labeled pairs."""
     combined = {}
     for pair in set(results_a) & set(results_b):
         a = results_a[pair]
         b = results_b[pair]
-        if a['expected'] != b['expected']:
-            print(f"  WARNING: expected mismatch for '{pair}': "
-                  f"{a['expected']} vs {b['expected']}", file=sys.stderr)
-        combined[pair] = {'answer': rule(a['answer'], b['answer']),
-                          'expected': a['expected']}
+        if 'label' not in a or 'label' not in b:
+            continue
+        actual = rule(a['actual'], b['actual'])
+        a_label = a['label']
+        expected = a['actual'] if a_label == 'correct' else ('NO' if a_label == 'fp' else 'YES')
+        label = 'correct' if actual == expected else ('fp' if actual == 'YES' else 'fn')
+        combined[pair] = {'actual': actual, 'label': label}
     return combined
 
 
@@ -130,16 +133,19 @@ ENSEMBLE_RULES_3 = [
 
 
 def _build_vecs(files_dict):
-    """Return (exp_vec, yes_vecs, n_pairs) using a common pair ordering.
+    """Return (exp_vec, yes_vecs, n_pairs) using common labeled pairs.
     exp_vec and yes_vecs values are numpy bool arrays."""
     all_keys = list(files_dict.keys())
-    pair_sets = [set(files_dict[k][1].keys()) for k in all_keys]
+    pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
     n = len(common)
-    first_results = files_dict[all_keys[0]][1]
-    exp_vec = np.array([first_results[p]['expected'] == 'YES' for p in common], dtype=np.bool_)
+    first_results = files_dict[all_keys[0]]
+    exp_vec = np.array(
+        [first_results[p]['label'] == 'fn' or
+         (first_results[p]['label'] == 'correct' and first_results[p].get('actual') == 'YES')
+         for p in common], dtype=np.bool_)
     yes_vecs = {
-        k: np.array([files_dict[k][1][p]['answer'] == 'YES' for p in common], dtype=np.bool_)
+        k: np.array([files_dict[k][p].get('actual') == 'YES' for p in common], dtype=np.bool_)
         for k in all_keys
     }
     return exp_vec, yes_vecs, n
@@ -191,7 +197,7 @@ def parse_result_filename(name):
 
 
 def discover_files_all(seed_path):
-    """Return {prompt_file.prompt_id[.tag]: records_list} for all .jsonl files in seed's directory."""
+    """Return {prompt_file.prompt_id[.tag]: eval_results} for all .jsonl files in seed's directory."""
     directory = Path(seed_path).parent
     candidates = []
     for jsonl_file in sorted(directory.glob('*.jsonl')):
@@ -207,7 +213,7 @@ def discover_files_all(seed_path):
     def _load(item):
         key, jsonl_file = item
         try:
-            return key, load_result_records(jsonl_file)
+            return key, load_eval_results(jsonl_file)
         except Exception:
             return key, None
 
@@ -298,14 +304,11 @@ def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
 
 # --- ensemble output ---
 
-def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b):
-    pid_a = data_a.get('prompt_id', '?')
-    pid_b = data_b.get('prompt_id', '?')
-
+def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b):
     print(f"\nA: {Path(path_a).name}")
-    print(f"   prompt={pid_a}  model={data_a.get('model', '?')}")
+    print(f"   prompt={pid_a}")
     print(f"B: {Path(path_b).name}")
-    print(f"   prompt={pid_b}  model={data_b.get('model', '?')}")
+    print(f"   prompt={pid_b}")
 
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
@@ -324,8 +327,9 @@ def print_explicit_ensemble(path_a, data_a, results_a, path_b, data_b, results_b
     print()
 
 
-def print_discovery_ensemble(args, seed_pid, files, pids):
-    exp_vec, yes_vecs, n_pairs = _build_vecs({p: files[p] for p in pids})
+def print_discovery_ensemble(args, files):
+    pids = list(files.keys())
+    exp_vec, yes_vecs, n_pairs = _build_vecs(files)
     rows = {}
 
     for pid in pids:
@@ -341,7 +345,11 @@ def print_discovery_ensemble(args, seed_pid, files, pids):
         if args.three_way:
             M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
             pid_list = list(pids)
-            for batch in _combo_batches(len(pid_list), 3, 100_000):
+            sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
+            top_k = args.top
+            heap = []   # min-heap of (heap_val, counter, label, stats)
+            counter = 0
+            for batch in _combo_batches(len(pid_list), 3, 10_000):
                 idx = np.array(batch, dtype=np.intp)
                 ya = M[idx[:, 0]]
                 yb = M[idx[:, 1]]
@@ -352,11 +360,19 @@ def print_discovery_ensemble(args, seed_pid, files, pids):
                 and_stats = _batch_stats_from_mat(and_mat, exp_vec, n_pairs)
                 or_stats  = _batch_stats_from_mat(or_mat,  exp_vec, n_pairs)
                 maj_stats = _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)
+                del ya, yb, yc, and_mat, or_mat, maj_mat
                 for i, (ia, ib, ic) in enumerate(batch):
                     triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
-                    rows[f"{triple_key} OR"]       = or_stats[i]
-                    rows[f"{triple_key} AND"]      = and_stats[i]
-                    rows[f"{triple_key} MAJORITY"] = maj_stats[i]
+                    for suffix, s in ((" OR", or_stats[i]), (" AND", and_stats[i]),
+                                      (" MAJORITY", maj_stats[i])):
+                        hv = s[sort_key] if sort_rev else -s[sort_key]
+                        if len(heap) < top_k:
+                            heapq.heappush(heap, (hv, counter, triple_key + suffix, s))
+                        elif hv > heap[0][0]:
+                            heapq.heapreplace(heap, (hv, counter, triple_key + suffix, s))
+                        counter += 1
+            for _, _, label, stats in heap:
+                rows[label] = stats
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
@@ -374,42 +390,45 @@ def print_discovery_ensemble(args, seed_pid, files, pids):
 
 # --- ranked discovery output (jsonl path) ---
 
-def print_discovery_ranked(files_dict, expected, method, sort='score'):
-    """Score each file and print a ranked table: key | score% | correct/total | FP | FN."""
-    rows = []
-    for key, records in files_dict.items():
-        sr = compute_score(records, expected, method)
-        rows.append((key, sr))
+def print_discovery_ranked(files_dict, sort='score'):
+    """Print a ranked table of pre-labeled eval results: key | score% | correct/total | FP | FN."""
+    rows = [(key, compute_stats(records)) for key, records in files_dict.items()]
 
     sort_lc = sort.lower()
     if sort_lc == 'fp':
-        rows.sort(key=lambda x: (x[1].fp, -x[1].score))
+        rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
     elif sort_lc == 'fn':
-        rows.sort(key=lambda x: (x[1].fn, -x[1].score))
+        rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
     else:
-        rows.sort(key=lambda x: x[1].score, reverse=True)
+        rows.sort(key=lambda x: x[1]['pct'], reverse=True)
 
     w = max((len(k) for k, _ in rows), default=5)
     w = max(w, len('key'))
     print(f"  {'key':<{w}s}  {'score':>7s}  {'corr':>9s}  {'FP':>4s}  {'FN':>4s}")
     print(f"  {'─'*(w + 32)}")
-    for key, sr in rows:
-        print(f"  {key:<{w}s}  {sr.score:6.1f}%  {sr.correct:4d}/{sr.total:<4d}  {sr.fp:4d}  {sr.fn:4d}")
+    for key, s in rows:
+        print(f"  {key:<{w}s}  {s['pct']:6.1f}%  {s['correct']:4d}/{s['total']:<4d}  {s['fp']:4d}  {s['fn']:4d}")
     print()
 
 
 # --- top-level runners ---
 
 def run_explicit(args):
-    data_a, results_a = parse_result_file(args.files[0])
-    data_b, results_b = parse_result_file(args.files[1])
-    pid_a = data_a.get('prompt_id', '?')
-    pid_b = data_b.get('prompt_id', '?')
+    expected = load_expected_pairs(args.pairs)
+    results_a = load_eval_results(args.files[0])
+    results_b = load_eval_results(args.files[1])
+    label_eval_results(results_a, expected, args.method)
+    label_eval_results(results_b, expected, args.method)
+    parsed_a = parse_result_filename(args.files[0])
+    parsed_b = parse_result_filename(args.files[1])
+    pid_a = parsed_a[2] if parsed_a else Path(args.files[0]).stem
+    pid_b = parsed_b[2] if parsed_b else Path(args.files[1]).stem
+
     if not args.ensemble:
         print_explicit_default(pid_a, results_a, pid_b, results_b)
     else:
-        print_explicit_ensemble(args.files[0], data_a, results_a,
-                                args.files[1], data_b, results_b)
+        print_explicit_ensemble(args.files[0], pid_a, results_a,
+                                args.files[1], pid_b, results_b)
 
 
 def run_discovery(args):
@@ -420,9 +439,16 @@ def run_discovery(args):
         print("No files found.", file=sys.stderr)
         sys.exit(1)
 
+    for eval_results in files.values():
+        label_eval_results(eval_results, expected, args.method)
+
     print(f"\nDirectory: {Path(args.files[0]).parent}")
     print(f"Found: {len(files)} file(s)\n")
-    print_discovery_ranked(files, expected, args.method, args.sort)
+
+    if args.ensemble:
+        print_discovery_ensemble(args, files)
+    else:
+        print_discovery_ranked(files, args.sort)
 
 
 def main():
@@ -445,6 +471,8 @@ def main():
                              '(single-file mode only; keys shown as prompt_file.prompt_id)')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
                         help='sort field: score (default), FP, FN')
+    parser.add_argument('--top', type=int, default=1000, metavar='N',
+                        help='max 3-way combo results to retain (default: 1000)')
     args = parser.parse_args()
 
     if args.all and len(args.files) != 1:

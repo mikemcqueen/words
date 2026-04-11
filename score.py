@@ -13,7 +13,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from common import load_expected_pairs, load_result_records, parse_yesno_response
+from common import load_expected_pairs, load_eval_results, parse_yesno_response
 
 ScoreResult = namedtuple("ScoreResult", ["score", "correct", "total", "fp", "fn"])
 
@@ -35,8 +35,10 @@ def extract_top_token(logprobs: list) -> str | None:
 
 
 @method("any-yes")
-def method_any_yes(fwd: str | None, rvs: str | None) -> str | None:
+def method_any_yes(logprobs: dict) -> str | None:
     """YES if fwd=YES or rvs=YES, else NO if either is NO, else None."""
+    fwd = extract_top_token(logprobs.get("fwd", []))
+    rvs = extract_top_token(logprobs.get("rvs", []))
     if fwd == "YES" or rvs == "YES":
         return "YES"
     if fwd == "NO" or rvs == "NO":
@@ -44,46 +46,39 @@ def method_any_yes(fwd: str | None, rvs: str | None) -> str | None:
     return None
 
 
+def label_eval_results(eval_results: dict, expected: dict, method: str) -> ScoreResult:
+    """Score eval_results against expected, adding a 'label' field to each matched pair.
 
-def score_record(record: dict, method_fn) -> dict:
-    """Score a single evalpair record. Returns None if pair not in expected."""
-    pair = record["pair"]
-    logprobs = record.get("logprobs", {})
-    fwd = extract_top_token(logprobs.get("fwd", []))
-    rvs = extract_top_token(logprobs.get("rvs", []))
-    actual = method_fn(fwd, rvs)
-    return {"pair": pair, "fwd": fwd, "rvs": rvs, "actual": actual}
-
-
-def compute_score(records: list, expected: dict, method: str) -> ScoreResult:
-    """Score records against expected dict and return a ScoreResult namedtuple."""
+    Label values: 'correct', 'fp', or 'fn'. Pairs not in expected are skipped (no label added).
+    Returns a ScoreResult with running totals.
+    """
     method_fn = METHODS[method]
     correct = 0
     total = 0
     fp = 0
     fn = 0
 
-    for record in records:
-        lookup_key = record["pair"].replace(",", " ")
+    for pair, data in eval_results.items():
+        lookup_key = pair.replace(",", " ")
         if lookup_key not in expected:
             continue
 
         exp = expected[lookup_key]
-        result = score_record(record, method_fn)
-        actual = result["actual"]
+        actual = method_fn(data.get("logprobs", {}))
+        is_correct = actual == exp
 
-        if exp == "ANY":
-            is_correct = actual in ("YES", "NO")
-        else:
-            is_correct = actual == exp
+        data["actual"] = actual
 
         total += 1
         if is_correct:
             correct += 1
+            data["label"] = "correct"
         elif actual == "YES":
             fp += 1
+            data["label"] = "fp"
         elif actual == "NO" or actual is None:
             fn += 1
+            data["label"] = "fn"
 
     score = (correct / total * 100) if total > 0 else 0.0
     return ScoreResult(score=score, correct=correct, total=total, fp=fp, fn=fn)
@@ -114,9 +109,8 @@ Examples:
         sys.exit(1)
 
     expected = load_expected_pairs(args.pairs)
-    method_fn = METHODS[args.method]  # still needed for per-row verbose scoring
-
-    records = load_result_records(args.input)
+    eval_results = load_eval_results(args.input)
+    sr = label_eval_results(eval_results, expected, args.method)
 
     def fmt_tok(tok: str | None) -> str:
         if tok == "YES":
@@ -127,26 +121,15 @@ Examples:
 
     rows = []  # (pair, row_str | None) — None means skipped
 
-    for record in records:
-        pair = record["pair"]
-        lookup_key = pair.replace(",", " ")
-        if lookup_key not in expected:
+    for pair, data in eval_results.items():
+        if "label" not in data:
             rows.append((pair, None))
             continue
-
-        exp = expected[lookup_key]
-        result = score_record(record, method_fn)
-        actual = result["actual"]
-
-        if exp == "ANY":
-            is_correct = actual in ("YES", "NO")
-        else:
-            is_correct = actual == exp
-
-        mark = "\033[32m✓\033[0m" if is_correct else "\033[31m✗\033[0m"
-        rows.append((pair, (result["fwd"], result["rvs"], actual, mark)))
-
-    sr = compute_score(records, expected, args.method)
+        logprobs = data.get("logprobs", {})
+        fwd = extract_top_token(logprobs.get("fwd", []))
+        rvs = extract_top_token(logprobs.get("rvs", []))
+        mark = "\033[32m✓\033[0m" if data["label"] == "correct" else "\033[31m✗\033[0m"
+        rows.append((pair, (fwd, rvs, data["actual"], mark)))
 
     if args.verbose:
         max_pair = max((len(p) for p, _ in rows), default=0)
@@ -159,7 +142,7 @@ Examples:
                 print(f"  {p}  fwd={fmt_tok(fwd)}  rvs={fmt_tok(rvs)}  {fmt_tok(actual)}  {mark}")
 
     skipped = sum(1 for _, d in rows if d is None)
-    if skipped and not args.verbose:
+    if skipped:
         print(f"Skipped {skipped} pairs not found in {args.pairs}")
 
     if sr.total == 0:

@@ -128,8 +128,8 @@ def load_expected_pairs(filepath: str) -> dict:
     return {entry["pair"].replace(",", " "): entry["expected"].upper() for entry in data}
 
 
-def load_result_records(path) -> List[Dict]:
-    """Load evalpair JSONL, return records sorted by seq."""
+def load_eval_results(path) -> Dict:
+    """Load evalpair JSONL, return {pair: {"logprobs": ...}} sorted by seq."""
     records = []
     with open(path) as f:
         for line in f:
@@ -137,7 +137,10 @@ def load_result_records(path) -> List[Dict]:
             if line:
                 records.append(json.loads(line))
     records.sort(key=lambda r: r.get("seq", 0))
-    return records
+    return {
+        r["pair"]: {"logprobs": r["logprobs"]}
+        for r in records
+    }
 
 
 def load_prompts_from_file(filepath) -> List[Dict]:
