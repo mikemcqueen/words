@@ -2,11 +2,12 @@
 """Compare prompt result files and report statistics.
 
 Usage:
-  compare_results.py <file_a> <file_b>          — compare two files explicitly
-  compare_results.py <file>                     — auto-discover sibling files by prompt id;
-                                                   default: Fixed/New FP/FN + score per file
-  compare_results.py -e [<file_a> <file_b>]     — ensemble mode: test all combinations
-  compare_results.py -e -3 <file>               — ensemble mode with 3-way combos
+  compare.py <file>                          — discover all .jsonl files in same directory; ranked scores
+  compare.py <file_a> <file_b>              — compare two files: Fixed/New FP/FN table
+  compare.py -e <file>                       — discover + show pairwise ensemble combinations
+  compare.py -e <file_a> <file_b>           — explicit 2-way ensemble (OR, AND)
+  compare.py -e -3 <file>                    — discover + include 3-way ensemble combinations
+  compare.py -k key1,key2,key3 <dir>        — explicit 3-way ensemble from discovery keys
 """
 
 import argparse
@@ -118,6 +119,21 @@ def apply_ensemble_3(results_a, results_b, results_c, rule):
     return combined
 
 
+def apply_ensemble_3_labeled(results_a, results_b, results_c, rule):
+    """Apply rule(a_actual, b_actual, c_actual) -> 'YES'/'NO' over common labeled pairs."""
+    combined = {}
+    for pair in set(results_a) & set(results_b) & set(results_c):
+        a, b, c = results_a[pair], results_b[pair], results_c[pair]
+        if 'label' not in a or 'label' not in b or 'label' not in c:
+            continue
+        actual = rule(a['actual'], b['actual'], c['actual'])
+        a_label = a['label']
+        expected = a['actual'] if a_label == 'correct' else ('NO' if a_label == 'fp' else 'YES')
+        label = 'correct' if actual == expected else ('fp' if actual == 'YES' else 'fn')
+        combined[pair] = {'actual': actual, 'label': label}
+    return combined
+
+
 ENSEMBLE_RULES_2 = [
     ("OR",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
     ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO')
@@ -194,6 +210,40 @@ def parse_result_filename(name):
     #m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+)$', stem)
     m =  re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
     return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)) if m else None
+
+
+def resolve_key(directory, key):
+    """Given a directory and a discovery key like 'crosswd2.p81.qwen35', find the matching .jsonl file.
+    Splits key into (prompt_file, pid, tag) and globs for a unique match."""
+    parts = key.split('.', 2)
+    if len(parts) == 3:
+        prompt_file, pid, tag = parts
+    elif len(parts) == 2:
+        prompt_file, pid, tag = parts[0], parts[1], ''
+    else:
+        print(f"Error: invalid key {key!r} (expected prompt_file.pid[.tag])", file=sys.stderr)
+        sys.exit(1)
+
+    d = Path(directory)
+    pattern = f'*_{prompt_file}_{pid}_*.{tag}.jsonl' if tag else f'*_{prompt_file}_{pid}_*.jsonl'
+    candidates = []
+    for f in sorted(d.glob(pattern)):
+        parsed = parse_result_filename(f.name)
+        if parsed is None:
+            continue
+        _, pf, ppid, _, ptag = parsed
+        if pf == prompt_file and ppid == pid and (ptag or '') == tag:
+            candidates.append(f)
+
+    if len(candidates) == 0:
+        print(f"Error: no file found for key {key!r} in {directory}", file=sys.stderr)
+        sys.exit(1)
+    if len(candidates) > 1:
+        print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
+        for c in candidates:
+            print(f"  {c.name}", file=sys.stderr)
+        sys.exit(1)
+    return candidates[0]
 
 
 def discover_files_all(seed_path):
@@ -304,26 +354,58 @@ def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
 
 # --- ensemble output ---
 
-def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b):
-    print(f"\nA: {Path(path_a).name}")
-    print(f"   prompt={pid_a}")
-    print(f"B: {Path(path_b).name}")
-    print(f"   prompt={pid_b}")
-
+def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, sort='score'):
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
-        print(f"\n  (A has {len(results_a)} pairs, B has {len(results_b)}, "
+        print(f"\n  ({pid_a} has {len(results_a)} pairs, {pid_b} has {len(results_b)}, "
               f"{n_common} in common)")
 
-    print(f"\n{'':>26s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
-    print(f"  {'─'*64}")
+    ind_rows = [(pid_a, compute_stats(results_a)), (pid_b, compute_stats(results_b))]
+    ens_rows = [(lbl, compute_stats(apply_ensemble(results_a, results_b, rule)))
+                for lbl, rule in ENSEMBLE_RULES_2]
+
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
+    ens_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
+
+    w = max(len(lbl) + 2 for lbl, _ in ind_rows + ens_rows)
+
+    print(f"\n{'':>{w+2}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"  {'─'*(w + 28)}")
     print("  Individual:")
-    print_stats(f"A ({pid_a})", compute_stats(results_a))
-    print_stats(f"B ({pid_b})", compute_stats(results_b))
-    print("  Ensemble (common pairs):")
-    for label, rule in ENSEMBLE_RULES_2:
-        combined = apply_ensemble(results_a, results_b, rule)
-        print_stats(label, compute_stats(combined))
+    for lbl, stats in ind_rows:
+        print_stats(f"  {lbl}", stats, w)
+    print("  Ensemble:")
+    for lbl, stats in ens_rows:
+        print_stats(f"  {lbl}", stats, w)
+    print()
+
+
+def print_explicit_ensemble_3(keys, results_list, sort='score'):
+    sizes = [len(r) for r in results_list]
+    n_common = len(set(results_list[0]) & set(results_list[1]) & set(results_list[2]))
+    if n_common < min(sizes):
+        print(f"\n  ({keys[0]} has {sizes[0]}, {keys[1]} has {sizes[1]}, {keys[2]} has {sizes[2]} pairs; "
+              f"{n_common} in common)")
+
+    ind_rows = [(k, compute_stats(r)) for k, r in zip(keys, results_list)]
+    ens_rows = [(lbl, compute_stats(apply_ensemble_3_labeled(*results_list, rule)))
+                for lbl, rule in ENSEMBLE_RULES_3]
+
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
+    ens_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
+
+    w = max(len(lbl) + 2 for lbl, _ in ind_rows + ens_rows)
+
+    print(f"\n{'':>{w+2}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"  {'─'*(w + 28)}")
+    print("  Individual:")
+    for lbl, stats in ind_rows:
+        print_stats(f"  {lbl}", stats, w)
+    print("  Ensemble:")
+    for lbl, stats in ens_rows:
+        print_stats(f"  {lbl}", stats, w)
     print()
 
 
@@ -335,12 +417,11 @@ def print_discovery_ensemble(args, files):
     for pid in pids:
         rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
 
-    if not args.rank:
-        for pid_a, pid_b in combinations(pids, 2):
-            ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
-            pair_key = f"{pid_a},{pid_b}"
-            rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
-            rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
+    for pid_a, pid_b in combinations(pids, 2):
+        ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
+        pair_key = f"{pid_a},{pid_b}"
+        rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
+        rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
 
         if args.three_way:
             M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
@@ -428,7 +509,20 @@ def run_explicit(args):
         print_explicit_default(pid_a, results_a, pid_b, results_b)
     else:
         print_explicit_ensemble(args.files[0], pid_a, results_a,
-                                args.files[1], pid_b, results_b)
+                                args.files[1], pid_b, results_b, args.sort)
+
+
+def run_explicit_3(args):
+    keys = [k.strip() for k in args.keys.split(',')]
+    directory = args.files[0]
+    paths = [resolve_key(directory, k) for k in keys]
+    expected = load_expected_pairs(args.pairs)
+    results_list = []
+    for path in paths:
+        r = load_eval_results(path)
+        label_eval_results(r, expected, args.method)
+        results_list.append(r)
+    print_explicit_ensemble_3(keys, results_list, args.sort)
 
 
 def run_discovery(args):
@@ -459,26 +553,31 @@ def main():
                         help='pairs JSON file with expected values')
     parser.add_argument('--method', default='any-yes', metavar='METHOD',
                         help='scoring method (default: any-yes)')
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument('-e', '--ensemble', action='store_true',
-                            help='ensemble mode: show all combination statistics')
-    mode_group.add_argument('-r', '--rank', action='store_true',
-                            help='rank mode: show only per-file statistics (discovery --all mode only)')
+    parser.add_argument('-e', '--ensemble', action='store_true',
+                        help='discovery: show pairwise ensemble combinations; '
+                             'explicit: show OR/AND stats')
     parser.add_argument('-3', '--three-way', action='store_true',
-                        help='include 3-way ensemble combinations (ensemble discovery mode only)')
-    parser.add_argument('-a', '--all', action='store_true',
-                        help='discover all .jsonl files in same directory as FILE '
-                             '(single-file mode only; keys shown as prompt_file.prompt_id)')
+                        help='include 3-way combinations in discovery ensemble mode')
+    parser.add_argument('-k', '--keys', metavar='KEYS',
+                        help='3 comma-separated discovery keys for explicit 3-way ensemble; '
+                             'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
                         help='sort field: score (default), FP, FN')
     parser.add_argument('--top', type=int, default=1000, metavar='N',
-                        help='max 3-way combo results to retain (default: 1000)')
+                        help='max 3-way results to retain in discovery ensemble mode (default: 1000)')
     args = parser.parse_args()
 
-    if args.all and len(args.files) != 1:
-        parser.error('--all requires exactly one positional FILE')
-    if args.rank and not args.all:
-        parser.error('--rank requires --all')
+    if args.keys:
+        if len(args.files) != 1:
+            parser.error('--keys requires exactly one positional argument (a directory)')
+        if not Path(args.files[0]).is_dir():
+            parser.error(f'--keys: {args.files[0]!r} is not a directory')
+        keys = [k.strip() for k in args.keys.split(',')]
+        if len(keys) != 3:
+            parser.error(f'--keys requires exactly 3 comma-separated keys, got {len(keys)}')
+        run_explicit_3(args)
+        return
+
     if args.three_way and not args.ensemble:
         parser.error('--three-way requires --ensemble')
 
