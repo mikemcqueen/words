@@ -5,6 +5,7 @@ score.py - Score evalpair JSONL output against expected values.
 Usage:
   python score.py results/foo.jsonl --pairs pairs.json
   python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
+  python score.py results/            --pairs pairs.json          (discover all .jsonl; ranked table)
 """
 
 import argparse
@@ -13,7 +14,8 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-from common import load_expected_pairs, load_eval_results, parse_yesno_response
+from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
+                    discover_files_all, print_discovery_ranked)
 
 ScoreResult = namedtuple("ScoreResult", ["score", "correct", "total", "fp", "fn"])
 
@@ -94,19 +96,32 @@ Examples:
   python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
         """
     )
-    parser.add_argument("input", type=Path, help="evalpair JSONL file to score")
+    parser.add_argument("input", type=Path, help="evalpair JSONL file to score, or a directory")
     parser.add_argument("--pairs", type=str, required=True,
                         help="Pairs JSON file with expected values")
     parser.add_argument("--method", type=str, default="any-yes",
                         choices=list(METHODS.keys()),
                         help="Scoring methodology (default: any-yes)")
+    parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
+                        help="sort field for directory mode: score (default), FP, FN")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Print per-pair results")
+                        help="Print per-pair results (single-file mode only)")
     args = parser.parse_args()
 
     if not args.input.exists():
-        print(f"Error: input file not found: {args.input}", file=sys.stderr)
+        print(f"Error: input not found: {args.input}", file=sys.stderr)
         sys.exit(1)
+
+    if args.input.is_dir():
+        files = discover_files_all(args.input)
+        if not files:
+            print("No .jsonl files found.", file=sys.stderr)
+            sys.exit(1)
+        expected = load_expected_pairs(args.pairs)
+        for eval_results in files.values():
+            label_eval_results(eval_results, expected, args.method)
+        print_discovery_ranked(files, args.sort)
+        return
 
     expected = load_expected_pairs(args.pairs)
     eval_results = load_eval_results(args.input)

@@ -1,5 +1,7 @@
 import argparse
 import json
+import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List
 
@@ -141,6 +143,83 @@ def load_eval_results(path) -> Dict:
         r["pair"]: {"logprobs": r["logprobs"]}
         for r in records
     }
+
+
+def parse_result_filename(name):
+    """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}.json.
+    Returns (pair_file, prompt_file, prompt_id, host) or None if no match."""
+    stem = Path(name).stem
+    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
+    return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)) if m else None
+
+
+def discover_files_all(seed_path):
+    """Return {prompt_file.prompt_id[.tag]: eval_results} for all .jsonl files in seed's directory.
+    seed_path may be a file (uses its parent) or a directory."""
+    p = Path(seed_path)
+    directory = p if p.is_dir() else p.parent
+    candidates = []
+    for jsonl_file in sorted(directory.glob('*.jsonl')):
+        parsed = parse_result_filename(jsonl_file.name)
+        if parsed is None:
+            continue
+        _, prompt_file, prompt_id, _, tag = parsed
+        if not tag:
+            tag = ""
+        key = f"{prompt_file}.{prompt_id}.{tag}"
+        candidates.append((key, jsonl_file))
+
+    def _load(item):
+        key, jsonl_file = item
+        try:
+            return key, load_eval_results(jsonl_file)
+        except Exception:
+            return key, None
+
+    found = {}
+    with ThreadPoolExecutor() as executor:
+        for key, result in executor.map(_load, candidates):
+            if result is not None:
+                found[key] = result
+    return found
+
+
+def compute_stats(eval_results):
+    correct = fp = fn = 0
+    for data in eval_results.values():
+        label = data.get('label')
+        if label == 'correct': correct += 1
+        elif label == 'fp':    fp += 1
+        elif label == 'fn':    fn += 1
+    total = correct + fp + fn
+    pct   = 100 * correct / total if total else 0.0
+    return dict(correct=correct, total=total, pct=pct, fp=fp, fn=fn)
+
+
+def print_stats(label, stats, w=24):
+    print(f"{label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
+          f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
+
+
+def print_discovery_ranked(files_dict, sort='score'):
+    """Print a ranked table of pre-labeled eval results: key | score% | correct/total | FP | FN."""
+    rows = [(key, compute_stats(records)) for key, records in files_dict.items()]
+
+    sort_lc = sort.lower()
+    if sort_lc == 'fp':
+        rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
+    elif sort_lc == 'fn':
+        rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
+    else:
+        rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+
+    w = max((len(k) for k, _ in rows), default=5)
+    w = max(w, len('key'))
+    print(f"{'key':<{w}s}  {'score':>7s}  {'corr':>9s}  {'FP':>4s}  {'FN':>4s}")
+    print(f"{'─'*(w + 32)}")
+    for key, s in rows:
+        print(f"{key:<{w}s}  {s['pct']:6.1f}%  {s['correct']:4d}/{s['total']:<4d}  {s['fp']:4d}  {s['fn']:4d}")
+    print()
 
 
 def load_prompts_from_file(filepath) -> List[Dict]:
