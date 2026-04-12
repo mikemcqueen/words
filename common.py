@@ -202,6 +202,24 @@ def print_stats(label, stats, w=24):
           f"{stats['fp']:3d}  {stats['fn']:3d}")
 
 
+def print_bad_pairs(labeled_results: dict, header: str = "") -> None:
+    """Print FP and FN pair lists from a labeled results dict."""
+    fp_pairs = sorted(p for p, d in labeled_results.items() if d.get('label') == 'fp')
+    fn_pairs = sorted(p for p, d in labeled_results.items() if d.get('label') == 'fn')
+    if header:
+        print(header)
+    if fp_pairs:
+        print("FP:")
+        for pair in fp_pairs:
+            print(f"  {pair}")
+    if fn_pairs:
+        print("FN:")
+        for pair in fn_pairs:
+            print(f"  {pair}")
+    if fp_pairs or fn_pairs:
+        print()
+
+
 def print_discovery_ranked(files_dict, sort='score'):
     """Print a ranked table of pre-labeled eval results: key | score% | correct/total | FP | FN."""
     rows = [(key, compute_stats(records)) for key, records in files_dict.items()]

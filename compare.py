@@ -18,7 +18,6 @@ import heapq
 import json
 import signal
 import sys
-import types
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from itertools import combinations, islice, permutations
@@ -28,7 +27,7 @@ import numpy as np
 
 from common import (load_expected_pairs, load_eval_results,
                     parse_result_filename, discover_files_all,
-                    compute_stats, print_stats, resolve_key)
+                    compute_stats, print_stats, resolve_key, print_bad_pairs)
 from score import label_eval_results
 
 
@@ -50,7 +49,6 @@ def parse_result_file(path):
             expected = 'NO' if answer == 'YES' else 'YES'
         results[pair] = {'answer': answer, 'expected': expected}
     return data, results
-
 
 
 def compute_pair_diff(results_1, results_2):
@@ -83,63 +81,32 @@ def compute_pair_diff(results_1, results_2):
                 or_pct=or_pct, or_fp=or_fp, or_fn=or_fn)
 
 
-def apply_ensemble(results_a, results_b, rule):
-    """Apply rule(a_actual, b_actual) -> 'YES'/'NO' over common labeled pairs."""
+def apply_ensemble_labeled(results_list, rule_name):
+    """Apply OR/AND/MAJORITY across N labeled result dicts. Returns combined labeled dict."""
+    n = len(results_list)
+    common = set.intersection(*(set(r) for r in results_list))
+    majority_threshold = (n + 1) // 2
     combined = {}
-    for pair in set(results_a) & set(results_b):
-        a = results_a[pair]
-        b = results_b[pair]
-        if 'label' not in a or 'label' not in b:
+    for pair in common:
+        datas = [r[pair] for r in results_list]
+        if any('label' not in d for d in datas):
             continue
-        actual = rule(a['actual'], b['actual'])
-        a_label = a['label']
-        expected = a['actual'] if a_label == 'correct' else ('NO' if a_label == 'fp' else 'YES')
+        yes_count = sum(1 for d in datas if d['actual'] == 'YES')
+        if rule_name == 'OR':
+            actual = 'YES' if yes_count > 0 else 'NO'
+        elif rule_name == 'AND':
+            actual = 'YES' if yes_count == n else 'NO'
+        else:  # MAJORITY
+            actual = 'YES' if yes_count >= majority_threshold else 'NO'
+        first_label = datas[0]['label']
+        expected = datas[0]['actual'] if first_label == 'correct' else ('NO' if first_label == 'fp' else 'YES')
         label = 'correct' if actual == expected else ('fp' if actual == 'YES' else 'fn')
         combined[pair] = {'actual': actual, 'label': label}
     return combined
 
 
-def apply_ensemble_3(results_a, results_b, results_c, rule):
-    """Apply rule(a, b, c) -> 'YES'/'NO' over common pairs."""
-    combined = {}
-    for pair in set(results_a) & set(results_b) & set(results_c):
-        a, b, c = results_a[pair], results_b[pair], results_c[pair]
-        expected = a['expected']
-        for other in (b, c):
-            if other['expected'] != expected:
-                print(f"  WARNING: expected mismatch for '{pair}'", file=sys.stderr)
-        combined[pair] = {'answer': rule(a['answer'], b['answer'], c['answer']),
-                          'expected': expected}
-    return combined
-
-
-def apply_ensemble_3_labeled(results_a, results_b, results_c, rule):
-    """Apply rule(a_actual, b_actual, c_actual) -> 'YES'/'NO' over common labeled pairs."""
-    combined = {}
-    for pair in set(results_a) & set(results_b) & set(results_c):
-        a, b, c = results_a[pair], results_b[pair], results_c[pair]
-        if 'label' not in a or 'label' not in b or 'label' not in c:
-            continue
-        actual = rule(a['actual'], b['actual'], c['actual'])
-        a_label = a['label']
-        expected = a['actual'] if a_label == 'correct' else ('NO' if a_label == 'fp' else 'YES')
-        label = 'correct' if actual == expected else ('fp' if actual == 'YES' else 'fn')
-        combined[pair] = {'actual': actual, 'label': label}
-    return combined
-
-
-ENSEMBLE_RULES_2 = [
-    ("OR",      lambda a, b: 'YES' if a == 'YES' or  b == 'YES' else 'NO'),
-    ("AND",     lambda a, b: 'YES' if a == 'YES' and b == 'YES' else 'NO')
-#    ("A=Y,B=N", lambda a, b: 'YES' if a == 'YES' and b == 'NO'  else 'NO'),
-#    ("A=N,B=Y", lambda a, b: 'YES' if a == 'NO'  and b == 'YES' else 'NO'),
-]
-
-ENSEMBLE_RULES_3 = [
-    ("OR",       lambda a, b, c: 'YES' if 'YES' in (a, b, c)           else 'NO'),
-    ("AND",      lambda a, b, c: 'YES' if a == b == c == 'YES'          else 'NO'),
-    ("MAJORITY", lambda a, b, c: 'YES' if (a, b, c).count('YES') >= 2   else 'NO'),
-]
+ENSEMBLE_RULES_2 = ["OR", "AND"]
+ENSEMBLE_RULES_3 = ["OR", "AND", "MAJORITY"]
 
 
 def _build_vecs(files_dict):
@@ -181,7 +148,6 @@ def _combo_batches(n, r, batch_size):
             break
         yield batch
 
-
 def _batch_stats_from_mat(mat, exp_vec, n):
     """Compute stats for each row of mat (bool, shape batch x n_pairs).
     Returns list of stats dicts."""
@@ -194,7 +160,6 @@ def _batch_stats_from_mat(mat, exp_vec, n):
     return [dict(correct=int(correct[i]), total=n, pct=float(pct[i]),
                  tp=int(tp[i]), tn=int(tn[i]), fp=int(fp[i]), fn=int(fn[i]))
             for i in range(len(correct))]
-
 
 
 def discover_files(seed_path, seed_pid):
@@ -215,7 +180,6 @@ def discover_files(seed_path, seed_pid):
         else:
             break
     return found
-
 
 # --- default (diff) output ---
 
@@ -310,16 +274,14 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
               f"{n_common} in common)")
 
     ind_rows = [(pid_a, compute_stats(results_a)), (pid_b, compute_stats(results_b))]
-    rules = [(lbl, rule) for lbl, rule in ENSEMBLE_RULES_2
-             if ensemble == 'ALL' or lbl == ensemble]
+    rules = [lbl for lbl in ENSEMBLE_RULES_2 if ensemble == 'ALL' or lbl == ensemble]
     if ensemble != 'ALL':
-        lbl, rule = rules[0]
-        combined = apply_ensemble(results_a, results_b, rule)
-        ens_rows = [(lbl, compute_stats(combined))]
+        combined = apply_ensemble_labeled([results_a, results_b], rules[0])
+        ens_rows = [(rules[0], compute_stats(combined))]
     else:
         combined = None
-        ens_rows = [(lbl, compute_stats(apply_ensemble(results_a, results_b, rule)))
-                    for lbl, rule in rules]
+        ens_rows = [(lbl, compute_stats(apply_ensemble_labeled([results_a, results_b], lbl)))
+                    for lbl in rules]
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
     ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
@@ -338,17 +300,7 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
     print()
 
     if combined is not None:
-        fp_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fp')
-        fn_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fn')
-        if fp_pairs:
-            print("FP:")
-            for pair in fp_pairs:
-                print(f"  {pair}")
-        if fn_pairs:
-            print("FN:")
-            for pair in fn_pairs:
-                print(f"  {pair}")
-        print()
+        print_bad_pairs(combined)
 
 
 def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
@@ -359,16 +311,14 @@ def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
               f"{n_common} in common)")
 
     ind_rows = [(k, compute_stats(r)) for k, r in zip(keys, results_list)]
-    rules = [(lbl, rule) for lbl, rule in ENSEMBLE_RULES_3
-             if ensemble == 'ALL' or lbl == ensemble]
+    rules = [lbl for lbl in ENSEMBLE_RULES_3 if ensemble == 'ALL' or lbl == ensemble]
     if ensemble != 'ALL':
-        lbl, rule = rules[0]
-        combined = apply_ensemble_3_labeled(*results_list, rule)
-        ens_rows = [(lbl, compute_stats(combined))]
+        combined = apply_ensemble_labeled(results_list, rules[0])
+        ens_rows = [(rules[0], compute_stats(combined))]
     else:
         combined = None
-        ens_rows = [(lbl, compute_stats(apply_ensemble_3_labeled(*results_list, rule)))
-                    for lbl, rule in rules]
+        ens_rows = [(lbl, compute_stats(apply_ensemble_labeled(results_list, lbl)))
+                    for lbl in rules]
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
     ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
@@ -387,17 +337,7 @@ def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
     print()
 
     if combined is not None:
-        fp_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fp')
-        fn_pairs = sorted(pair for pair, data in combined.items() if data['label'] == 'fn')
-        if fp_pairs:
-            print("FP:")
-            for pair in fp_pairs:
-                print(f"  {pair}")
-        if fn_pairs:
-            print("FN:")
-            for pair in fn_pairs:
-                print(f"  {pair}")
-        print()
+        print_bad_pairs(combined)
 
 
 def print_discovery_ensemble(args, files):
@@ -469,6 +409,13 @@ def print_discovery_ensemble(args, files):
         print_stats(label, stats, w)
     print()
 
+    if args.bad and sorted_rows:
+        top_label, _ = sorted_rows[0]
+        parts = top_label.rsplit(' ', 1)
+        if len(parts) == 2:
+            combo_pids, rule_name = parts[0].split(','), parts[1]
+            combined = apply_ensemble_labeled([files[p] for p in combo_pids], rule_name)
+            print_bad_pairs(combined)
 
 
 # --- top-level runners ---
@@ -506,40 +453,9 @@ def load_files_from_keys(args):
     return files
 
 
-def run_explicit_3way(args):
+def run_explicit_nway(args):
     files = load_files_from_keys(args)
-    ens_args = types.SimpleNamespace(
-        ensemble=args.ensemble or 'ALL',
-        n_way=3,
-        sort=args.sort,
-        heap_size=args.heap_size,
-        top=args.top,
-    )
-    print_discovery_ensemble(ens_args, files)
-
-
-def run_explicit_5way(args):
-    files = load_files_from_keys(args)
-    ens_args = types.SimpleNamespace(
-        ensemble=args.ensemble or 'ALL',
-        n_way=5,
-        sort=args.sort,
-        heap_size=args.heap_size,
-        top=args.top,
-    )
-    print_discovery_ensemble(ens_args, files)
-
-
-def run_explicit_2way(args):
-    files = load_files_from_keys(args)
-    ens_args = types.SimpleNamespace(
-        ensemble=args.ensemble or 'ALL',
-        n_way=2,
-        sort=args.sort,
-        heap_size=args.heap_size,
-        top=args.top,
-    )
-    print_discovery_ensemble(ens_args, files)
+    print_discovery_ensemble(args, files)
 
 
 def run_discovery(args):
@@ -557,7 +473,6 @@ def run_discovery(args):
     print(f"Found: {len(files)} file(s)\n")
 
     if args.ensemble:
-        args.n_way = 3 if args.three_way else 2
         print_discovery_ensemble(args, files)
     elif Path(args.files[0]).is_dir():
         print_discovery_all_pairs(files, args)
@@ -593,40 +508,49 @@ def main():
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
                         help='max N-way discovery results to retain (default: 100)')
+    parser.add_argument('--bad', action='store_true',
+                        help='show FP and FN pairs for the single table entry; requires --top 1')
     args = parser.parse_args()
+
+    # Resolve n_way from the mutually exclusive -2/-3/-5 flags.
+    n_ways = sum([args.two_way, args.three_way, args.five_way])
+    if n_ways > 1:
+        parser.error('-2, -3, and -5 are mutually exclusive')
+    if n_ways == 1:
+        if args.five_way:
+            args.n_way = 5
+        elif args.three_way:
+            args.n_way = 3
+        else:
+            args.n_way = 2
 
     if args.keys:
         if len(args.files) != 1:
             parser.error('--keys requires exactly one positional argument (a directory)')
         if not Path(args.files[0]).is_dir():
             parser.error(f'--keys: {args.files[0]!r} is not a directory')
-        n_ways = sum([args.two_way, args.three_way, args.five_way])
-        if n_ways > 1:
-            parser.error('-2, -3, and -5 are mutually exclusive')
         if n_ways == 0:
             parser.error('-k requires -2, -3, or -5')
         keys = [k.strip() for k in args.keys.split(',')]
-        if args.two_way:
-            if len(keys) < 2:
-                parser.error(f'-2 requires at least 2 keys, got {len(keys)}')
-            if args.ensemble == 'MAJORITY':
-                parser.error('--ensemble MAJORITY is not valid with -2')
-            run_explicit_2way(args)
-        elif args.three_way:
-            if len(keys) < 3:
-                parser.error(f'-3 requires at least 3 keys, got {len(keys)}')
-            run_explicit_3way(args)
-        else:
-            if len(keys) < 5:
-                parser.error(f'-5 requires at least 5 keys, got {len(keys)}')
-            run_explicit_5way(args)
+        if len(keys) < args.n_way:
+            parser.error(f'-{args.n_way} requires at least {args.n_way} keys, got {len(keys)}')
+        if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
+            parser.error(f'--ensemble MAJORITY is not valid with -{args.n_way}')
+        args.ensemble = args.ensemble or 'ALL'
+        run_explicit_nway(args)
         return
 
-    if args.three_way and not args.ensemble:
-        parser.error('--three-way requires --ensemble')
+    if args.ensemble and n_ways == 0:
+        parser.error('--ensemble requires -2, -3, or -5')
 
-    if args.ensemble == 'MAJORITY' and not args.three_way:
-        parser.error('--ensemble MAJORITY requires --three-way or --keys')
+    if (args.two_way or args.three_way or args.five_way) and not args.ensemble:
+        parser.error('-2/-3/-5 requires --ensemble')
+
+    if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
+        parser.error('--ensemble MAJORITY requires -3 or -5')
+
+    if args.bad and args.top != 1:
+        parser.error('--bad requires --top 1')
 
     sort_lc = args.sort.lower()
     valid_sort = {'score', 'fp', 'fn'}
