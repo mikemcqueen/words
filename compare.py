@@ -2,13 +2,15 @@
 """Compare prompt result files and report statistics.
 
 Usage:
-  compare.py <file>                           — discover all .jsonl files in same directory; ranked scores
-  compare.py <file_a> <file_b>               — compare two files: Fixed/New FP/FN table
-  compare.py -e <file>                        — discover + show pairwise ensemble combinations
-  compare.py -e <file_a> <file_b>            — explicit 2-way ensemble (OR, AND)
-  compare.py -e -3 <file>                     — discover + include 3-way ensemble combinations
-  compare.py -k key1,key2[,...] -2 <dir>     — explicit 2-way ensemble across all key combinations
-  compare.py -k key1,key2,key3[,...] -3 <dir> — explicit 3-way ensemble across all key combinations
+  compare.py <dir>                                   — discover all .jsonl files; pairwise 2-way diff table (all ordered pairs)
+  compare.py <file>                                  — discover all .jsonl files in same directory; anchor-based 2-way diff table
+  compare.py <file_a> <file_b>                      — compare two files: Fixed/New FP/FN table
+  compare.py -e <file>                               — discover + show pairwise ensemble combinations
+  compare.py -e <file_a> <file_b>                   — explicit 2-way ensemble (OR, AND)
+  compare.py -e -3 <file>                            — discover + include 3-way ensemble combinations
+  compare.py -k key1,key2[,...] -2 <dir>            — explicit 2-way ensemble across all key combinations
+  compare.py -k key1,key2,key3[,...] -3 <dir>       — explicit 3-way ensemble across all key combinations
+  compare.py -k key1,...,key5[,...] -5 <dir>        — explicit 5-way ensemble across all key combinations
 """
 
 import argparse
@@ -19,14 +21,14 @@ import sys
 import types
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-from itertools import combinations, islice
+from itertools import combinations, islice, permutations
 from pathlib import Path
 
 import numpy as np
 
 from common import (load_expected_pairs, load_eval_results,
                     parse_result_filename, discover_files_all,
-                    compute_stats, print_stats, print_discovery_ranked)
+                    compute_stats, print_stats, resolve_key)
 from score import label_eval_results
 
 
@@ -70,9 +72,15 @@ def compute_pair_diff(results_1, results_2):
         if was_correct and is_fn:    new_fn += 1
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
-    score = 2 * (fixed_fn - new_fn) + (fixed_fp - new_fp)
+    score = 2 * fixed_fn + fixed_fp - new_fp
+    or_correct = s1['correct'] + fixed_fn - new_fp
+    or_fp      = s1['fp'] + new_fp
+    or_fn      = s1['fn'] - fixed_fn
+    or_total   = s1['total']
+    or_pct     = 100.0 * or_correct / or_total if or_total else 0.0
     return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
-                score=score, s1=s1, s2=s2)
+                score=score, s1=s1, s2=s2,
+                or_pct=or_pct, or_fp=or_fp, or_fn=or_fn)
 
 
 def apply_ensemble(results_a, results_b, rule):
@@ -189,41 +197,6 @@ def _batch_stats_from_mat(mat, exp_vec, n):
 
 
 
-def resolve_key(directory, key):
-    """Given a directory and a discovery key like 'crosswd2.p81.qwen35', find the matching .jsonl file.
-    Splits key into (prompt_file, pid, tag) and globs for a unique match."""
-    parts = key.split('.', 2)
-    if len(parts) == 3:
-        prompt_file, pid, tag = parts
-    elif len(parts) == 2:
-        prompt_file, pid, tag = parts[0], parts[1], ''
-    else:
-        print(f"Error: invalid key {key!r} (expected prompt_file.pid[.tag])", file=sys.stderr)
-        sys.exit(1)
-
-    d = Path(directory)
-    pattern = f'*_{prompt_file}_{pid}_*.{tag}.jsonl' if tag else f'*_{prompt_file}_{pid}_*.jsonl'
-    candidates = []
-    for f in sorted(d.glob(pattern)):
-        parsed = parse_result_filename(f.name)
-        if parsed is None:
-            continue
-        _, pf, ppid, _, ptag = parsed
-        if pf == prompt_file and ppid == pid and (ptag or '') == tag:
-            candidates.append(f)
-
-    if len(candidates) == 0:
-        print(f"Error: no file found for key {key!r} in {directory}", file=sys.stderr)
-        sys.exit(1)
-    if len(candidates) > 1:
-        print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
-        for c in candidates:
-            print(f"  {c.name}", file=sys.stderr)
-        sys.exit(1)
-    return candidates[0]
-
-
-
 def discover_files(seed_path, seed_pid):
     """Return {pid: (data, results)} for all p1, p2, ... files found sequentially."""
     path = Path(seed_path)
@@ -246,27 +219,30 @@ def discover_files(seed_path, seed_pid):
 
 # --- default (diff) output ---
 
-def print_default_table(seed_pid, rows):
-    """Print diff table. rows is a list of (complement_pid, diff_dict)."""
-    wa = max(len(seed_pid), len('anchor'))
-    wc = max((len(pid) for pid, _ in rows), default=len('complement'))
+def print_default_table(rows):
+    """Print diff table. rows is a list of (anchor_pid, complement_pid, diff_dict)."""
+    wa = max((len(a) for a, _, _ in rows), default=len('anchor'))
+    wa = max(wa, len('anchor'))
+    wc = max((len(c) for _, c, _ in rows), default=len('complement'))
     wc = max(wc, len('complement'))
     print(f"{'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
           f"{'complement':<{wc}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s} | "
-          f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s}")
-    print(f"{'─'*(wa + wc + 68)}")
-    for pid, d in rows:
+          f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s} | "
+          f"{'Or%':>6s} {'OrFP':>4s} {'OrFN':>4s}")
+    print(f"{'─'*(wa + wc + 84)}")
+    for anchor, complement, d in rows:
         s1, s2 = d['s1'], d['s2']
-        print(f"{seed_pid:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
-              f"{pid:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
+        print(f"{anchor:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
+              f"{complement:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
               f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
-              f"{d['new_fp']:>5d} {d['new_fn']:>5d}")
+              f"{d['new_fp']:>5d} {d['new_fn']:>5d} | "
+              f"{d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
     print()
 
 
 def print_explicit_default(pid_a, results_a, pid_b, results_b):
     d = compute_pair_diff(results_a, results_b)
-    print_default_table(pid_a, [(pid_b, d)])
+    print_default_table([(pid_a, pid_b, d)])
 
 
 SORT_DEFAULT_KEYS = {
@@ -284,21 +260,45 @@ SORT_ENSEMBLE_KEYS = {
 }
 
 
-def print_discovery_default(seed_pid, results0, files, pids, sort='score'):
-    rows = []
-    for pid in pids:
-        if pid == seed_pid:
-            continue
-        _, results_other = files[pid]
-        d = compute_pair_diff(results0, results_other)
-        rows.append((pid, d))
+def _key_from_path(path):
+    """Parse a discovery key from a result filename. Exits on failure."""
+    parsed = parse_result_filename(Path(path).name)
+    if parsed is None:
+        print(f"Error: could not parse key from filename: {Path(path).name}", file=sys.stderr)
+        sys.exit(1)
+    _, prompt_file, prompt_id, _, tag = parsed
+    return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
+
+
+def _sort_diff_rows(rows, sort):
+    """Sort list of (anchor, complement, diff) by the given sort field. Returns sorted list."""
     sort_key, sort_rev = SORT_DEFAULT_KEYS[sort.lower()]
     if sort_key == 'score':
-        rows.sort(key=lambda x: x[1]['score'], reverse=True)
+        return sorted(rows, key=lambda x: (x[2]['or_pct'], -x[2]['or_fp'], -x[2]['or_fn']), reverse=True)
     else:
-        rows.sort(key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['score']))
+        return sorted(rows, key=lambda x: (x[2][sort_key] * (-1 if sort_rev else 1), -x[2]['or_pct']))
 
-    print_default_table(seed_pid, rows)
+
+def print_discovery_default(seed_key, files, args):
+    """Print anchor-based diff table: seed_key vs all other discovered files."""
+    rows = []
+    for key, results_other in files.items():
+        if key == seed_key:
+            continue
+        d = compute_pair_diff(files[seed_key], results_other)
+        rows.append((seed_key, key, d))
+    sorted_rows = _sort_diff_rows(rows, args.sort)
+    print_default_table(sorted_rows[:args.top] if args.top else sorted_rows)
+
+
+def print_discovery_all_pairs(files, args):
+    """Print diff table for all ordered pairs of discovered files."""
+    rows = []
+    for a, b in permutations(files, 2):
+        d = compute_pair_diff(files[a], files[b])
+        rows.append((a, b, d))
+    sorted_rows = _sort_diff_rows(rows, args.sort)
+    print_default_table(sorted_rows[:args.top] if args.top else sorted_rows)
 
 
 # --- ensemble output ---
@@ -405,8 +405,9 @@ def print_discovery_ensemble(args, files):
     exp_vec, yes_vecs, n_pairs = _build_vecs(files)
     rows = {}
 
-    for pid in pids:
-        rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
+    if args.ensemble == 'ALL':
+        for pid in pids:
+            rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
 
     for pid_a, pid_b in combinations(pids, 2):
         ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
@@ -419,52 +420,52 @@ def print_discovery_ensemble(args, files):
     if args.n_way >= 3:
         M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
         pid_list = list(pids)
+        r = args.n_way
+        majority_threshold = (r + 1) // 2
         sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
-        top_k = args.top
+        top_k = args.heap_size
         heap = []   # min-heap of (heap_val, counter, label, stats)
         counter = 0
-        for batch in _combo_batches(len(pid_list), 3, 10_000):
+        for batch in _combo_batches(len(pid_list), r, 10_000):
             idx = np.array(batch, dtype=np.intp)
-            ma = M[idx[:, 0]]
-            mb = M[idx[:, 1]]
-            mc = M[idx[:, 2]]
+            sub = M[idx]  # (batch_size, r, n_pairs)
             batch_results = []
             if args.ensemble in ('ALL', 'OR'):
-                or_mat = ma | mb | mc
+                or_mat = sub.any(axis=1)
                 batch_results.append((" OR", _batch_stats_from_mat(or_mat, exp_vec, n_pairs)))
                 del or_mat
             if args.ensemble in ('ALL', 'AND'):
-                and_mat = ma & mb & mc
+                and_mat = sub.all(axis=1)
                 batch_results.append((" AND", _batch_stats_from_mat(and_mat, exp_vec, n_pairs)))
                 del and_mat
             if args.ensemble in ('ALL', 'MAJORITY'):
-                maj_mat = (ma.view(np.uint8) + mb.view(np.uint8) + mc.view(np.uint8)) >= 2
+                maj_mat = sub.astype(np.uint8).sum(axis=1) >= majority_threshold
                 batch_results.append((" MAJORITY", _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)))
                 del maj_mat
-            del ma, mb, mc
-            for i, (ia, ib, ic) in enumerate(batch):
-                triple_key = f"{pid_list[ia]},{pid_list[ib]},{pid_list[ic]}"
+            del sub
+            for i, combo in enumerate(batch):
+                combo_key = ','.join(pid_list[j] for j in combo)
                 for suffix, stats_arr in batch_results:
                     s = stats_arr[i]
                     hv = s[sort_key] if sort_rev else -s[sort_key]
                     if len(heap) < top_k:
-                        heapq.heappush(heap, (hv, counter, triple_key + suffix, s))
+                        heapq.heappush(heap, (hv, counter, combo_key + suffix, s))
                     elif hv > heap[0][0]:
-                        heapq.heapreplace(heap, (hv, counter, triple_key + suffix, s))
+                        heapq.heapreplace(heap, (hv, counter, combo_key + suffix, s))
                     counter += 1
         for _, _, label, stats in heap:
             rows[label] = stats
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
-        sorted_rows = sorted(rows.items(), key=lambda x: x[1]['correct'], reverse=True)
+        sorted_rows = sorted(rows.items(), key=lambda x: (x[1]['correct'], -x[1]['fp'], -x[1]['fn']), reverse=True)
     else:
         sorted_rows = sorted(rows.items(), key=lambda x: (x[1][sort_key] * (-1 if sort_rev else 1), -x[1]['correct']))
     w = max((len(label) for label, _ in sorted_rows), default=5)
     w = max(w, len('label'))
-    print(f"{'label':<{w}s}  {'correct':>9s}  {'FP':>5s}  {'FN':>5s}")
+    print(f"{'label':<{w}s}  {'correct':>16s}  {'FP':>3s}  {'FN':>3s}")
     print(f"{'─'*(w + 28)}")
-    for label, stats in sorted_rows:
+    for label, stats in sorted_rows[:args.top]:
         print_stats(label, stats, w)
     print()
 
@@ -511,6 +512,19 @@ def run_explicit_3way(args):
         ensemble=args.ensemble or 'ALL',
         n_way=3,
         sort=args.sort,
+        heap_size=args.heap_size,
+        top=args.top,
+    )
+    print_discovery_ensemble(ens_args, files)
+
+
+def run_explicit_5way(args):
+    files = load_files_from_keys(args)
+    ens_args = types.SimpleNamespace(
+        ensemble=args.ensemble or 'ALL',
+        n_way=5,
+        sort=args.sort,
+        heap_size=args.heap_size,
         top=args.top,
     )
     print_discovery_ensemble(ens_args, files)
@@ -522,6 +536,7 @@ def run_explicit_2way(args):
         ensemble=args.ensemble or 'ALL',
         n_way=2,
         sort=args.sort,
+        heap_size=args.heap_size,
         top=args.top,
     )
     print_discovery_ensemble(ens_args, files)
@@ -544,8 +559,11 @@ def run_discovery(args):
     if args.ensemble:
         args.n_way = 3 if args.three_way else 2
         print_discovery_ensemble(args, files)
+    elif Path(args.files[0]).is_dir():
+        print_discovery_all_pairs(files, args)
     else:
-        print_discovery_ranked(files, args.sort)
+        seed_key = _key_from_path(args.files[0])
+        print_discovery_default(seed_key, files, args)
 
 
 def main():
@@ -564,13 +582,17 @@ def main():
                         help='include 3-way combinations in discovery ensemble mode')
     parser.add_argument('-2', '--two-way', action='store_true',
                         help='2-way ensemble across all pairwise key combinations (use with -k)')
+    parser.add_argument('-5', '--five-way', action='store_true',
+                        help='5-way ensemble across all quintuple key combinations (use with -k, requires >= 5 keys)')
     parser.add_argument('-k', '--keys', metavar='KEYS',
                         help='comma-separated discovery keys for explicit ensemble; '
                              'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
                         help='sort field: score (default), FP, FN')
-    parser.add_argument('--top', type=int, default=1000, metavar='N',
-                        help='max 3-way results to retain in discovery ensemble mode (default: 1000)')
+    parser.add_argument('--top', type=int, default=50, metavar='K',
+                        help='max rows to display in output tables (default: 50)')
+    parser.add_argument('--heap-size', type=int, default=100, metavar='N',
+                        help='max N-way discovery results to retain (default: 100)')
     args = parser.parse_args()
 
     if args.keys:
@@ -578,10 +600,11 @@ def main():
             parser.error('--keys requires exactly one positional argument (a directory)')
         if not Path(args.files[0]).is_dir():
             parser.error(f'--keys: {args.files[0]!r} is not a directory')
-        if args.two_way and args.three_way:
-            parser.error('-2 and -3 are mutually exclusive')
-        if not args.two_way and not args.three_way:
-            parser.error('-k requires -2 or -3')
+        n_ways = sum([args.two_way, args.three_way, args.five_way])
+        if n_ways > 1:
+            parser.error('-2, -3, and -5 are mutually exclusive')
+        if n_ways == 0:
+            parser.error('-k requires -2, -3, or -5')
         keys = [k.strip() for k in args.keys.split(',')]
         if args.two_way:
             if len(keys) < 2:
@@ -589,10 +612,14 @@ def main():
             if args.ensemble == 'MAJORITY':
                 parser.error('--ensemble MAJORITY is not valid with -2')
             run_explicit_2way(args)
-        else:
+        elif args.three_way:
             if len(keys) < 3:
                 parser.error(f'-3 requires at least 3 keys, got {len(keys)}')
             run_explicit_3way(args)
+        else:
+            if len(keys) < 5:
+                parser.error(f'-5 requires at least 5 keys, got {len(keys)}')
+            run_explicit_5way(args)
         return
 
     if args.three_way and not args.ensemble:

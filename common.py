@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List
@@ -198,7 +199,7 @@ def compute_stats(eval_results):
 
 def print_stats(label, stats, w=24):
     print(f"{label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
-          f"FP={stats['fp']:3d}  FN={stats['fn']:3d}")
+          f"{stats['fp']:3d}  {stats['fn']:3d}")
 
 
 def print_discovery_ranked(files_dict, sort='score'):
@@ -220,6 +221,40 @@ def print_discovery_ranked(files_dict, sort='score'):
     for key, s in rows:
         print(f"{key:<{w}s}  {s['pct']:6.1f}%  {s['correct']:4d}/{s['total']:<4d}  {s['fp']:4d}  {s['fn']:4d}")
     print()
+
+
+def resolve_key(directory, key):
+    """Given a directory and a discovery key like 'crosswd2.p81.qwen35', find the matching .jsonl file.
+    Splits key into (prompt_file, pid, tag) and globs for a unique match."""
+    parts = key.split('.', 2)
+    if len(parts) == 3:
+        prompt_file, pid, tag = parts
+    elif len(parts) == 2:
+        prompt_file, pid, tag = parts[0], parts[1], ''
+    else:
+        print(f"Error: invalid key {key!r} (expected prompt_file.pid[.tag])", file=sys.stderr)
+        sys.exit(1)
+
+    d = Path(directory)
+    pattern = f'*_{prompt_file}_{pid}_*.{tag}.jsonl' if tag else f'*_{prompt_file}_{pid}_*.jsonl'
+    candidates = []
+    for f in sorted(d.glob(pattern)):
+        parsed = parse_result_filename(f.name)
+        if parsed is None:
+            continue
+        _, pf, ppid, _, ptag = parsed
+        if pf == prompt_file and ppid == pid and (ptag or '') == tag:
+            candidates.append(f)
+
+    if len(candidates) == 0:
+        print(f"Error: no file found for key {key!r} in {directory}", file=sys.stderr)
+        sys.exit(1)
+    if len(candidates) > 1:
+        print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
+        for c in candidates:
+            print(f"  {c.name}", file=sys.stderr)
+        sys.exit(1)
+    return candidates[0]
 
 
 def load_prompts_from_file(filepath) -> List[Dict]:

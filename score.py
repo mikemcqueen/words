@@ -18,7 +18,7 @@ from pathlib import Path
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
-                    discover_files_all, compute_stats, print_discovery_ranked)
+                    discover_files_all, compute_stats, print_discovery_ranked, resolve_key)
 
 ScoreResult = namedtuple("ScoreResult", ["score", "correct", "total", "fp", "fn"])
 
@@ -112,6 +112,8 @@ Examples:
                              help="limit display to top K results (directory mode only)")
     limit_group.add_argument("--min-score", type=float, default=None, metavar="M.N",
                              help="limit display to results with score >= M.N (directory mode only)")
+    limit_group.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
+                             help="comma-separated discovery keys to score (directory mode only)")
     parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
                         help="print displayed keys as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -130,6 +132,8 @@ Examples:
             parser.error("--top-k requires a directory input")
         if args.min_score is not None:
             parser.error("--min-score requires a directory input")
+        if args.keys is not None:
+            parser.error("--keys requires a directory input")
         if args.print_keys:
             parser.error("--print-keys requires a directory input")
     if args.bad:
@@ -140,11 +144,19 @@ Examples:
 
 
 def print_discovery_table(args):
-    files = discover_files_all(args.input)
-    if not files:
-        print("No .jsonl files found.", file=sys.stderr)
-        sys.exit(1)
-    expected = load_expected_pairs(args.pairs)
+    if args.keys is not None:
+        keys = [k.strip() for k in args.keys.split(',')]
+        expected = load_expected_pairs(args.pairs)
+        files = {}
+        for key in keys:
+            path = resolve_key(args.input, key)
+            files[key] = load_eval_results(path)
+    else:
+        files = discover_files_all(args.input)
+        if not files:
+            print("No .jsonl files found.", file=sys.stderr)
+            sys.exit(1)
+        expected = load_expected_pairs(args.pairs)
     for eval_results in files.values():
         label_eval_results(eval_results, expected, args.method)
 
