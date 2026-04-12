@@ -202,20 +202,48 @@ def print_stats(label, stats, w=24):
           f"{stats['fp']:3d}  {stats['fn']:3d}")
 
 
-def print_bad_pairs(labeled_results: dict, header: str = "") -> None:
-    """Print FP and FN pair lists from a labeled results dict."""
+def _fmt_logprobs(lp) -> str:
+    """Format a logprobs dict compactly, e.g. fwd=[{NO: 0.689}, {YES: 0.310}] rvs=[...]"""
+    def fmt_val(v):
+        return f"{v*100.0:.1f}%" if isinstance(v, float) else str(v)
+    def fmt_dict(d):
+        return ", ".join(f"{k:>3}: {fmt_val(v)}" for k, v in d.items())
+    def fmt_list(lst):
+        return "[" + ", ".join(fmt_dict(x) if isinstance(x, dict) else str(x) for x in lst) + "]"
+    parts = []
+    for k, v in lp.items():
+        parts.append(f"{k}={fmt_list(v)}" if isinstance(v, list) else f"{k}={fmt_val(v)}")
+    return " ".join(parts)
+
+
+def print_bad_pairs(labeled_results: dict, header: str = "", sources=None) -> None:
+    """Print FP and FN pair lists from a labeled results dict.
+
+    sources: optional list of (label, results_dict) — when provided, prints the
+    logprobs dict for each contributing file below each pair, indented 4 spaces.
+    """
     fp_pairs = sorted(p for p, d in labeled_results.items() if d.get('label') == 'fp')
     fn_pairs = sorted(p for p, d in labeled_results.items() if d.get('label') == 'fn')
+    w = max((len(lbl) for lbl, _ in sources), default=0) if sources else 0
     if header:
         print(header)
     if fp_pairs:
-        print("FP:")
+        print("FP:\n---")
         for pair in fp_pairs:
-            print(f"  {pair}")
+            print(f"{pair}")
+            if sources:
+                for lbl, results in sources:
+                    lp = results.get(pair, {}).get('logprobs')
+                    print(f"  {lbl:<{w}} {_fmt_logprobs(lp) if lp is not None else None}")
     if fn_pairs:
-        print("FN:")
+        print("FN:\n---")
         for pair in fn_pairs:
-            print(f"  {pair}")
+            print(f"{pair}")
+            if sources:
+                for lbl, results in sources:
+                    lp = results.get(pair, {}).get('logprobs')
+                    if lp is not None:
+                        print(f"  {lbl:<{w}} {_fmt_logprobs(lp) if lp is not None else None}")
     if fp_pairs or fn_pairs:
         print()
 

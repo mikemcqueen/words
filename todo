@@ -1,17 +1,12 @@
-* make eval_prompt do the logprobs thing. share code.
-  * save the top 2 logprobs (for each pair direction?)
-    * does this mean we need to always test both pair directions ? (to collect logprobs!) maybe!
-    * does it mean we test pairs with a two-word component, three ways? maybe!
-    * display them?
-    * save them as "logprobs" : { "normal"/"flipped" : { "YES": 49.9, "NO": 50.0 } }
-        * other orders may exist e.g. three-way (interleaved?)
-        * success_order: None | "normal" | "flipped"
-* make it send the sync anchor prompt as well.
-* compare 35B-A3B results to 27B results.
-* if comparable, try more -np + -ub on mac, maybe kv quant as well.
-* 
+* really need to take the time to drill into low probability YES/NOs and see what I can do with that.
+* --print-keys/--top-k  added to compare.py.
+* --bad added to compare.py , maybe only valid for --top-k 1
+
+less important:
+
+* test pairs with a two-word component, three ways?
+  * multiple three-ways exist (interleave, flip_interleave, etc., see notebook)
   
-* should probably incrementally save retry data as well.
 
 --old--
 

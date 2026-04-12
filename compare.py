@@ -300,7 +300,7 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
     print()
 
     if combined is not None:
-        print_bad_pairs(combined)
+        print_bad_pairs(combined, sources=[(pid_a, results_a), (pid_b, results_b)])
 
 
 def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
@@ -337,7 +337,7 @@ def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
     print()
 
     if combined is not None:
-        print_bad_pairs(combined)
+        print_bad_pairs(combined, sources=list(zip(keys, results_list)))
 
 
 def print_discovery_ensemble(args, files):
@@ -415,7 +415,7 @@ def print_discovery_ensemble(args, files):
         if len(parts) == 2:
             combo_pids, rule_name = parts[0].split(','), parts[1]
             combined = apply_ensemble_labeled([files[p] for p in combo_pids], rule_name)
-            print_bad_pairs(combined)
+            print_bad_pairs(combined, sources=[(p, files[p]) for p in combo_pids])
 
 
 # --- top-level runners ---
