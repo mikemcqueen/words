@@ -28,7 +28,7 @@ import numpy as np
 from common import (load_expected_pairs, load_eval_results,
                     parse_result_filename, discover_files_all,
                     compute_stats, print_stats, resolve_key, print_bad_pairs)
-from score import label_eval_results
+from score import label_eval_results, resolve_all_pair_labels
 
 
 def parse_result_file(path):
@@ -52,56 +52,108 @@ def parse_result_file(path):
 
 
 def compute_pair_diff(results_1, results_2):
-    """Compute Fixed/New FP/FN counts and score comparing results_1 (anchor) to results_2."""
+    """Compute Fixed/New FP/FN counts and score comparing results_1 (anchor) to OR-ensemble of both.
+
+    OR is applied per-direction across both files: a pair is 'correct' under OR if any direction
+    in either file is correct. Directions are derived from each pair's logprobs keys.
+    """
     common = set(results_1) & set(results_2)
     fixed_fp = fixed_fn = new_fp = new_fn = 0
     for pair in common:
-        r1, r2 = results_1[pair], results_2[pair]
-        if 'label' not in r1 or 'label' not in r2:
+        d1, d2 = results_1[pair], results_2[pair]
+        if 'label' not in d1 or 'result' not in d1 or 'result' not in d2:
             continue
-        was_fp      = r1['label'] == 'fp'
-        was_fn      = r1['label'] == 'fn'
-        was_correct = r1['label'] == 'correct'
-        is_fp       = r2['label'] == 'fp'
-        is_fn       = r2['label'] == 'fn'
-        if was_fp and not is_fp:     fixed_fp += 1
-        if was_fn and not is_fn:     fixed_fn += 1
-        if was_correct and is_fp:    new_fp += 1
-        if was_correct and is_fn:    new_fn += 1
+        r1, r2 = d1['result'], d2['result']
+        dirs = [d for d in r1['logprobs'] if d in r2]
+        if not dirs:
+            continue
+
+        # Derive expected from the first direction's label+token in r1
+        first = r1[dirs[0]]
+        if first.label == 'correct':
+            expected = first.token
+        elif first.label == 'fp':
+            expected = 'NO'
+        else:
+            expected = 'YES'
+
+        # OR ensemble: correct if any direction in either file is correct
+        or_correct = any(r1[d].label == 'correct' or r2[d].label == 'correct' for d in dirs)
+        if or_correct:
+            or_label = 'correct'
+        elif expected == 'NO':
+            or_label = 'fp'   # OR said YES (both files wrong on a NO pair)
+        else:
+            or_label = 'fn'   # OR said NO (both files wrong on a YES pair)
+
+        old_label = d1['label']
+        if old_label == 'fp'      and or_label != 'fp':   fixed_fp += 1
+        if old_label == 'fn'      and or_label != 'fn':   fixed_fn += 1
+        if old_label == 'correct' and or_label == 'fp':   new_fp += 1
+        if old_label == 'correct' and or_label == 'fn':   new_fn += 1
+
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
     score = 2 * fixed_fn + fixed_fp - new_fp
-    or_correct = s1['correct'] + fixed_fn - new_fp
+    or_correct_count = s1['correct'] + fixed_fn - new_fp
     or_fp      = s1['fp'] + new_fp
     or_fn      = s1['fn'] - fixed_fn
     or_total   = s1['total']
-    or_pct     = 100.0 * or_correct / or_total if or_total else 0.0
+    or_pct     = 100.0 * or_correct_count / or_total if or_total else 0.0
     return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
                 score=score, s1=s1, s2=s2,
                 or_pct=or_pct, or_fp=or_fp, or_fn=or_fn)
 
 
+def _expected(data) -> str | None:
+    """Derive the expected YES/NO value from a labeled result entry."""
+    result = data.get('result')
+    if result is None:
+        return None
+    first_dir = next(iter(result['logprobs']))
+    tl = result[first_dir]
+    if tl.label == 'fp':
+        return 'NO'
+    elif tl.label == 'fn':
+        return 'YES'
+    else:  # correct
+        return tl.token
+
+
 def apply_ensemble_labeled(results_list, rule_name):
-    """Apply OR/AND/MAJORITY across N labeled result dicts. Returns combined labeled dict."""
+    """Apply OR/AND/MAJORITY per direction across N files. Returns combined labeled dict.
+    Final pair label uses any_correct semantics across directions."""
     n = len(results_list)
     common = set.intersection(*(set(r) for r in results_list))
     majority_threshold = (n + 1) // 2
     combined = {}
     for pair in common:
         datas = [r[pair] for r in results_list]
-        if any('label' not in d for d in datas):
+        if any('result' not in d for d in datas):
             continue
-        yes_count = sum(1 for d in datas if d['actual'] == 'YES')
-        if rule_name == 'OR':
-            actual = 'YES' if yes_count > 0 else 'NO'
-        elif rule_name == 'AND':
-            actual = 'YES' if yes_count == n else 'NO'
-        else:  # MAJORITY
-            actual = 'YES' if yes_count >= majority_threshold else 'NO'
-        first_label = datas[0]['label']
-        expected = datas[0]['actual'] if first_label == 'correct' else ('NO' if first_label == 'fp' else 'YES')
-        label = 'correct' if actual == expected else ('fp' if actual == 'YES' else 'fn')
-        combined[pair] = {'actual': actual, 'label': label}
+        results = [d['result'] for d in datas]
+        dirs = list(results[0]['logprobs'].keys())
+        expected = _expected(datas[0])
+        if expected is None:
+            continue
+
+        # Apply ensemble rule per direction; pair is correct if any direction matches expected
+        pair_correct = False
+        for dir_ in dirs:
+            tokens = [r[dir_].token for r in results]
+            yes_count = sum(1 for t in tokens if t == 'YES')
+            if rule_name == 'OR':
+                combined_token = 'YES' if yes_count > 0 else 'NO'
+            elif rule_name == 'AND':
+                combined_token = 'YES' if yes_count == n else 'NO'
+            else:  # MAJORITY
+                combined_token = 'YES' if yes_count >= majority_threshold else 'NO'
+            if combined_token == expected:
+                pair_correct = True
+
+        # fallback: expected=NO → all dirs said YES (fp); expected=YES → all dirs said NO (fn)
+        label = 'correct' if pair_correct else ('fp' if expected == 'NO' else 'fn')
+        combined[pair] = {'label': label}
     return combined
 
 
@@ -110,33 +162,61 @@ ENSEMBLE_RULES_3 = ["OR", "AND", "MAJORITY"]
 
 
 def _build_vecs(files_dict):
-    """Return (exp_vec, yes_vecs, n_pairs) using common labeled pairs.
-    exp_vec and yes_vecs values are numpy bool arrays."""
+    """Return (exp_vec, yes_vecs, dirs, n_pairs).
+    yes_vecs: {key: {dir: bool_array_over_common_pairs}}
+    Directions derived from the first labeled pair's result['logprobs'] keys."""
     all_keys = list(files_dict.keys())
     pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
     n = len(common)
     first_results = files_dict[all_keys[0]]
-    exp_vec = np.array(
-        [first_results[p]['label'] == 'fn' or
-         (first_results[p]['label'] == 'correct' and first_results[p].get('actual') == 'YES')
-         for p in common], dtype=np.bool_)
+    first_pair = next(p for p in common if 'result' in first_results[p])
+    dirs = list(first_results[first_pair]['result']['logprobs'].keys())
+    exp_vec = np.array([_expected(first_results[p]) == 'YES' for p in common], dtype=np.bool_)
     yes_vecs = {
-        k: np.array([files_dict[k][p].get('actual') == 'YES' for p in common], dtype=np.bool_)
+        k: {
+            d: np.array(
+                [files_dict[k][p]['result'][d].token == 'YES'
+                 if 'result' in files_dict[k][p] else False
+                 for p in common], dtype=np.bool_)
+            for d in dirs
+        }
         for k in all_keys
     }
-    return exp_vec, yes_vecs, n
+    return exp_vec, yes_vecs, dirs, n
 
 
-def _stats_from_vec(yes_vec, exp_vec, n):
-    """Compute stats dict from boolean vectors."""
-    tp = int((yes_vec & exp_vec).sum())
-    tn = int((~yes_vec & ~exp_vec).sum())
-    fp = int((yes_vec & ~exp_vec).sum())
-    fn = int((~yes_vec & exp_vec).sum())
-    correct = tp + tn
+def _resolve_labels_np(combined_per_dir, exp_vec):
+    """Vectorized equivalent of resolve_pair_label() in score.py.
+
+    Per-direction label logic:
+      fp      = cv & ~exp  (said YES on NO-expected pair)
+      correct = (cv & exp) | (~cv & ~exp)
+      fn      = ~cv & exp  (said NO on YES-expected pair)
+    Priority across directions: fp > correct > fn.
+
+    Works for both single and batch cases (stacks along axis=0):
+      _stats_from_dirs:       combined_per_dir elements shape (n_pairs,)
+      _batch_stats_from_dirs: combined_per_dir elements shape (batch_size, n_pairs)
+    """
+    dir_fp      = np.stack([cv & ~exp_vec for cv in combined_per_dir], axis=0)
+    dir_correct = np.stack([(cv & exp_vec) | (~cv & ~exp_vec) for cv in combined_per_dir], axis=0)
+    pair_fp      = np.any(dir_fp,      axis=0)
+    pair_correct = np.any(dir_correct, axis=0) & ~pair_fp  # fp takes priority
+    pair_fn      = ~pair_fp & ~pair_correct
+    return pair_fp, pair_correct, pair_fn
+
+
+def _stats_from_dirs(combined_per_dir, exp_vec, n):
+    """Compute stats from per-direction combined bool arrays.
+    combined_per_dir: list of bool arrays (one per direction), each shape (n_pairs,).
+    Uses resolve_pair_label semantics (see score.py)."""
+    pair_fp, pair_correct, pair_fn = _resolve_labels_np(combined_per_dir, exp_vec)
+    correct = int(pair_correct.sum())
+    fp      = int(pair_fp.sum())
+    fn      = int(pair_fn.sum())
     pct = 100 * correct / n if n else 0.0
-    return dict(correct=correct, total=n, pct=pct, tp=tp, tn=tn, fp=fp, fn=fn)
+    return dict(correct=correct, total=n, pct=pct, fp=fp, fn=fn)
 
 
 def _combo_batches(n, r, batch_size):
@@ -148,17 +228,18 @@ def _combo_batches(n, r, batch_size):
             break
         yield batch
 
-def _batch_stats_from_mat(mat, exp_vec, n):
-    """Compute stats for each row of mat (bool, shape batch x n_pairs).
+
+def _batch_stats_from_dirs(combined_per_dir, exp_vec, n):
+    """Compute stats for a batch of combos using resolve_pair_label semantics (see score.py).
+    combined_per_dir: list of (batch_size, n_pairs) bool arrays, one per direction.
     Returns list of stats dicts."""
-    tp = ( mat &  exp_vec).sum(axis=1)
-    tn = (~mat & ~exp_vec).sum(axis=1)
-    fp = ( mat & ~exp_vec).sum(axis=1)
-    fn = (~mat &  exp_vec).sum(axis=1)
-    correct = tp + tn
+    pair_fp, pair_correct, pair_fn = _resolve_labels_np(combined_per_dir, exp_vec)
+    correct = pair_correct.sum(axis=1)
+    fp      = pair_fp.sum(axis=1)
+    fn      = pair_fn.sum(axis=1)
     pct = 100.0 * correct / n if n else np.zeros(len(correct), dtype=np.float64)
     return [dict(correct=int(correct[i]), total=n, pct=float(pct[i]),
-                 tp=int(tp[i]), tn=int(tn[i]), fp=int(fp[i]), fn=int(fn[i]))
+                 fp=int(fp[i]), fn=int(fn[i]))
             for i in range(len(correct))]
 
 
@@ -243,7 +324,7 @@ def _sort_diff_rows(rows, sort):
         return sorted(rows, key=lambda x: (x[2][sort_key] * (-1 if sort_rev else 1), -x[2]['or_pct']))
 
 
-def print_discovery_default(seed_key, files, args):
+def print_discovery_anchored(seed_key, files, args):
     """Print anchor-based diff table: seed_key vs all other discovered files."""
     rows = []
     for key, results_other in files.items():
@@ -342,23 +423,24 @@ def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
 
 def print_discovery_ensemble(args, files):
     pids = list(files.keys())
-    exp_vec, yes_vecs, n_pairs = _build_vecs(files)
+    exp_vec, yes_vecs, dirs, n_pairs = _build_vecs(files)
     rows = {}
 
     if args.ensemble == 'ALL':
         for pid in pids:
-            rows[pid] = _stats_from_vec(yes_vecs[pid], exp_vec, n_pairs)
+            rows[pid] = _stats_from_dirs([yes_vecs[pid][d] for d in dirs], exp_vec, n_pairs)
 
     for pid_a, pid_b in combinations(pids, 2):
         ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
         pair_key = f"{pid_a},{pid_b}"
         if args.ensemble in ('ALL', 'OR'):
-            rows[f"{pair_key} OR"]  = _stats_from_vec(ya | yb,  exp_vec, n_pairs)
+            rows[f"{pair_key} OR"]  = _stats_from_dirs([ya[d] | yb[d] for d in dirs], exp_vec, n_pairs)
         if args.ensemble in ('ALL', 'AND'):
-            rows[f"{pair_key} AND"] = _stats_from_vec(ya & yb,  exp_vec, n_pairs)
+            rows[f"{pair_key} AND"] = _stats_from_dirs([ya[d] & yb[d] for d in dirs], exp_vec, n_pairs)
 
     if args.n_way >= 3:
-        M = np.stack([yes_vecs[p] for p in pids])  # (n_files, n_pairs)
+        # M_per_dir: {dir: (n_files, n_pairs)} — stacked per-direction bool matrices
+        M_per_dir = {d: np.stack([yes_vecs[p][d] for p in pids]) for d in dirs}
         pid_list = list(pids)
         r = args.n_way
         majority_threshold = (r + 1) // 2
@@ -368,21 +450,19 @@ def print_discovery_ensemble(args, files):
         counter = 0
         for batch in _combo_batches(len(pid_list), r, 10_000):
             idx = np.array(batch, dtype=np.intp)
-            sub = M[idx]  # (batch_size, r, n_pairs)
+            # sub_per_dir: list of (batch_size, r, n_pairs), one per direction
+            sub_per_dir = [M_per_dir[d][idx] for d in dirs]
             batch_results = []
             if args.ensemble in ('ALL', 'OR'):
-                or_mat = sub.any(axis=1)
-                batch_results.append((" OR", _batch_stats_from_mat(or_mat, exp_vec, n_pairs)))
-                del or_mat
+                or_per_dir = [s.any(axis=1) for s in sub_per_dir]
+                batch_results.append((" OR", _batch_stats_from_dirs(or_per_dir, exp_vec, n_pairs)))
             if args.ensemble in ('ALL', 'AND'):
-                and_mat = sub.all(axis=1)
-                batch_results.append((" AND", _batch_stats_from_mat(and_mat, exp_vec, n_pairs)))
-                del and_mat
+                and_per_dir = [s.all(axis=1) for s in sub_per_dir]
+                batch_results.append((" AND", _batch_stats_from_dirs(and_per_dir, exp_vec, n_pairs)))
             if args.ensemble in ('ALL', 'MAJORITY'):
-                maj_mat = sub.astype(np.uint8).sum(axis=1) >= majority_threshold
-                batch_results.append((" MAJORITY", _batch_stats_from_mat(maj_mat, exp_vec, n_pairs)))
-                del maj_mat
-            del sub
+                maj_per_dir = [s.astype(np.uint8).sum(axis=1) >= majority_threshold for s in sub_per_dir]
+                batch_results.append((" MAJORITY", _batch_stats_from_dirs(maj_per_dir, exp_vec, n_pairs)))
+            del sub_per_dir
             for i, combo in enumerate(batch):
                 combo_key = ','.join(pid_list[j] for j in combo)
                 for suffix, stats_arr in batch_results:
@@ -426,6 +506,8 @@ def run_explicit(args):
     results_b = load_eval_results(args.files[1])
     label_eval_results(results_a, expected, args.method)
     label_eval_results(results_b, expected, args.method)
+    resolve_all_pair_labels(results_a)
+    resolve_all_pair_labels(results_b)
     parsed_a = parse_result_filename(args.files[0])
     parsed_b = parse_result_filename(args.files[1])
     pid_a = parsed_a[2] if parsed_a else Path(args.files[0]).stem
@@ -449,6 +531,7 @@ def load_files_from_keys(args):
         path = resolve_key(directory, key)
         r = load_eval_results(path)
         label_eval_results(r, expected, args.method)
+        resolve_all_pair_labels(r)
         files[key] = r
     return files
 
@@ -459,6 +542,18 @@ def run_explicit_nway(args):
 
 
 def run_discovery(args):
+    """
+    only one file was supplied. discover all other result files in same dir.
+
+    if supplied file is directory, no anchor is specified, do two-way pair-wise
+      compare of all files in both orders
+    if supplied file is a filename, it's always the anchor, one-way compare with
+      all other files
+
+    if ensemble is specified, do the ensemble thing, anchor doesn't matter, i guess?
+      seems things like "fixedfp, fixedfn" don't make any sense without an anchor.
+
+    """
     expected = load_expected_pairs(args.pairs)
 
     files = discover_files_all(args.files[0])
@@ -468,6 +563,7 @@ def run_discovery(args):
 
     for eval_results in files.values():
         label_eval_results(eval_results, expected, args.method)
+        resolve_all_pair_labels(eval_results)
 
     print(f"\nDirectory: {Path(args.files[0]).parent}")
     print(f"Found: {len(files)} file(s)\n")
@@ -478,17 +574,18 @@ def run_discovery(args):
         print_discovery_all_pairs(files, args)
     else:
         seed_key = _key_from_path(args.files[0])
-        print_discovery_default(seed_key, files, args)
+        print_discovery_anchored(seed_key, files, args)
 
 
-def main():
+def parse_args(argv=None):
+    """Parse and validate command-line arguments. Returns (args, parser) or exits on error."""
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='+', metavar='file')
     parser.add_argument('--pairs', required=True, metavar='PAIRS_JSON',
                         help='pairs JSON file with expected values')
-    parser.add_argument('--method', default='any-yes', metavar='METHOD',
-                        help='scoring method (default: any-yes)')
+    parser.add_argument('--method', default='top-token', metavar='METHOD',
+                        help='scoring method (default: top-token)')
     parser.add_argument('-e', '--ensemble', type=str.upper,
                         choices=['ALL', 'AND', 'OR', 'MAJORITY'],
                         default=None, metavar='TYPE',
@@ -510,7 +607,7 @@ def main():
                         help='max N-way discovery results to retain (default: 100)')
     parser.add_argument('--bad', action='store_true',
                         help='show FP and FN pairs for the single table entry; requires --top 1')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Resolve n_way from the mutually exclusive -2/-3/-5 flags.
     n_ways = sum([args.two_way, args.three_way, args.five_way])
@@ -537,8 +634,7 @@ def main():
         if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
             parser.error(f'--ensemble MAJORITY is not valid with -{args.n_way}')
         args.ensemble = args.ensemble or 'ALL'
-        run_explicit_nway(args)
-        return
+        return args, parser
 
     if args.ensemble and n_ways == 0:
         parser.error('--ensemble requires -2, -3, or -5')
@@ -557,12 +653,23 @@ def main():
     if sort_lc not in valid_sort:
         parser.error(f'--sort: invalid value {args.sort!r}; choices: score, FP, FN')
 
+    if len(args.files) > 2:
+        parser.error('specify 1 or 2 files')
+
+    return args, parser
+
+
+def main():
+    args, _ = parse_args()
+
+    if args.keys:
+        run_explicit_nway(args)
+        return
+
     if len(args.files) == 1:
         run_discovery(args)
     elif len(args.files) == 2:
         run_explicit(args)
-    else:
-        parser.error('specify 1 or 2 files')
 
 
 if __name__ == '__main__':

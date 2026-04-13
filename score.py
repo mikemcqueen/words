@@ -31,15 +31,6 @@ def method(name):
     return decorator
 
 
-def extract_top_token(logprobs: list) -> str | None:
-    """Return normalized YES/NO/None from the first (highest-prob) entry in a logprobs list."""
-    if not logprobs:
-        return None
-    top_token = next(iter(logprobs[0]))
-    return parse_yesno_response(top_token)
-
-
-
 @method("top-token")
 def method_top_token(logprobs: dict) -> dict:
     """Return dict mapping each logprobs key to TokenLabel(token, label=None)."""
@@ -49,27 +40,91 @@ def method_top_token(logprobs: dict) -> dict:
     return result
 
 
-def any_correct(result: dict) -> str:
-    """Return 'correct' if any key has label='correct', else the first key's label."""
-    for key in result['logprobs']:
-        if result[key].label == "correct":
-            return "correct"
-    first_key = next(iter(result['logprobs']))
-    return result[first_key].label
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Score evalpair JSONL output against expected values",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python score.py results/foo.jsonl --pairs pairs.json
+  python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
+        """
+    )
+    parser.add_argument("input", type=Path, help="evalpair JSONL file to score, or a directory")
+    parser.add_argument("--pairs", type=str, required=True,
+                        help="Pairs JSON file with expected values")
+    parser.add_argument("--method", type=str, default="top-token",
+                        choices=list(METHODS.keys()),
+                        help="Scoring methodology (default: top-token)")
+    parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
+                        help="sort field for directory mode: score (default), FP, FN")
+    limit_group = parser.add_mutually_exclusive_group()
+    limit_group.add_argument("--top", type=int, default=None, metavar="K",
+                             help="limit display to top K results (directory mode only)")
+    limit_group.add_argument("--min-score", type=float, default=None, metavar="M.N",
+                             help="limit display to results with score >= M.N (directory mode only)")
+    parser.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
+                        help="comma-separated discovery keys to score (directory mode only)")
+    parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
+                        help="print displayed keys as a comma-separated list (directory mode only)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Print per-pair results (single-file mode only)")
+    parser.add_argument("--bad", action="store_true",
+                        help="Only display incorrect results; implies --verbose (single-file mode only)")
+    args = parser.parse_args()
+
+    if args.top is not None and args.top <= 0:
+        parser.error("--top K must be > 0")
+    if not args.input.exists():
+        print(f"Error: input not found: {args.input}", file=sys.stderr)
+        sys.exit(1)
+    if not args.input.is_dir():
+        if args.top is not None:
+            parser.error("--top requires a directory input")
+        if args.min_score is not None:
+            parser.error("--min-score requires a directory input")
+        if args.keys is not None:
+            parser.error("--keys requires a directory input")
+        if args.print_keys:
+            parser.error("--print-keys requires a directory input")
+    if args.bad:
+        if args.input.is_dir():
+            one_key = args.keys is not None and len([k for k in args.keys.split(',') if k.strip()]) == 1
+            if not (args.top == 1 or one_key):
+                parser.error("--bad in directory mode requires --top 1 or -k with exactly one key")
+        args.verbose = True
+    return args
 
 
-def apply_any_correct(eval_results: dict) -> None:
-    """Set data["label"] = any_correct(result) for each scored pair."""
+def extract_top_token(logprobs: list) -> str | None:
+    """Return normalized YES/NO/None from the first (highest-prob) entry in a logprobs list."""
+    if not logprobs:
+        return None
+    top_token = next(iter(logprobs[0]))
+    return parse_yesno_response(top_token)
+
+
+def resolve_pair_label(result: dict) -> str:
+    """For NO-expected pairs, all directions must be correct (any YES = FP).
+    For YES-expected pairs, any correct direction is sufficient."""
+    labels = [result[k].label for k in result['logprobs']]
+    if 'fp' in labels:
+        return 'fp'       # expected=NO: any YES direction = FP
+    if 'correct' in labels:
+        return 'correct'  # expected=YES: any correct direction = correct
+    return 'fn'           # all fn
+
+def resolve_all_pair_labels(eval_results: dict) -> None:
+    """Set data["label"] = resolve_pair_label(result) for each scored pair."""
     for data in eval_results.values():
         if "result" in data:
-            data["label"] = any_correct(data["result"])
+            data["label"] = resolve_pair_label(data["result"])
 
 
 def label_eval_results(eval_results: dict, expected: dict, method: str) -> None:
     """Fill in per-key TokenLabel labels for each scored pair, stored in data["result"].
 
     Label values: 'correct', 'fp', or 'fn'. Pairs not in expected are skipped.
-    Call apply_any_correct() afterward to set data["label"] from the per-key results.
     """
     method_fn = METHODS[method]
 
@@ -92,62 +147,6 @@ def label_eval_results(eval_results: dict, expected: dict, method: str) -> None:
         data["result"] = result
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Score evalpair JSONL output against expected values",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python score.py results/foo.jsonl --pairs pairs.json
-  python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
-        """
-    )
-    parser.add_argument("input", type=Path, help="evalpair JSONL file to score, or a directory")
-    parser.add_argument("--pairs", type=str, required=True,
-                        help="Pairs JSON file with expected values")
-    parser.add_argument("--method", type=str, default="top-token",
-                        choices=list(METHODS.keys()),
-                        help="Scoring methodology (default: top-token)")
-    parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
-                        help="sort field for directory mode: score (default), FP, FN")
-    limit_group = parser.add_mutually_exclusive_group()
-    limit_group.add_argument("--top-k", type=int, default=None, metavar="K",
-                             help="limit display to top K results (directory mode only)")
-    limit_group.add_argument("--min-score", type=float, default=None, metavar="M.N",
-                             help="limit display to results with score >= M.N (directory mode only)")
-    limit_group.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
-                             help="comma-separated discovery keys to score (directory mode only)")
-    parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
-                        help="print displayed keys as a comma-separated list (directory mode only)")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Print per-pair results (single-file mode only)")
-    parser.add_argument("--bad", action="store_true",
-                        help="Only display incorrect results; implies --verbose (single-file mode only)")
-    args = parser.parse_args()
-
-    if args.top_k is not None and args.top_k <= 0:
-        parser.error("--top-k K must be > 0")
-    if not args.input.exists():
-        print(f"Error: input not found: {args.input}", file=sys.stderr)
-        sys.exit(1)
-    if not args.input.is_dir():
-        if args.top_k is not None:
-            parser.error("--top-k requires a directory input")
-        if args.min_score is not None:
-            parser.error("--min-score requires a directory input")
-        if args.keys is not None:
-            parser.error("--keys requires a directory input")
-        if args.print_keys:
-            parser.error("--print-keys requires a directory input")
-    if args.bad:
-        if args.input.is_dir():
-            one_key = args.keys is not None and len([k for k in args.keys.split(',') if k.strip()]) == 1
-            if not (args.top_k == 1 or one_key):
-                parser.error("--bad in directory mode requires --top-k 1 or -k with exactly one key")
-        args.verbose = True
-    return args
-
-
 def print_discovery_table(args):
     if args.keys is not None:
         keys = [k.strip() for k in args.keys.split(',')]
@@ -164,7 +163,7 @@ def print_discovery_table(args):
         expected = load_expected_pairs(args.pairs)
     for eval_results in files.values():
         label_eval_results(eval_results, expected, args.method)
-        apply_any_correct(eval_results)
+        resolve_all_pair_labels(eval_results)
 
     rows = [(key, compute_stats(records)) for key, records in files.items()]
     sort_lc = args.sort.lower()
@@ -174,8 +173,8 @@ def print_discovery_table(args):
         rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
     else:
         rows.sort(key=lambda x: x[1]['pct'], reverse=True)
-    if args.top_k is not None:
-        rows = rows[:args.top_k]
+    if args.top is not None:
+        rows = rows[:args.top]
     elif args.min_score is not None:
         rows = [(k, s) for k, s in rows if s['pct'] >= args.min_score]
     files = {key: files[key] for key, _ in rows}
@@ -234,7 +233,7 @@ def main():
     expected = load_expected_pairs(args.pairs)
     eval_results = load_eval_results(args.input)
     label_eval_results(eval_results, expected, args.method)
-    apply_any_correct(eval_results)
+    resolve_all_pair_labels(eval_results)
     skipped = print_details(eval_results, args)
     if skipped:
         print(f"Skipped {skipped} pairs not found in {args.pairs}")
