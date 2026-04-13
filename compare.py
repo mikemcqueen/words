@@ -160,7 +160,7 @@ def apply_ensemble_labeled(results_list, rule_name):
 
 ENSEMBLE_RULES_2 = ["OR", "AND"]
 ENSEMBLE_RULES_3 = ["OR", "AND", "MAJORITY"]
-USE_SLOW_MAJORITY = True
+USE_SLOW_MAJORITY = False
 
 
 def _build_vecs(files_dict):
@@ -510,25 +510,35 @@ def _bitmask_combine_colwise(bits_per_dir, dirs, idx, rule):
 
 
 def _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, threshold):
-    """Majority vote using column-wise indexing and per-bit counting."""
+    """Majority vote using closed-form bitwise logic over gathered columns."""
     r = idx.shape[1]
-    bs = len(idx)
-    n_words = bits_per_dir[dirs[0]].shape[1]
-    bit_masks = np.zeros((n_pairs, n_words), dtype=np.uint64)
-    for b in range(n_pairs):
-        bit_masks[b, b // 64] = np.uint64(1 << (b % 64))
-    combined = []
-    for d in dirs:
-        yb = bits_per_dir[d]
-        accum = np.zeros((bs, n_words), dtype=np.uint64)
-        for b in range(n_pairs):
-            bm = bit_masks[b]
-            yes_count = np.zeros(bs, dtype=np.int32)
-            for j in range(r):
-                yes_count += (yb[idx[:, j]] & bm).any(axis=-1).astype(np.int32)
-            accum |= np.where(yes_count[:, None] >= threshold, bm, np.uint64(0))
-        combined.append(accum)
-    return combined
+    if r == 3:
+        assert threshold == 2, f"3-way majority threshold should be 2, got {threshold}"
+        combined = []
+        for d in dirs:
+            yb = bits_per_dir[d]
+            a = yb[idx[:, 0]]
+            b = yb[idx[:, 1]]
+            c = yb[idx[:, 2]]
+            combined.append((a & b) | (c & (a | b)))
+        return combined
+    if r == 5:
+        assert threshold == 3, f"5-way majority threshold should be 3, got {threshold}"
+        combined = []
+        for d in dirs:
+            yb = bits_per_dir[d]
+            a = yb[idx[:, 0]]
+            b = yb[idx[:, 1]]
+            c = yb[idx[:, 2]]
+            d4 = yb[idx[:, 3]]
+            e = yb[idx[:, 4]]
+            ab = a & b
+            cd = c & d4
+            x = a | b
+            y = c | d4
+            combined.append((ab & y) | (cd & x) | (e & (ab | cd | (x & y))))
+        return combined
+    raise ValueError(f"bitmask majority only supports 3-way and 5-way, got r={r}")
 
 
 def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args):
@@ -589,15 +599,25 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
             if len(a_idx) == 0:
                 continue
             entry = {}
-            if do_or:
-                entry['or'] = {d: bits_per_dir[d][a_idx] | bits_per_dir[d][b_idx] | bits_per_dir[d][c]
-                               for d in dirs}
-            if do_and:
-                entry['and'] = {d: bits_per_dir[d][a_idx] & bits_per_dir[d][b_idx] & bits_per_dir[d][c]
-                                for d in dirs}
+            if do_or or do_maj:
+                entry['or'] = {}
+            if do_and or do_maj:
+                entry['and'] = {}
             if do_maj:
-                entry['maj'] = {d: bits_per_dir[d][a_idx] | bits_per_dir[d][b_idx] | bits_per_dir[d][c]
-                                for d in dirs}  # placeholder; majority needs special handling
+                entry['maj'] = {}
+            for d in dirs:
+                yb = bits_per_dir[d]
+                a = yb[a_idx]
+                b = yb[b_idx]
+                cc = yb[c]
+                ab = a & b
+                a_or_b = a | b
+                if do_or or do_maj:
+                    entry['or'][d] = a_or_b | cc
+                if do_and or do_maj:
+                    entry['and'][d] = ab & cc
+                if do_maj:
+                    entry['maj'][d] = ab | (cc & a_or_b)
             entry['ab'] = np.column_stack([a_idx, b_idx])
             three_by_max[c] = entry
 
@@ -610,12 +630,22 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
             d_idx = d_idx + start
             e_idx = e_idx + start
             entry = {}
-            if do_or:
-                entry['or'] = {d: bits_per_dir[d][d_idx] | bits_per_dir[d][e_idx] for d in dirs}
-            if do_and:
-                entry['and'] = {d: bits_per_dir[d][d_idx] & bits_per_dir[d][e_idx] for d in dirs}
+            if do_or or do_maj:
+                entry['or'] = {}
+            if do_and or do_maj:
+                entry['and'] = {}
             if do_maj:
-                entry['maj'] = {d: bits_per_dir[d][d_idx] | bits_per_dir[d][e_idx] for d in dirs}
+                entry['xor'] = {}
+            for d in dirs:
+                yb = bits_per_dir[d]
+                lhs = yb[d_idx]
+                rhs = yb[e_idx]
+                if do_or or do_maj:
+                    entry['or'][d] = lhs | rhs
+                if do_and or do_maj:
+                    entry['and'][d] = lhs & rhs
+                if do_maj:
+                    entry['xor'][d] = lhs ^ rhs
             entry['de'] = np.column_stack([d_idx, e_idx])
             two_from[start] = entry
 
@@ -654,16 +684,16 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
                     batch_results.append((' AND', combined, _screen_hv(combined)))
 
                 if do_maj:
-                    # Majority needs full 5-way index for per-bit counting; fall back
-                    ab_chunk = three['ab'][row_start:row_end]  # (chunk_rows, 2)
-                    de_all = two['de']                          # (B, 2)
-                    # Build full index via cross product
-                    cr = row_end - row_start
-                    ii = np.repeat(ab_chunk, B, axis=0)         # (cr*B, 2)
-                    jj = np.tile(de_all, (cr, 1))               # (cr*B, 2)
-                    cc = np.full(chunk_size, c, dtype=np.intp)
-                    idx5 = np.column_stack([ii, cc[:, None], jj])
-                    combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx5, n_pairs, majority_threshold)
+                    combined = []
+                    for d in dirs:
+                        any3 = three['or'][d][row_start:row_end, None, :]
+                        all3 = three['and'][d][row_start:row_end, None, :]
+                        maj3 = three['maj'][d][row_start:row_end, None, :]
+                        any2 = two['or'][d][None, :, :]
+                        all2 = two['and'][d][None, :, :]
+                        one2 = two['xor'][d][None, :, :]
+                        c5 = (all2 & any3) | (one2 & maj3) | (((~any2) & n_mask) & all3)
+                        combined.append(c5.reshape(-1, c5.shape[-1]))
                     batch_results.append((' MAJORITY', combined, _screen_hv(combined)))
 
                 # Build index arrays for heap labels only for winning combos
