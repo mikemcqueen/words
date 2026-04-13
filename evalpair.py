@@ -78,7 +78,8 @@ def send_anchor_prefix(args, ctx: str) -> None:
     """Send prompt prefix up to 'Clue' to v1/completions for KV cache warming."""
     m = re.search(r'^(.*Clue)', ctx, re.DOTALL)
     if not m:
-        raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
+        return
+        #raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
     prefix = "<|im_start|>user\n" + m.group(1)
     url = f"{args.host}:{args.port}/v1/completions"
     headers = {"Content-Type": "application/json"}

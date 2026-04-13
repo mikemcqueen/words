@@ -299,7 +299,7 @@ def resolve_key(directory, key):
         print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
         for c in candidates:
             print(f"  {c.name}", file=sys.stderr)
-        sys.exit(1)
+        #sys.exit(1)
     return candidates[0]
 
 

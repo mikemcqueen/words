@@ -1,6 +1,5 @@
 * really need to take the time to drill into low probability YES/NOs and see what I can do with that.
 * --print-keys/--top-k  added to compare.py.
-* --bad added to compare.py , maybe only valid for --top-k 1
 
 less important:
 
