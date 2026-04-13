@@ -309,6 +309,35 @@ def _bitmask_stats(combined_per_dir, exp_bits, not_exp, n_mask):
     return _popcount(pair_correct), _popcount(pair_fp), _popcount(pair_fn)
 
 
+def _screen_bits(combined_per_dir, exp_bits, not_exp, n_mask):
+    """Compute (pair_correct_bits, pair_fp_bits) arrays without popcount.
+    These are the raw uint64 bitmask arrays needed for screening and deferred stats."""
+    dir_fp = [cv & not_exp for cv in combined_per_dir]
+    dir_correct = [(cv & exp_bits) | ((~cv & n_mask) & not_exp) for cv in combined_per_dir]
+    pair_fp = dir_fp[0]
+    for dfp in dir_fp[1:]:
+        pair_fp |= dfp
+    pair_correct = dir_correct[0]
+    for dc in dir_correct[1:]:
+        pair_correct |= dc
+    pair_correct &= ~pair_fp
+    return pair_correct, pair_fp
+
+
+def _scalar_fp_fn(combined_per_dir, ci, exp_bits, not_exp, n_mask):
+    """Compute (fp, fn) for a single combo element from batch arrays."""
+    fp_bits = np.uint64(0)
+    correct_bits = np.uint64(0)
+    for cv in combined_per_dir:
+        v = cv[ci]
+        fp_bits |= v & not_exp
+        correct_bits |= (v & exp_bits) | ((~v & n_mask) & not_exp)
+    correct_bits &= ~fp_bits
+    fp = bin(int(fp_bits)).count('1')
+    fn = bin(int(~fp_bits & ~correct_bits & n_mask)).count('1')
+    return fp, fn
+
+
 def _combo_batches_np(n, r, batch_size):
     """Yield (batch_idx,) numpy index arrays for combinations(range(n), r).
     Uses numpy-native generation for r=3 and r=5, itertools fallback otherwise.
@@ -444,7 +473,8 @@ def _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, args):
     return rows
 
 
-def _heap_update(heap, counter, top_k, hv_arr, correct, fp, fn, n_pairs,
+def _heap_update(heap, counter, top_k, hv_arr, combined, n_pairs,
+                 exp_bits, not_exp, n_mask,
                  idx, pid_list, suffix, prefix_pids=None):
     """Vectorized top-k: filter candidates in numpy, only do Python heap ops for winners.
     prefix_pids: optional tuple of pid strings to prepend to combo labels."""
@@ -459,9 +489,11 @@ def _heap_update(heap, counter, top_k, hv_arr, correct, fp, fn, n_pairs,
         hv = int(hv_arr[ci])
         if len(heap) < top_k or hv > heap[0][0]:
             combo_key = prefix + ','.join(pid_list[j] for j in idx[ci]) + suffix
-            s = dict(correct=int(correct[ci]), total=n_pairs,
-                     pct=100.0 * int(correct[ci]) / n_pairs if n_pairs else 0.0,
-                     fp=int(fp[ci]), fn=int(fn[ci]))
+            fp, fn = _scalar_fp_fn(combined, ci, exp_bits, not_exp, n_mask)
+            correct = n_pairs - fp - fn
+            s = dict(correct=correct, total=n_pairs,
+                     pct=100.0 * correct / n_pairs if n_pairs else 0.0,
+                     fp=fp, fn=fn)
             if len(heap) < top_k:
                 heapq.heappush(heap, (hv, counter, combo_key, s))
             else:
@@ -522,21 +554,26 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
     counter = 0
     n = len(pid_list)
 
-    def hv_arr_from(correct, fp, fn):
+    def _screen_hv(combined):
+        """Compute screening heap-value array from combined bitmasks (1 popcount)."""
+        pc, pf = _screen_bits(combined, exp_bits, not_exp, n_mask)
         if sort_key == 'correct':
-            return correct
-        return -fp if sort_key == 'fp' else -fn
+            return _popcount(pc)
+        elif sort_key == 'fp':
+            return -_popcount(pf)
+        else:  # fn
+            return -_popcount(~pf & ~pc & n_mask)
 
     def run_rules(idx, batch_results):
         if args.ensemble in ('ALL', 'OR'):
             combined = _bitmask_combine_colwise(bits_per_dir, dirs, idx, 'OR')
-            batch_results.append((' OR', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+            batch_results.append((' OR', combined, _screen_hv(combined)))
         if args.ensemble in ('ALL', 'AND'):
             combined = _bitmask_combine_colwise(bits_per_dir, dirs, idx, 'AND')
-            batch_results.append((' AND', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+            batch_results.append((' AND', combined, _screen_hv(combined)))
         if args.ensemble in ('ALL', 'MAJORITY'):
             combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, majority_threshold)
-            batch_results.append((' MAJORITY', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+            batch_results.append((' MAJORITY', combined, _screen_hv(combined)))
 
     if r == 5:
         # 3+2 decomposition with precomputation.
@@ -612,14 +649,14 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
                         # (chunk, 1) | (1, B) → (chunk, B) → flatten
                         c5 = three['or'][d][row_start:row_end, None] | two['or'][d][None, :]
                         combined.append(c5.ravel())
-                    batch_results.append((' OR', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+                    batch_results.append((' OR', combined, _screen_hv(combined)))
 
                 if do_and:
                     combined = []
                     for d in dirs:
                         c5 = three['and'][d][row_start:row_end, None] & two['and'][d][None, :]
                         combined.append(c5.ravel())
-                    batch_results.append((' AND', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+                    batch_results.append((' AND', combined, _screen_hv(combined)))
 
                 if do_maj:
                     # Majority needs full 5-way index for per-bit counting; fall back
@@ -632,12 +669,10 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
                     cc = np.full(chunk_size, c, dtype=np.intp)
                     idx5 = np.column_stack([ii, cc[:, None], jj])
                     combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx5, n_pairs, majority_threshold)
-                    batch_results.append((' MAJORITY', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+                    batch_results.append((' MAJORITY', combined, _screen_hv(combined)))
 
                 # Build index arrays for heap labels only for winning combos
-                # Lazily construct — _heap_update_cross handles the mapping
-                for suffix, correct, fp, fn in batch_results:
-                    hv = hv_arr_from(correct, fp, fn)
+                for suffix, combined, hv in batch_results:
                     if len(heap) >= top_k:
                         candidates = np.where(hv > heap[0][0])[0]
                     else:
@@ -652,9 +687,11 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
                             a, b = int(three['ab'][row, 0]), int(three['ab'][row, 1])
                             d_i, e_i = int(two['de'][col, 0]), int(two['de'][col, 1])
                             combo_key = ','.join(pid_list[x] for x in (a, b, c, d_i, e_i)) + suffix
-                            s = dict(correct=int(correct[ci]), total=n_pairs,
-                                     pct=100.0 * int(correct[ci]) / n_pairs if n_pairs else 0.0,
-                                     fp=int(fp[ci]), fn=int(fn[ci]))
+                            fp, fn = _scalar_fp_fn(combined, ci, exp_bits, not_exp, n_mask)
+                            correct = n_pairs - fp - fn
+                            s = dict(correct=correct, total=n_pairs,
+                                     pct=100.0 * correct / n_pairs if n_pairs else 0.0,
+                                     fp=fp, fn=fn)
                             if len(heap) < top_k:
                                 heapq.heappush(heap, (hv_val, counter, combo_key, s))
                             else:
@@ -664,10 +701,10 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
         for idx in _combo_batches_np(n, r, 1_000_000):
             batch_results = []
             run_rules(idx, batch_results)
-            for suffix, correct, fp, fn in batch_results:
-                counter = _heap_update(heap, counter, top_k,
-                                       hv_arr_from(correct, fp, fn),
-                                       correct, fp, fn, n_pairs,
+            for suffix, combined, hv in batch_results:
+                counter = _heap_update(heap, counter, top_k, hv,
+                                       combined, n_pairs,
+                                       exp_bits, not_exp, n_mask,
                                        idx, pid_list, suffix)
 
     rows = {}
@@ -873,9 +910,11 @@ def print_discovery_ensemble(args, files):
 
     if args.n_way >= 3:
         if n_pairs <= 64:
+            print("fast way")
             exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
             nway_rows = _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, args)
         else:
+            print("slow way")
             nway_rows = _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, args)
         rows.update(nway_rows)
 

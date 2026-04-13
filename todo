@@ -1,3 +1,8 @@
+* i had an idea.. something like.. compare dir -k key1,key2 is the same as a 2-way explicit. we're branching
+on # of files supplied (i think) but in reality the "# of files" is arguably 2 with two keys.  maybe # of (supplied)
+files is just the wrong thing to branch on.  top level flow of code is difficult to understand frankly, and feels
+dirty.
+
 * really need to take the time to drill into low probability YES/NOs and see what I can do with that.
 * --print-keys/--top-k  added to compare.py.
 
