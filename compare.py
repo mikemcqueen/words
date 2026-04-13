@@ -243,6 +243,439 @@ def _batch_stats_from_dirs(combined_per_dir, exp_vec, n):
             for i in range(len(correct))]
 
 
+# --- bitmask-accelerated n-way ensemble (n_pairs <= 64) ---
+
+# 16-bit popcount lookup table (65536 entries, covers 2 bytes at a time)
+_POPCOUNT_TABLE_16 = np.array([bin(i).count('1') for i in range(65536)], dtype=np.int32)
+
+
+def _popcount(arr):
+    """Vectorized popcount for uint64 array using 16-bit lookup table."""
+    result = np.zeros(arr.shape, dtype=np.int32)
+    for shift in range(0, 64, 16):
+        result += _POPCOUNT_TABLE_16[(arr >> shift).astype(np.uint16)]
+    return result
+
+
+def _build_bitmasks(files_dict):
+    """Like _build_vecs but encodes as uint64 bitmasks. Requires n_pairs <= 64.
+    Returns (exp_bits, yes_bits, dirs, n_pairs, pid_list).
+    exp_bits: uint64 scalar.
+    yes_bits: {dir: (n_files,) uint64 array}, indexed parallel to pid_list."""
+    all_keys = list(files_dict.keys())
+    pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
+    common = sorted(set.intersection(*pair_sets))
+    n = len(common)
+    assert n <= 64, f"_build_bitmasks requires n_pairs <= 64, got {n}"
+    first_results = files_dict[all_keys[0]]
+    first_pair = next(p for p in common if 'result' in first_results[p])
+    dirs = list(first_results[first_pair]['result']['logprobs'].keys())
+
+    # Build expected bitmask
+    exp_bits = np.uint64(0)
+    for i, p in enumerate(common):
+        if _expected(first_results[p]) == 'YES':
+            exp_bits |= np.uint64(1 << i)
+
+    # Build per-file per-direction bitmasks
+    yes_bits = {}
+    for d in dirs:
+        col = np.zeros(len(all_keys), dtype=np.uint64)
+        for fi, k in enumerate(all_keys):
+            bits = np.uint64(0)
+            for i, p in enumerate(common):
+                data = files_dict[k][p]
+                if 'result' in data and data['result'][d].token == 'YES':
+                    bits |= np.uint64(1 << i)
+            col[fi] = bits
+        yes_bits[d] = col
+
+    return exp_bits, yes_bits, dirs, n, all_keys
+
+
+def _bitmask_stats(combined_per_dir, exp_bits, not_exp, n_mask):
+    """Compute (correct, fp, fn) int32 arrays from per-direction combined uint64 arrays.
+    combined_per_dir: list of (batch_size,) uint64 arrays, one per direction."""
+    dir_fp = [cv & not_exp for cv in combined_per_dir]
+    dir_correct = [(cv & exp_bits) | ((~cv & n_mask) & not_exp) for cv in combined_per_dir]
+    pair_fp = dir_fp[0]
+    for dfp in dir_fp[1:]:
+        pair_fp = pair_fp | dfp
+    pair_correct = dir_correct[0]
+    for dc in dir_correct[1:]:
+        pair_correct = pair_correct | dc
+    pair_correct = pair_correct & ~pair_fp
+    pair_fn = ~pair_fp & ~pair_correct & n_mask
+    return _popcount(pair_correct), _popcount(pair_fp), _popcount(pair_fn)
+
+
+def _combo_batches_np(n, r, batch_size):
+    """Yield (batch_idx,) numpy index arrays for combinations(range(n), r).
+    Uses numpy-native generation for r=3 and r=5, itertools fallback otherwise.
+    batch_idx: shape (batch_size, r), dtype=np.intp."""
+    if r == 3:
+        yield from _combo_batches_np_3(n, batch_size)
+    elif r == 5:
+        yield from _combo_batches_np_5(n, batch_size)
+    else:
+        # Fallback: itertools with larger batches
+        gen = combinations(range(n), r)
+        while True:
+            batch = list(islice(gen, batch_size))
+            if not batch:
+                break
+            yield np.array(batch, dtype=np.intp)
+
+
+def _combo_batches_np_3(n, batch_size):
+    """Yield numpy index arrays for 3-way combinations, generated without Python tuples."""
+    buf = []
+    buf_len = 0
+    for i in range(n - 2):
+        remaining = n - i - 1
+        if remaining < 2:
+            continue
+        jj, kk = np.triu_indices(remaining, k=1)
+        jj = jj + (i + 1)
+        kk = kk + (i + 1)
+        chunk = np.column_stack([np.full(len(jj), i, dtype=np.intp), jj, kk])
+        buf.append(chunk)
+        buf_len += len(chunk)
+        if buf_len >= batch_size:
+            merged = np.concatenate(buf)
+            # Yield full batches
+            pos = 0
+            while pos + batch_size <= len(merged):
+                yield merged[pos:pos + batch_size]
+                pos += batch_size
+            # Keep remainder
+            if pos < len(merged):
+                buf = [merged[pos:]]
+                buf_len = len(merged) - pos
+            else:
+                buf = []
+                buf_len = 0
+    if buf_len > 0:
+        yield np.concatenate(buf)
+
+
+def _combo_batches_np_5(n, batch_size):
+    """Yield numpy index arrays for 5-way combinations, generated without Python tuples."""
+    buf = []
+    buf_len = 0
+    for i in range(n - 4):
+        for j in range(i + 1, n - 3):
+            remaining = n - j - 1
+            if remaining < 3:
+                continue
+            # Generate all 3-way combos from [j+1, n)
+            aa, bb, cc = [], [], []
+            for a in range(remaining - 2):
+                rem2 = remaining - a - 1
+                b_idx, c_idx = np.triu_indices(rem2, k=1)
+                aa.append(np.full(len(b_idx), a + j + 1, dtype=np.intp))
+                bb.append(b_idx + (a + j + 2))
+                cc.append(c_idx + (a + j + 2))
+            if not aa:
+                continue
+            aa = np.concatenate(aa)
+            bb = np.concatenate(bb)
+            cc = np.concatenate(cc)
+            chunk = np.column_stack([
+                np.full(len(aa), i, dtype=np.intp),
+                np.full(len(aa), j, dtype=np.intp),
+                aa, bb, cc
+            ])
+            buf.append(chunk)
+            buf_len += len(chunk)
+            if buf_len >= batch_size:
+                merged = np.concatenate(buf)
+                pos = 0
+                while pos + batch_size <= len(merged):
+                    yield merged[pos:pos + batch_size]
+                    pos += batch_size
+                if pos < len(merged):
+                    buf = [merged[pos:]]
+                    buf_len = len(merged) - pos
+                else:
+                    buf = []
+                    buf_len = 0
+    if buf_len > 0:
+        yield np.concatenate(buf)
+
+
+def _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, args):
+    """Fallback n-way ensemble for n_pairs > 64, using the original numpy bool approach."""
+    M_per_dir = {d: np.stack([yes_vecs[p][d] for p in pids]) for d in dirs}
+    pid_list = list(pids)
+    r = args.n_way
+    majority_threshold = (r + 1) // 2
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
+    top_k = args.heap_size
+    heap = []
+    counter = 0
+    for batch in _combo_batches(len(pid_list), r, 10_000):
+        idx = np.array(batch, dtype=np.intp)
+        sub_per_dir = [M_per_dir[d][idx] for d in dirs]
+        batch_results = []
+        if args.ensemble in ('ALL', 'OR'):
+            or_per_dir = [s.any(axis=1) for s in sub_per_dir]
+            batch_results.append((" OR", _batch_stats_from_dirs(or_per_dir, exp_vec, n_pairs)))
+        if args.ensemble in ('ALL', 'AND'):
+            and_per_dir = [s.all(axis=1) for s in sub_per_dir]
+            batch_results.append((" AND", _batch_stats_from_dirs(and_per_dir, exp_vec, n_pairs)))
+        if args.ensemble in ('ALL', 'MAJORITY'):
+            maj_per_dir = [s.astype(np.uint8).sum(axis=1) >= majority_threshold for s in sub_per_dir]
+            batch_results.append((" MAJORITY", _batch_stats_from_dirs(maj_per_dir, exp_vec, n_pairs)))
+        del sub_per_dir
+        for i, combo in enumerate(batch):
+            combo_key = ','.join(pid_list[j] for j in combo)
+            for suffix, stats_arr in batch_results:
+                s = stats_arr[i]
+                hv = s[sort_key] if sort_rev else -s[sort_key]
+                if len(heap) < top_k:
+                    heapq.heappush(heap, (hv, counter, combo_key + suffix, s))
+                elif hv > heap[0][0]:
+                    heapq.heapreplace(heap, (hv, counter, combo_key + suffix, s))
+                counter += 1
+    rows = {}
+    for _, _, label, stats in heap:
+        rows[label] = stats
+    return rows
+
+
+def _heap_update(heap, counter, top_k, hv_arr, correct, fp, fn, n_pairs,
+                 idx, pid_list, suffix, prefix_pids=None):
+    """Vectorized top-k: filter candidates in numpy, only do Python heap ops for winners.
+    prefix_pids: optional tuple of pid strings to prepend to combo labels."""
+    bs = len(hv_arr)
+    if len(heap) >= top_k:
+        candidates = np.where(hv_arr > heap[0][0])[0]
+    else:
+        candidates = np.arange(min(bs, top_k - len(heap)))
+
+    prefix = ','.join(prefix_pids) + ',' if prefix_pids else ''
+    for ci in candidates:
+        hv = int(hv_arr[ci])
+        if len(heap) < top_k or hv > heap[0][0]:
+            combo_key = prefix + ','.join(pid_list[j] for j in idx[ci]) + suffix
+            s = dict(correct=int(correct[ci]), total=n_pairs,
+                     pct=100.0 * int(correct[ci]) / n_pairs if n_pairs else 0.0,
+                     fp=int(fp[ci]), fn=int(fn[ci]))
+            if len(heap) < top_k:
+                heapq.heappush(heap, (hv, counter, combo_key, s))
+            else:
+                heapq.heapreplace(heap, (hv, counter, combo_key, s))
+            counter += 1
+    return counter
+
+
+def _bitmask_combine_colwise(bits_per_dir, dirs, idx, rule):
+    """Combine bitmasks using column-wise indexing (avoids (batch, r) intermediate)."""
+    r = idx.shape[1]
+    combined = []
+    for d in dirs:
+        yb = bits_per_dir[d]
+        if rule == 'OR':
+            c = yb[idx[:, 0]]
+            for j in range(1, r):
+                c = c | yb[idx[:, j]]
+        elif rule == 'AND':
+            c = yb[idx[:, 0]]
+            for j in range(1, r):
+                c = c & yb[idx[:, j]]
+        combined.append(c)
+    return combined
+
+
+def _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, threshold):
+    """Majority vote using column-wise indexing and per-bit counting."""
+    r = idx.shape[1]
+    bs = len(idx)
+    bit_masks = np.array([np.uint64(1 << b) for b in range(n_pairs)], dtype=np.uint64)
+    combined = []
+    for d in dirs:
+        yb = bits_per_dir[d]
+        accum = np.zeros(bs, dtype=np.uint64)
+        for b in range(n_pairs):
+            bm = bit_masks[b]
+            yes_count = np.zeros(bs, dtype=np.int32)
+            for j in range(r):
+                yes_count += ((yb[idx[:, j]] & bm) > 0).astype(np.int32)
+            accum |= np.where(yes_count >= threshold, bm, np.uint64(0))
+        combined.append(accum)
+    return combined
+
+
+def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args):
+    """Run n-way ensemble search using bitmask-accelerated computation.
+    Returns dict of {label: stats_dict} for top results."""
+    n_mask = np.uint64((1 << n_pairs) - 1)
+    not_exp = ~exp_bits & n_mask
+    bits_per_dir = {d: yes_bits[d] for d in dirs}
+    pid_list = list(pids)
+    r = args.n_way
+    majority_threshold = (r + 1) // 2
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
+    top_k = args.heap_size
+    heap = []
+    counter = 0
+    n = len(pid_list)
+
+    def hv_arr_from(correct, fp, fn):
+        if sort_key == 'correct':
+            return correct
+        return -fp if sort_key == 'fp' else -fn
+
+    def run_rules(idx, batch_results):
+        if args.ensemble in ('ALL', 'OR'):
+            combined = _bitmask_combine_colwise(bits_per_dir, dirs, idx, 'OR')
+            batch_results.append((' OR', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+        if args.ensemble in ('ALL', 'AND'):
+            combined = _bitmask_combine_colwise(bits_per_dir, dirs, idx, 'AND')
+            batch_results.append((' AND', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+        if args.ensemble in ('ALL', 'MAJORITY'):
+            combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, majority_threshold)
+            batch_results.append((' MAJORITY', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+
+    if r == 5:
+        # 3+2 decomposition with precomputation.
+        # Precompute all C(n,3) three-way and all C(n,2) two-way combined bitmasks.
+        # Then 5-way = 3way | 2way (for OR), 3way & 2way (for AND).
+        # Group 3-way combos by max index c; pair with 2-way combos (d,e) where d > c.
+        # Each 5-way combo counted exactly once.
+        do_or  = args.ensemble in ('ALL', 'OR')
+        do_and = args.ensemble in ('ALL', 'AND')
+        do_maj = args.ensemble in ('ALL', 'MAJORITY')
+
+        # --- Precompute 3-way bitmasks, grouped by max index ---
+        # three_by_max[c] = (indices_ab, {d: combined_array})
+        # where indices_ab is (A, 2) array of (a,b) pairs with a<b<c
+        three_by_max = {}
+        for c in range(2, n):
+            a_idx, b_idx = np.triu_indices(c, k=1)
+            if len(a_idx) == 0:
+                continue
+            entry = {}
+            if do_or:
+                entry['or'] = {d: bits_per_dir[d][a_idx] | bits_per_dir[d][b_idx] | bits_per_dir[d][c]
+                               for d in dirs}
+            if do_and:
+                entry['and'] = {d: bits_per_dir[d][a_idx] & bits_per_dir[d][b_idx] & bits_per_dir[d][c]
+                                for d in dirs}
+            if do_maj:
+                entry['maj'] = {d: bits_per_dir[d][a_idx] | bits_per_dir[d][b_idx] | bits_per_dir[d][c]
+                                for d in dirs}  # placeholder; majority needs special handling
+            entry['ab'] = np.column_stack([a_idx, b_idx])
+            three_by_max[c] = entry
+
+        # --- Precompute 2-way bitmasks from each starting index ---
+        # two_from[start] = (indices_de, {d: combined_array})
+        two_from = {}
+        for start in range(3, n - 1):
+            pool = n - start
+            d_idx, e_idx = np.triu_indices(pool, k=1)
+            d_idx = d_idx + start
+            e_idx = e_idx + start
+            entry = {}
+            if do_or:
+                entry['or'] = {d: bits_per_dir[d][d_idx] | bits_per_dir[d][e_idx] for d in dirs}
+            if do_and:
+                entry['and'] = {d: bits_per_dir[d][d_idx] & bits_per_dir[d][e_idx] for d in dirs}
+            if do_maj:
+                entry['maj'] = {d: bits_per_dir[d][d_idx] | bits_per_dir[d][e_idx] for d in dirs}
+            entry['de'] = np.column_stack([d_idx, e_idx])
+            two_from[start] = entry
+
+        # --- Iterate: for each max-3-index c, cross-product 3-way × 2-way ---
+        batch_size = 1_000_000
+        for c in range(2, n - 2):
+            if c not in three_by_max or (c + 1) not in two_from:
+                continue
+            three = three_by_max[c]
+            two = two_from[c + 1]
+            A = len(three['ab'])     # number of 3-way combos with max index c
+            B = len(two['de'])       # number of 2-way combos from [c+1, n)
+            if A == 0 or B == 0:
+                continue
+
+            # Process cross product in row-batches to limit memory
+            batch_rows = max(1, batch_size // B)
+            for row_start in range(0, A, batch_rows):
+                row_end = min(row_start + batch_rows, A)
+                chunk_size = (row_end - row_start) * B
+                batch_results = []
+
+                if do_or:
+                    combined = []
+                    for d in dirs:
+                        # (chunk, 1) | (1, B) → (chunk, B) → flatten
+                        c5 = three['or'][d][row_start:row_end, None] | two['or'][d][None, :]
+                        combined.append(c5.ravel())
+                    batch_results.append((' OR', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+
+                if do_and:
+                    combined = []
+                    for d in dirs:
+                        c5 = three['and'][d][row_start:row_end, None] & two['and'][d][None, :]
+                        combined.append(c5.ravel())
+                    batch_results.append((' AND', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+
+                if do_maj:
+                    # Majority needs full 5-way index for per-bit counting; fall back
+                    ab_chunk = three['ab'][row_start:row_end]  # (chunk_rows, 2)
+                    de_all = two['de']                          # (B, 2)
+                    # Build full index via cross product
+                    cr = row_end - row_start
+                    ii = np.repeat(ab_chunk, B, axis=0)         # (cr*B, 2)
+                    jj = np.tile(de_all, (cr, 1))               # (cr*B, 2)
+                    cc = np.full(chunk_size, c, dtype=np.intp)
+                    idx5 = np.column_stack([ii, cc[:, None], jj])
+                    combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx5, n_pairs, majority_threshold)
+                    batch_results.append((' MAJORITY', *_bitmask_stats(combined, exp_bits, not_exp, n_mask)))
+
+                # Build index arrays for heap labels only for winning combos
+                # Lazily construct — _heap_update_cross handles the mapping
+                for suffix, correct, fp, fn in batch_results:
+                    hv = hv_arr_from(correct, fp, fn)
+                    if len(heap) >= top_k:
+                        candidates = np.where(hv > heap[0][0])[0]
+                    else:
+                        candidates = np.arange(min(chunk_size, top_k - len(heap)))
+
+                    for ci in candidates:
+                        hv_val = int(hv[ci])
+                        if len(heap) < top_k or hv_val > heap[0][0]:
+                            # Map flat index back to (3way_row, 2way_col)
+                            row = ci // B + row_start
+                            col = ci % B
+                            a, b = int(three['ab'][row, 0]), int(three['ab'][row, 1])
+                            d_i, e_i = int(two['de'][col, 0]), int(two['de'][col, 1])
+                            combo_key = ','.join(pid_list[x] for x in (a, b, c, d_i, e_i)) + suffix
+                            s = dict(correct=int(correct[ci]), total=n_pairs,
+                                     pct=100.0 * int(correct[ci]) / n_pairs if n_pairs else 0.0,
+                                     fp=int(fp[ci]), fn=int(fn[ci]))
+                            if len(heap) < top_k:
+                                heapq.heappush(heap, (hv_val, counter, combo_key, s))
+                            else:
+                                heapq.heapreplace(heap, (hv_val, counter, combo_key, s))
+                            counter += 1
+    else:
+        for idx in _combo_batches_np(n, r, 1_000_000):
+            batch_results = []
+            run_rules(idx, batch_results)
+            for suffix, correct, fp, fn in batch_results:
+                counter = _heap_update(heap, counter, top_k,
+                                       hv_arr_from(correct, fp, fn),
+                                       correct, fp, fn, n_pairs,
+                                       idx, pid_list, suffix)
+
+    rows = {}
+    for _, _, label, stats in heap:
+        rows[label] = stats
+    return rows
+
+
 def discover_files(seed_path, seed_pid):
     """Return {pid: (data, results)} for all p1, p2, ... files found sequentially."""
     path = Path(seed_path)
@@ -439,42 +872,12 @@ def print_discovery_ensemble(args, files):
             rows[f"{pair_key} AND"] = _stats_from_dirs([ya[d] & yb[d] for d in dirs], exp_vec, n_pairs)
 
     if args.n_way >= 3:
-        # M_per_dir: {dir: (n_files, n_pairs)} — stacked per-direction bool matrices
-        M_per_dir = {d: np.stack([yes_vecs[p][d] for p in pids]) for d in dirs}
-        pid_list = list(pids)
-        r = args.n_way
-        majority_threshold = (r + 1) // 2
-        sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
-        top_k = args.heap_size
-        heap = []   # min-heap of (heap_val, counter, label, stats)
-        counter = 0
-        for batch in _combo_batches(len(pid_list), r, 10_000):
-            idx = np.array(batch, dtype=np.intp)
-            # sub_per_dir: list of (batch_size, r, n_pairs), one per direction
-            sub_per_dir = [M_per_dir[d][idx] for d in dirs]
-            batch_results = []
-            if args.ensemble in ('ALL', 'OR'):
-                or_per_dir = [s.any(axis=1) for s in sub_per_dir]
-                batch_results.append((" OR", _batch_stats_from_dirs(or_per_dir, exp_vec, n_pairs)))
-            if args.ensemble in ('ALL', 'AND'):
-                and_per_dir = [s.all(axis=1) for s in sub_per_dir]
-                batch_results.append((" AND", _batch_stats_from_dirs(and_per_dir, exp_vec, n_pairs)))
-            if args.ensemble in ('ALL', 'MAJORITY'):
-                maj_per_dir = [s.astype(np.uint8).sum(axis=1) >= majority_threshold for s in sub_per_dir]
-                batch_results.append((" MAJORITY", _batch_stats_from_dirs(maj_per_dir, exp_vec, n_pairs)))
-            del sub_per_dir
-            for i, combo in enumerate(batch):
-                combo_key = ','.join(pid_list[j] for j in combo)
-                for suffix, stats_arr in batch_results:
-                    s = stats_arr[i]
-                    hv = s[sort_key] if sort_rev else -s[sort_key]
-                    if len(heap) < top_k:
-                        heapq.heappush(heap, (hv, counter, combo_key + suffix, s))
-                    elif hv > heap[0][0]:
-                        heapq.heapreplace(heap, (hv, counter, combo_key + suffix, s))
-                    counter += 1
-        for _, _, label, stats in heap:
-            rows[label] = stats
+        if n_pairs <= 64:
+            exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
+            nway_rows = _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, args)
+        else:
+            nway_rows = _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, args)
+        rows.update(nway_rows)
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
