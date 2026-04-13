@@ -243,7 +243,7 @@ def _batch_stats_from_dirs(combined_per_dir, exp_vec, n):
             for i in range(len(correct))]
 
 
-# --- bitmask-accelerated n-way ensemble (n_pairs <= 64) ---
+# --- bitmask-accelerated n-way ensemble ---
 
 # 16-bit popcount lookup table (65536 entries, covers 2 bytes at a time)
 _POPCOUNT_TABLE_16 = np.array([bin(i).count('1') for i in range(65536)], dtype=np.int32)
@@ -257,56 +257,43 @@ def _popcount(arr):
     return result
 
 
+def _popcount_total(arr):
+    """Popcount summed across the last axis of a uint64 word array."""
+    return _popcount(arr).sum(axis=-1)
+
+
 def _build_bitmasks(files_dict):
-    """Like _build_vecs but encodes as uint64 bitmasks. Requires n_pairs <= 64.
+    """Like _build_vecs but encodes pairs into arrays of uint64 bitmasks.
     Returns (exp_bits, yes_bits, dirs, n_pairs, pid_list).
-    exp_bits: uint64 scalar.
-    yes_bits: {dir: (n_files,) uint64 array}, indexed parallel to pid_list."""
+    exp_bits: (W,) uint64 array.
+    yes_bits: {dir: (n_files, W) uint64 array}, indexed parallel to pid_list."""
     all_keys = list(files_dict.keys())
     pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
     n = len(common)
-    assert n <= 64, f"_build_bitmasks requires n_pairs <= 64, got {n}"
+    n_words = (n + 63) // 64
     first_results = files_dict[all_keys[0]]
     first_pair = next(p for p in common if 'result' in first_results[p])
     dirs = list(first_results[first_pair]['result']['logprobs'].keys())
 
     # Build expected bitmask
-    exp_bits = np.uint64(0)
+    exp_bits = np.zeros(n_words, dtype=np.uint64)
     for i, p in enumerate(common):
         if _expected(first_results[p]) == 'YES':
-            exp_bits |= np.uint64(1 << i)
+            exp_bits[i // 64] |= np.uint64(1 << (i % 64))
 
     # Build per-file per-direction bitmasks
     yes_bits = {}
     for d in dirs:
-        col = np.zeros(len(all_keys), dtype=np.uint64)
+        col = np.zeros((len(all_keys), n_words), dtype=np.uint64)
         for fi, k in enumerate(all_keys):
-            bits = np.uint64(0)
             for i, p in enumerate(common):
                 data = files_dict[k][p]
                 if 'result' in data and data['result'][d].token == 'YES':
-                    bits |= np.uint64(1 << i)
-            col[fi] = bits
+                    col[fi, i // 64] |= np.uint64(1 << (i % 64))
         yes_bits[d] = col
 
     return exp_bits, yes_bits, dirs, n, all_keys
-
-
-def _bitmask_stats(combined_per_dir, exp_bits, not_exp, n_mask):
-    """Compute (correct, fp, fn) int32 arrays from per-direction combined uint64 arrays.
-    combined_per_dir: list of (batch_size,) uint64 arrays, one per direction."""
-    dir_fp = [cv & not_exp for cv in combined_per_dir]
-    dir_correct = [(cv & exp_bits) | ((~cv & n_mask) & not_exp) for cv in combined_per_dir]
-    pair_fp = dir_fp[0]
-    for dfp in dir_fp[1:]:
-        pair_fp = pair_fp | dfp
-    pair_correct = dir_correct[0]
-    for dc in dir_correct[1:]:
-        pair_correct = pair_correct | dc
-    pair_correct = pair_correct & ~pair_fp
-    pair_fn = ~pair_fp & ~pair_correct & n_mask
-    return _popcount(pair_correct), _popcount(pair_fp), _popcount(pair_fn)
 
 
 def _screen_bits(combined_per_dir, exp_bits, not_exp, n_mask):
@@ -326,15 +313,15 @@ def _screen_bits(combined_per_dir, exp_bits, not_exp, n_mask):
 
 def _scalar_fp_fn(combined_per_dir, ci, exp_bits, not_exp, n_mask):
     """Compute (fp, fn) for a single combo element from batch arrays."""
-    fp_bits = np.uint64(0)
-    correct_bits = np.uint64(0)
+    fp_bits = np.zeros_like(exp_bits)
+    correct_bits = np.zeros_like(exp_bits)
     for cv in combined_per_dir:
         v = cv[ci]
         fp_bits |= v & not_exp
         correct_bits |= (v & exp_bits) | ((~v & n_mask) & not_exp)
     correct_bits &= ~fp_bits
-    fp = bin(int(fp_bits)).count('1')
-    fn = bin(int(~fp_bits & ~correct_bits & n_mask)).count('1')
+    fp = int(_popcount(fp_bits).sum())
+    fn = int(_popcount((~fp_bits & ~correct_bits) & n_mask).sum())
     return fp, fn
 
 
@@ -524,17 +511,20 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, threshold):
     """Majority vote using column-wise indexing and per-bit counting."""
     r = idx.shape[1]
     bs = len(idx)
-    bit_masks = np.array([np.uint64(1 << b) for b in range(n_pairs)], dtype=np.uint64)
+    n_words = bits_per_dir[dirs[0]].shape[1]
+    bit_masks = np.zeros((n_pairs, n_words), dtype=np.uint64)
+    for b in range(n_pairs):
+        bit_masks[b, b // 64] = np.uint64(1 << (b % 64))
     combined = []
     for d in dirs:
         yb = bits_per_dir[d]
-        accum = np.zeros(bs, dtype=np.uint64)
+        accum = np.zeros((bs, n_words), dtype=np.uint64)
         for b in range(n_pairs):
             bm = bit_masks[b]
             yes_count = np.zeros(bs, dtype=np.int32)
             for j in range(r):
-                yes_count += ((yb[idx[:, j]] & bm) > 0).astype(np.int32)
-            accum |= np.where(yes_count >= threshold, bm, np.uint64(0))
+                yes_count += (yb[idx[:, j]] & bm).any(axis=-1).astype(np.int32)
+            accum |= np.where(yes_count[:, None] >= threshold, bm, np.uint64(0))
         combined.append(accum)
     return combined
 
@@ -542,7 +532,10 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, n_pairs, threshold):
 def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args):
     """Run n-way ensemble search using bitmask-accelerated computation.
     Returns dict of {label: stats_dict} for top results."""
-    n_mask = np.uint64((1 << n_pairs) - 1)
+    n_mask = np.full(exp_bits.shape, np.uint64(0xFFFFFFFFFFFFFFFF), dtype=np.uint64)
+    tail = n_pairs % 64
+    if tail:
+        n_mask[-1] = np.uint64((1 << tail) - 1)
     not_exp = ~exp_bits & n_mask
     bits_per_dir = {d: yes_bits[d] for d in dirs}
     pid_list = list(pids)
@@ -558,11 +551,11 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
         """Compute screening heap-value array from combined bitmasks (1 popcount)."""
         pc, pf = _screen_bits(combined, exp_bits, not_exp, n_mask)
         if sort_key == 'correct':
-            return _popcount(pc)
+            return _popcount_total(pc)
         elif sort_key == 'fp':
-            return -_popcount(pf)
+            return -_popcount_total(pf)
         else:  # fn
-            return -_popcount(~pf & ~pc & n_mask)
+            return -_popcount_total((~pf & ~pc) & n_mask)
 
     def run_rules(idx, batch_results):
         if args.ensemble in ('ALL', 'OR'):
@@ -646,16 +639,16 @@ def _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits, dirs, n_pairs, args)
                 if do_or:
                     combined = []
                     for d in dirs:
-                        # (chunk, 1) | (1, B) → (chunk, B) → flatten
-                        c5 = three['or'][d][row_start:row_end, None] | two['or'][d][None, :]
-                        combined.append(c5.ravel())
+                        # (chunk, 1, W) | (1, B, W) → (chunk, B, W) → flatten rows
+                        c5 = three['or'][d][row_start:row_end, None, :] | two['or'][d][None, :, :]
+                        combined.append(c5.reshape(-1, c5.shape[-1]))
                     batch_results.append((' OR', combined, _screen_hv(combined)))
 
                 if do_and:
                     combined = []
                     for d in dirs:
-                        c5 = three['and'][d][row_start:row_end, None] & two['and'][d][None, :]
-                        combined.append(c5.ravel())
+                        c5 = three['and'][d][row_start:row_end, None, :] & two['and'][d][None, :, :]
+                        combined.append(c5.reshape(-1, c5.shape[-1]))
                     batch_results.append((' AND', combined, _screen_hv(combined)))
 
                 if do_maj:
@@ -909,13 +902,8 @@ def print_discovery_ensemble(args, files):
             rows[f"{pair_key} AND"] = _stats_from_dirs([ya[d] & yb[d] for d in dirs], exp_vec, n_pairs)
 
     if args.n_way >= 3:
-        if n_pairs <= 64:
-            print("fast way")
-            exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
-            nway_rows = _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, args)
-        else:
-            print("slow way")
-            nway_rows = _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, args)
+        exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
+        nway_rows = _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, args)
         rows.update(nway_rows)
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
