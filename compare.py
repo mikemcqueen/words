@@ -18,6 +18,7 @@ import heapq
 import json
 import signal
 import sys
+from types import SimpleNamespace
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from itertools import combinations, islice, permutations
@@ -159,6 +160,7 @@ def apply_ensemble_labeled(results_list, rule_name):
 
 ENSEMBLE_RULES_2 = ["OR", "AND"]
 ENSEMBLE_RULES_3 = ["OR", "AND", "MAJORITY"]
+USE_SLOW_MAJORITY = True
 
 
 def _build_vecs(files_dict):
@@ -889,6 +891,18 @@ def print_discovery_ensemble(args, files):
     exp_vec, yes_vecs, dirs, n_pairs = _build_vecs(files)
     rows = {}
 
+    def with_ensemble(ensemble):
+        d = dict(vars(args))
+        d['ensemble'] = ensemble
+        return SimpleNamespace(**d)
+
+    def run_nway(ensemble):
+        run_args = with_ensemble(ensemble)
+        if ensemble == 'MAJORITY' and USE_SLOW_MAJORITY:
+            return _nway_ensemble_vecs(files, pids, yes_vecs, exp_vec, dirs, n_pairs, run_args)
+        exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
+        return _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, run_args)
+
     if args.ensemble == 'ALL':
         for pid in pids:
             rows[pid] = _stats_from_dirs([yes_vecs[pid][d] for d in dirs], exp_vec, n_pairs)
@@ -902,9 +916,12 @@ def print_discovery_ensemble(args, files):
             rows[f"{pair_key} AND"] = _stats_from_dirs([ya[d] & yb[d] for d in dirs], exp_vec, n_pairs)
 
     if args.n_way >= 3:
-        exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
-        nway_rows = _nway_ensemble_bitmask(files, pids, exp_bits, yes_bits_bm, dirs, n_pairs, args)
-        rows.update(nway_rows)
+        if args.ensemble == 'ALL':
+            rows.update(run_nway('OR'))
+            rows.update(run_nway('AND'))
+            rows.update(run_nway('MAJORITY'))
+        else:
+            rows.update(run_nway(args.ensemble))
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     if sort_key == 'correct':
