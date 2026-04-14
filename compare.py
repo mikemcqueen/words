@@ -48,11 +48,11 @@ def parse_args(argv=None):
                         help='comma-separated discovery keys for explicit ensemble; '
                              'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
-                        help='sort field: score (default), FP, FN')
+                        help='sort field: diff=score/fixfp/fixfn/newfp/newfn; ensemble=score/FP/FN')
     parser.add_argument('--top', type=int, default=50, metavar='K',
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
-                        help='max N-way discovery results to retain (default: 100)')
+                        help='max discovery results to retain before final sort (default: 100)')
     parser.add_argument('--bad', action='store_true',
                         help='show FP and FN pairs for the single table entry; requires --top 1')
     add_print_keys_arg(parser, help_text='print displayed row labels as a comma-separated list (discovery mode only)')
@@ -169,9 +169,20 @@ def parse_args(argv=None):
 
     # validate --sort
     sort_lc = args.sort.lower()
-    valid_sort = {'score', 'fp', 'fn'}
+    valid_sort = {'score', 'fp', 'fn'} if args.ensemble else {
+        'score', 'fixfp', 'fixfn', 'newfp', 'newfn'
+    }
     if sort_lc not in valid_sort:
-        parser.error(f'--sort: invalid value {args.sort!r}; choices: score, FP, FN')
+        choices = ', '.join(sorted(valid_sort))
+        parser.error(f'--sort: invalid value {args.sort!r}; choices: {choices}')
+    if args.heap_size <= 0:
+        parser.error('--heap-size must be > 0')
+    if (len(args.files) == 1
+            and Path(args.files[0]).is_dir()
+            and not args.ensemble
+            and args.top
+            and args.top > args.heap_size):
+        parser.error('--top cannot exceed --heap-size for directory 2-way diff discovery')
 
     return args, parser
 
@@ -196,30 +207,74 @@ def parse_result_file(path):
     return data, results
 
 
-def compute_pair_diff(results_1, results_2):
+def compute_pair_diff(results_1, results_2, *, include_or_results=False):
     """Compare anchor labels to the 2-way OR ensemble computed with standard label semantics."""
     common = set(results_1) & set(results_2)
     fixed_fp = fixed_fn = new_fp = new_fn = 0
-    or_results = apply_ensemble_labeled([results_1, results_2], 'OR')
+    or_results = {} if include_or_results else None
+    or_correct = or_fp = or_fn = 0
     for pair in common:
-        d1, d2 = results_1[pair], results_2[pair]
-        if 'label' not in d1 or 'label' not in or_results.get(pair, {}):
+        d1 = results_1[pair]
+        d2 = results_2[pair]
+        result_1 = d1.get('result')
+        result_2 = d2.get('result')
+        if result_1 is None or result_2 is None or 'label' not in d1:
             continue
+
+        expected = _expected(d1)
+        if expected is None:
+            continue
+
+        dirs = result_1['logprobs'].keys()
+        pair_or_label = 'fn'
+        for dir_ in dirs:
+            token_1 = result_1[dir_].token
+            token_2 = result_2[dir_].token
+            combined_token = 'YES' if token_1 == 'YES' or token_2 == 'YES' else 'NO'
+            if combined_token == expected:
+                dir_label = 'correct'
+            elif combined_token == 'YES':
+                dir_label = 'fp'
+            else:
+                dir_label = 'fn'
+            if dir_label == 'fp':
+                pair_or_label = 'fp'
+                break
+            if dir_label == 'correct':
+                pair_or_label = 'correct'
+
         old_label = d1['label']
-        or_label = or_results[pair]['label']
+        or_label = pair_or_label
         if old_label == 'fp'      and or_label != 'fp':   fixed_fp += 1
         if old_label == 'fn'      and or_label != 'fn':   fixed_fn += 1
         if old_label == 'correct' and or_label == 'fp':   new_fp += 1
         if old_label == 'correct' and or_label == 'fn':   new_fn += 1
+        if or_label == 'correct':
+            or_correct += 1
+        elif or_label == 'fp':
+            or_fp += 1
+        else:
+            or_fn += 1
+        if include_or_results:
+            or_results[pair] = {'label': or_label}
 
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
-    or_stats = compute_stats(or_results)
+    total = or_correct + or_fp + or_fn
+    or_stats = dict(
+        correct=or_correct,
+        total=total,
+        pct=100 * or_correct / total if total else 0.0,
+        fp=or_fp,
+        fn=or_fn,
+    )
     score = 2 * fixed_fn + fixed_fp - new_fp
-    return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
+    diff = dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
                 score=score, s1=s1, s2=s2,
-                or_pct=or_stats['pct'], or_fp=or_stats['fp'], or_fn=or_stats['fn'],
-                or_results=or_results)
+                or_pct=or_stats['pct'], or_fp=or_stats['fp'], or_fn=or_stats['fn'])
+    if include_or_results:
+        diff['or_results'] = or_results
+    return diff
 
 
 def _expected(data) -> str | None:
@@ -913,7 +968,7 @@ def print_explicit_2way_diff(files, args):
     #pid_a, results_a = two_results[0]
     #pid_b, results_b = two_results[1]
     key_a, key_b, *_ = iter(files)
-    d = compute_pair_diff(files[key_a], files[key_b])
+    d = compute_pair_diff(files[key_a], files[key_b], include_or_results=args.bad)
     print_2way_diff_table([(key_a, key_b, d)])
     return [(f"{key_a},{key_b} DIFF", d)] # the "row" print_bad_pairs likes
 
@@ -943,13 +998,33 @@ def _key_from_path(path):
     return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
 
 
-def _sort_diff_rows(rows, sort):
-    """Sort list of (anchor, complement, diff) by the given sort field. Returns sorted list."""
+def _diff_sort_value(diff, sort):
+    """Return a comparable value where larger is always a better diff row."""
     sort_key, sort_rev = SORT_DEFAULT_KEYS[sort.lower()]
     if sort_key == 'score':
-        return sorted(rows, key=lambda x: (x[2]['or_pct'], -x[2]['or_fp'], -x[2]['or_fn']), reverse=True)
-    else:
-        return sorted(rows, key=lambda x: (x[2][sort_key] * (-1 if sort_rev else 1), -x[2]['or_pct']))
+        return (diff['or_pct'], -diff['or_fp'], -diff['or_fn'])
+    primary = diff[sort_key] if sort_rev else -diff[sort_key]
+    return (primary, diff['or_pct'])
+
+
+def _retain_top_rows(rows, limit, value_fn):
+    """Retain the best `limit` rows from an iterable using a min-heap."""
+    heap = []
+    counter = 0
+    for row in rows:
+        hv = value_fn(row)
+        item = (hv, counter, row)
+        if len(heap) < limit:
+            heapq.heappush(heap, item)
+        elif hv > heap[0][0]:
+            heapq.heapreplace(heap, item)
+        counter += 1
+    return [row for _, _, row in sorted(heap, key=lambda item: item[1])]
+
+
+def _sort_diff_rows(rows, sort):
+    """Sort list of (anchor, complement, diff) by the given sort field. Returns sorted list."""
+    return sorted(rows, key=lambda x: _diff_sort_value(x[2], sort), reverse=True)
 
 
 def print_2way_diff_anchored(anchor_key, files, args):
@@ -969,10 +1044,11 @@ def print_2way_diff_anchored(anchor_key, files, args):
 
 def print_2way_diff_all_pairs(files, args):
     """Print diff table for all ordered pairs of discovered files."""
-    rows = []
-    for a, b in permutations(files, 2):
-        d = compute_pair_diff(files[a], files[b])
-        rows.append((a, b, d))
+    rows = _retain_top_rows(
+        ((a, b, compute_pair_diff(files[a], files[b])) for a, b in permutations(files, 2)),
+        args.heap_size,
+        lambda row: _diff_sort_value(row[2], args.sort),
+    )
     sorted_rows = _sort_diff_rows(rows, args.sort)
     displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
     print_2way_diff_table(displayed_rows)
@@ -1201,7 +1277,9 @@ def main():
         if len(parts) == 2:
             keys, rule = parts[0].split(','), parts[1]
             if rule == 'DIFF':
-                combined = row_data['or_results']
+                combined = row_data.get('or_results')
+                if combined is None:
+                    combined = apply_ensemble_labeled([files[key] for key in keys], 'OR')
             else:
                 combined = apply_ensemble_labeled([files[key] for key in keys], rule)
             print_bad_pairs(combined, sources=[(key, files[key]) for key in keys])
