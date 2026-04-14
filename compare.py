@@ -10,7 +10,7 @@ import sys
 from types import SimpleNamespace
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-from itertools import combinations, islice, permutations
+from itertools import combinations, islice
 from pathlib import Path
 
 import numpy as np
@@ -207,74 +207,170 @@ def parse_result_file(path):
     return data, results
 
 
-def compute_pair_diff(results_1, results_2, *, include_or_results=False):
+def _common_pair_entries(results_1, results_2):
+    """Yield shared pair entries as (pair, data_1, data_2) without materializing intersections."""
+    if len(results_1) <= len(results_2):
+        items = results_1.items()
+        other = results_2
+        left_first = True
+    else:
+        items = results_2.items()
+        other = results_1
+        left_first = False
+
+    for pair, data in items:
+        other_data = other.get(pair)
+        if other_data is None:
+            continue
+        if left_first:
+            yield pair, data, other_data
+        else:
+            yield pair, other_data, data
+
+
+def _pair_or_label(d1, d2):
+    """Return the 2-way OR pair label using the existing YES/NO collapsing semantics."""
+    result_1 = d1.get('result')
+    result_2 = d2.get('result')
+    if result_1 is None or result_2 is None or 'label' not in d1:
+        return None
+
+    expected = _expected(d1)
+    if expected is None:
+        return None
+
+    pair_has_yes = False
+    for dir_ in result_1['logprobs']:
+        if result_1[dir_].token == 'YES' or result_2[dir_].token == 'YES':
+            pair_has_yes = True
+            break
+
+    if expected == 'YES':
+        return 'correct' if pair_has_yes else 'fn'
+    return 'fp' if pair_has_yes else 'correct'
+
+
+def _pair_diff_from_counts(fixed_fp, fixed_fn, new_fp, new_fn,
+                           or_correct, or_fp, or_fn, *, s1, s2, or_results=None):
+    total = or_correct + or_fp + or_fn
+    score = 2 * fixed_fn + fixed_fp - new_fp
+    diff = dict(
+        fixed_fp=fixed_fp,
+        fixed_fn=fixed_fn,
+        new_fp=new_fp,
+        new_fn=new_fn,
+        score=score,
+        s1=s1,
+        s2=s2,
+        or_pct=100 * or_correct / total if total else 0.0,
+        or_fp=or_fp,
+        or_fn=or_fn,
+    )
+    if or_results is not None:
+        diff['or_results'] = or_results
+    return diff
+
+
+def compute_pair_diff(results_1, results_2, *, include_or_results=False, s1=None, s2=None):
     """Compare anchor labels to the 2-way OR ensemble computed with standard label semantics."""
-    common = set(results_1) & set(results_2)
     fixed_fp = fixed_fn = new_fp = new_fn = 0
     or_results = {} if include_or_results else None
     or_correct = or_fp = or_fn = 0
-    for pair in common:
-        d1 = results_1[pair]
-        d2 = results_2[pair]
-        result_1 = d1.get('result')
-        result_2 = d2.get('result')
-        if result_1 is None or result_2 is None or 'label' not in d1:
+    for pair, d1, d2 in _common_pair_entries(results_1, results_2):
+        old_label = d1.get('label')
+        if old_label is None:
             continue
 
-        expected = _expected(d1)
-        if expected is None:
+        or_label = _pair_or_label(d1, d2)
+        if or_label is None:
             continue
 
-        dirs = result_1['logprobs'].keys()
-        pair_or_label = 'fn'
-        for dir_ in dirs:
-            token_1 = result_1[dir_].token
-            token_2 = result_2[dir_].token
-            combined_token = 'YES' if token_1 == 'YES' or token_2 == 'YES' else 'NO'
-            if combined_token == expected:
-                dir_label = 'correct'
-            elif combined_token == 'YES':
-                dir_label = 'fp'
-            else:
-                dir_label = 'fn'
-            if dir_label == 'fp':
-                pair_or_label = 'fp'
-                break
-            if dir_label == 'correct':
-                pair_or_label = 'correct'
+        if old_label == 'fp' and or_label != 'fp':
+            fixed_fp += 1
+        elif old_label == 'fn' and or_label != 'fn':
+            fixed_fn += 1
+        elif old_label == 'correct':
+            if or_label == 'fp':
+                new_fp += 1
+            elif or_label == 'fn':
+                new_fn += 1
 
-        old_label = d1['label']
-        or_label = pair_or_label
-        if old_label == 'fp'      and or_label != 'fp':   fixed_fp += 1
-        if old_label == 'fn'      and or_label != 'fn':   fixed_fn += 1
-        if old_label == 'correct' and or_label == 'fp':   new_fp += 1
-        if old_label == 'correct' and or_label == 'fn':   new_fn += 1
         if or_label == 'correct':
             or_correct += 1
         elif or_label == 'fp':
             or_fp += 1
         else:
             or_fn += 1
+
         if include_or_results:
             or_results[pair] = {'label': or_label}
 
-    s1 = compute_stats(results_1)
-    s2 = compute_stats(results_2)
-    total = or_correct + or_fp + or_fn
-    or_stats = dict(
-        correct=or_correct,
-        total=total,
-        pct=100 * or_correct / total if total else 0.0,
-        fp=or_fp,
-        fn=or_fn,
+    if s1 is None:
+        s1 = compute_stats(results_1)
+    if s2 is None:
+        s2 = compute_stats(results_2)
+    return _pair_diff_from_counts(
+        fixed_fp, fixed_fn, new_fp, new_fn,
+        or_correct, or_fp, or_fn,
+        s1=s1, s2=s2, or_results=or_results,
     )
-    score = 2 * fixed_fn + fixed_fp - new_fp
-    diff = dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
-                score=score, s1=s1, s2=s2,
-                or_pct=or_stats['pct'], or_fp=or_stats['fp'], or_fn=or_stats['fn'])
-    if include_or_results:
-        diff['or_results'] = or_results
-    return diff
+
+
+def compute_pair_diff_both(results_1, results_2, *, s1, s2):
+    """Compute both ordered 2-way diff rows in a single pass over shared pairs."""
+    fixed_fp_1 = fixed_fn_1 = new_fp_1 = new_fn_1 = 0
+    fixed_fp_2 = fixed_fn_2 = new_fp_2 = new_fn_2 = 0
+    or_correct = or_fp = or_fn = 0
+
+    for _, d1, d2 in _common_pair_entries(results_1, results_2):
+        old_label_1 = d1.get('label')
+        old_label_2 = d2.get('label')
+        if old_label_1 is None or old_label_2 is None:
+            continue
+
+        or_label = _pair_or_label(d1, d2)
+        if or_label is None:
+            continue
+
+        if old_label_1 == 'fp' and or_label != 'fp':
+            fixed_fp_1 += 1
+        elif old_label_1 == 'fn' and or_label != 'fn':
+            fixed_fn_1 += 1
+        elif old_label_1 == 'correct':
+            if or_label == 'fp':
+                new_fp_1 += 1
+            elif or_label == 'fn':
+                new_fn_1 += 1
+
+        if old_label_2 == 'fp' and or_label != 'fp':
+            fixed_fp_2 += 1
+        elif old_label_2 == 'fn' and or_label != 'fn':
+            fixed_fn_2 += 1
+        elif old_label_2 == 'correct':
+            if or_label == 'fp':
+                new_fp_2 += 1
+            elif or_label == 'fn':
+                new_fn_2 += 1
+
+        if or_label == 'correct':
+            or_correct += 1
+        elif or_label == 'fp':
+            or_fp += 1
+        else:
+            or_fn += 1
+
+    return (
+        _pair_diff_from_counts(
+            fixed_fp_1, fixed_fn_1, new_fp_1, new_fn_1,
+            or_correct, or_fp, or_fn,
+            s1=s1, s2=s2,
+        ),
+        _pair_diff_from_counts(
+            fixed_fp_2, fixed_fn_2, new_fp_2, new_fn_2,
+            or_correct, or_fp, or_fn,
+            s1=s2, s2=s1,
+        ),
+    )
 
 
 def _expected(data) -> str | None:
@@ -968,7 +1064,9 @@ def print_explicit_2way_diff(files, args):
     #pid_a, results_a = two_results[0]
     #pid_b, results_b = two_results[1]
     key_a, key_b, *_ = iter(files)
-    d = compute_pair_diff(files[key_a], files[key_b], include_or_results=args.bad)
+    s1 = compute_stats(files[key_a])
+    s2 = compute_stats(files[key_b])
+    d = compute_pair_diff(files[key_a], files[key_b], include_or_results=args.bad, s1=s1, s2=s2)
     print_2way_diff_table([(key_a, key_b, d)])
     return [(f"{key_a},{key_b} DIFF", d)] # the "row" print_bad_pairs likes
 
@@ -1027,13 +1125,21 @@ def _sort_diff_rows(rows, sort):
     return sorted(rows, key=lambda x: _diff_sort_value(x[2], sort), reverse=True)
 
 
+def _compute_stats_map(files):
+    """Return per-file stats for reuse across repeated 2-way diff comparisons."""
+    return {key: compute_stats(results) for key, results in files.items()}
+
+
 def print_2way_diff_anchored(anchor_key, files, args):
     """Print anchor-based diff table: anchor_key vs all other discovered files."""
+    stats_by_key = _compute_stats_map(files)
+    anchor_results = files[anchor_key]
+    anchor_stats = stats_by_key[anchor_key]
     rows = []
     for key, results_other in files.items():
         if key == anchor_key:
             continue
-        d = compute_pair_diff(files[anchor_key], results_other)
+        d = compute_pair_diff(anchor_results, results_other, s1=anchor_stats, s2=stats_by_key[key])
         rows.append((anchor_key, key, d))
     sorted_rows = _sort_diff_rows(rows, args.sort)
     displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
@@ -1042,10 +1148,33 @@ def print_2way_diff_anchored(anchor_key, files, args):
         print_displayed_keys([(complement, diff) for _, complement, diff in displayed_rows])
 
 
+def _iter_2way_diff_all_pair_rows(files, stats_by_key):
+    """Yield ordered all-pairs diff rows while computing each unordered pair only once."""
+    items = list(files.items())
+    reverse_rows = {}
+    for i, (anchor_key, anchor_results) in enumerate(items):
+        for j, (complement_key, complement_results) in enumerate(items):
+            if i == j:
+                continue
+            if j < i:
+                yield reverse_rows.pop((i, j))
+                continue
+
+            diff_ab, diff_ba = compute_pair_diff_both(
+                anchor_results,
+                complement_results,
+                s1=stats_by_key[anchor_key],
+                s2=stats_by_key[complement_key],
+            )
+            yield (anchor_key, complement_key, diff_ab)
+            reverse_rows[(j, i)] = (complement_key, anchor_key, diff_ba)
+
+
 def print_2way_diff_all_pairs(files, args):
     """Print diff table for all ordered pairs of discovered files."""
+    stats_by_key = _compute_stats_map(files)
     rows = _retain_top_rows(
-        ((a, b, compute_pair_diff(files[a], files[b])) for a, b in permutations(files, 2)),
+        _iter_2way_diff_all_pair_rows(files, stats_by_key),
         args.heap_size,
         lambda row: _diff_sort_value(row[2], args.sort),
     )
