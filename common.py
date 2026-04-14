@@ -318,7 +318,7 @@ def resolve_key(file_or_dir, key):
             candidates.append(f)
 
     if len(candidates) == 0:
-        print(f"Error: no file found for key {key!r} in {directory}", file=sys.stderr)
+        print(f"Error: no file found for key {key!r} in {d}", file=sys.stderr)
         sys.exit(1)
     if len(candidates) > 1:
         print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
