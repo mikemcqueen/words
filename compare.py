@@ -19,7 +19,7 @@ from common import (load_expected_pairs, load_eval_results,
                     parse_result_filename, discover_files_all,
                     compute_stats, print_stats, resolve_key, print_bad_pairs,
                     add_print_keys_arg, print_displayed_keys)
-from score import label_eval_results, resolve_all_pair_labels
+from score import TokenLabel, label_eval_results, resolve_all_pair_labels, resolve_pair_label
 
 
 def parse_args(argv=None):
@@ -197,41 +197,16 @@ def parse_result_file(path):
 
 
 def compute_pair_diff(results_1, results_2):
-    """Compute Fixed/New FP/FN counts and score comparing results_1 (anchor) to OR-ensemble of both.
-
-    OR is applied per-direction across both files: a pair is 'correct' under OR if any direction
-    in either file is correct. Directions are derived from each pair's logprobs keys.
-    """
+    """Compare anchor labels to the 2-way OR ensemble computed with standard label semantics."""
     common = set(results_1) & set(results_2)
     fixed_fp = fixed_fn = new_fp = new_fn = 0
+    or_results = apply_ensemble_labeled([results_1, results_2], 'OR')
     for pair in common:
         d1, d2 = results_1[pair], results_2[pair]
-        if 'label' not in d1 or 'result' not in d1 or 'result' not in d2:
+        if 'label' not in d1 or 'label' not in or_results.get(pair, {}):
             continue
-        r1, r2 = d1['result'], d2['result']
-        dirs = [d for d in r1['logprobs'] if d in r2]
-        if not dirs:
-            continue
-
-        # Derive expected from the first direction's label+token in r1
-        first = r1[dirs[0]]
-        if first.label == 'correct':
-            expected = first.token
-        elif first.label == 'fp':
-            expected = 'NO'
-        else:
-            expected = 'YES'
-
-        # OR ensemble: correct if any direction in either file is correct
-        or_correct = any(r1[d].label == 'correct' or r2[d].label == 'correct' for d in dirs)
-        if or_correct:
-            or_label = 'correct'
-        elif expected == 'NO':
-            or_label = 'fp'   # OR said YES (both files wrong on a NO pair)
-        else:
-            or_label = 'fn'   # OR said NO (both files wrong on a YES pair)
-
         old_label = d1['label']
+        or_label = or_results[pair]['label']
         if old_label == 'fp'      and or_label != 'fp':   fixed_fp += 1
         if old_label == 'fn'      and or_label != 'fn':   fixed_fn += 1
         if old_label == 'correct' and or_label == 'fp':   new_fp += 1
@@ -239,15 +214,12 @@ def compute_pair_diff(results_1, results_2):
 
     s1 = compute_stats(results_1)
     s2 = compute_stats(results_2)
+    or_stats = compute_stats(or_results)
     score = 2 * fixed_fn + fixed_fp - new_fp
-    or_correct_count = s1['correct'] + fixed_fn - new_fp
-    or_fp      = s1['fp'] + new_fp
-    or_fn      = s1['fn'] - fixed_fn
-    or_total   = s1['total']
-    or_pct     = 100.0 * or_correct_count / or_total if or_total else 0.0
     return dict(fixed_fp=fixed_fp, fixed_fn=fixed_fn, new_fp=new_fp, new_fn=new_fn,
                 score=score, s1=s1, s2=s2,
-                or_pct=or_pct, or_fp=or_fp, or_fn=or_fn)
+                or_pct=or_stats['pct'], or_fp=or_stats['fp'], or_fn=or_stats['fn'],
+                or_results=or_results)
 
 
 def _expected(data) -> str | None:
@@ -267,7 +239,7 @@ def _expected(data) -> str | None:
 
 def apply_ensemble_labeled(results_list, rule_name):
     """Apply OR/AND/MAJORITY per direction across N files. Returns combined labeled dict.
-    Final pair label uses any_correct semantics across directions."""
+    Final pair label uses the canonical resolve_pair_label() semantics."""
     n = len(results_list)
     common = set.intersection(*(set(r) for r in results_list))
     if not common:
@@ -285,8 +257,9 @@ def apply_ensemble_labeled(results_list, rule_name):
         if expected is None:
             continue
 
-        # Apply ensemble rule per direction; pair is correct if any direction matches expected
-        pair_correct = False
+        # Apply ensemble rule per direction, then resolve the pair label with
+        # the same fp > correct > fn semantics used elsewhere.
+        combined_result = {'logprobs': {}}
         for dir_ in dirs:
             tokens = [r[dir_].token for r in results]
             yes_count = sum(1 for t in tokens if t == 'YES')
@@ -297,11 +270,15 @@ def apply_ensemble_labeled(results_list, rule_name):
             else:  # MAJORITY
                 combined_token = 'YES' if yes_count >= majority_threshold else 'NO'
             if combined_token == expected:
-                pair_correct = True
+                dir_label = 'correct'
+            elif combined_token == 'YES':
+                dir_label = 'fp'
+            else:
+                dir_label = 'fn'
+            combined_result['logprobs'][dir_] = []
+            combined_result[dir_] = TokenLabel(token=combined_token, label=dir_label)
 
-        # fallback: expected=NO → all dirs said YES (fp); expected=YES → all dirs said NO (fn)
-        label = 'correct' if pair_correct else ('fp' if expected == 'NO' else 'fn')
-        combined[pair] = {'label': label}
+        combined[pair] = {'label': resolve_pair_label(combined_result)}
     return combined
 
 
@@ -1180,19 +1157,8 @@ def load_result_files(expected, args):
 # --- top-level runners ---
 
 def run_explicit_2way(files, expected, args):
-    if not files:
-        two_results = []
-        for i in range(2):
-            results = load_eval_results(args.files[i])
-            label_eval_results(results, expected, args.method)
-            resolve_all_pair_labels(results)
-            #parsed = parse_result_filename(args.files[i])
-            #pid = parsed[2] if parsed else Path(args.files[i]).stem
-            key = _key_from_path(args.files[i])
-            two_results.append((key, results))
-
     if args.ensemble:
-        print_2way_ensemble(two_results, args)
+        return print_discovery_ensemble(args, files)
     else:
         return print_explicit_2way_diff(files, args)
 
@@ -1230,11 +1196,14 @@ def main():
 
     if args.bad and rows:
         assert len(rows) == 1
-        top_label, _ = rows[0]
+        top_label, row_data = rows[0]
         parts = top_label.rsplit(' ', 1)
         if len(parts) == 2:
             keys, rule = parts[0].split(','), parts[1]
-            combined = apply_ensemble_labeled([files[key] for key in keys], rule)
+            if rule == 'DIFF':
+                combined = row_data['or_results']
+            else:
+                combined = apply_ensemble_labeled([files[key] for key in keys], rule)
             print_bad_pairs(combined, sources=[(key, files[key]) for key in keys])
 
 if __name__ == '__main__':
