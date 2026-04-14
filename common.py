@@ -221,6 +221,20 @@ def compute_stats(eval_results):
     return dict(correct=correct, total=total, pct=pct, fp=fp, fn=fn)
 
 
+def expected_yesno_from_labeled_result(data) -> str | None:
+    """Derive the expected YES/NO value from a labeled result entry."""
+    result = data.get('result')
+    if result is None:
+        return None
+    first_dir = next(iter(result['logprobs']))
+    tl = result[first_dir]
+    if tl.label == 'fp':
+        return 'NO'
+    if tl.label == 'fn':
+        return 'YES'
+    return tl.token
+
+
 def print_stats(label, stats, w=24):
     print(f"{label:<{w}s}  {stats['correct']:3d}/{stats['total']:3d} ({stats['pct']:5.1f}%)  "
           f"{stats['fp']:3d}  {stats['fn']:3d}")
