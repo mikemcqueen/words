@@ -1,17 +1,26 @@
-* i had an idea.. something like.. compare dir -k key1,key2 is the same as a 2-way explicit. we're branching
-on # of files supplied (i think) but in reality the "# of files" is arguably 2 with two keys.  maybe # of (supplied)
-files is just the wrong thing to branch on.  top level flow of code is difficult to understand frankly, and feels
-dirty.
+* 2-way explicit diff --bad with third.p3.qwen35,third.p3.qwen35_moe is really interesting
+  because there is real uncertainty with a lot of the results. good example to experiment with
+  rating certainty. i could imagine a "don't be a tiebreaker if certainty is below threshold"
+  for majority decisions. but probably worth trying out just OR to see how it changes results.
+* BUG: it's showing OrFP 4, OrFN 1, and displaying 2 and 1?? something rotten in Denmark
+
+* BUG: results are wrong (Or%/OrFP/OrFN)
+  * python compare.py --pairs pairs/yesno.200.json results/legacy --top 5
+
+* PERF: the 2-way diff/ensemble stuff could be made faster using bitmasks.
+
+* HACK: two_results hack run_explicit_2way/print_2way_ensemble
 
 * really need to take the time to drill into low probability YES/NOs and see what I can do with that.
-* --print-keys/--top-k  added to compare.py.
 
-less important:
+--less important--
+
+* compare dir -k key1,key2 is the same as a 2-way explicit.
 
 * test pairs with a two-word component, three ways?
   * multiple three-ways exist (interleave, flip_interleave, etc., see notebook)
+  * probably the thing to do here is use synonyms?
   
-
 --old--
 
 * take questionable YES results from results/aardvark.yesno and add those pairs to a special pairs list,
@@ -24,7 +33,6 @@ less important:
     might not be the best test set to do that with).
 
 * tool (disposable) to parse aardvark.yesno and create .yes and .no files.
-
 
 * i was going to supply a .probs output to claude to have it make a python script to output the top1k words.
   but got sidetracked by fir trees.

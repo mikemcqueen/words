@@ -229,7 +229,7 @@ def print_stats(label, stats, w=24):
 def _fmt_logprobs(lp) -> str:
     """Format a logprobs dict compactly, e.g. fwd=[{NO: 0.689}, {YES: 0.310}] rvs=[...]"""
     def fmt_val(v):
-        return f"{v*100.0:.1f}%" if isinstance(v, float) else str(v)
+        return f"{v*100.0:4.1f}%" if isinstance(v, float) else str(v)
     def fmt_dict(d):
         return ", ".join(f"{k:>3}: {fmt_val(v)}" for k, v in d.items())
     def fmt_list(lst):

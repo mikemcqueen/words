@@ -62,13 +62,13 @@ def parse_args(argv=None):
     """
     Usage:
 
-    compare.py <dir>                                         — 2-way diff pairwise across all discovered .jsonl files
-    compare.py <file>                                        — 2-way diff anchor-based across all discovered .jsonl files in same direcotry
-    compare.py <file_a> <file_b>                             — 2-way diff 
-    compare.py <file_a> -k key1                              — 2-way diff; alternate syntax
-    compare.py <file_a> <file_b> -e RULE                     — 2-way ensemble (OR, AND); -2 implied
-    compare.py <file_a> -k key1 -e RULE                      — 2-way ensemble (OR, AND); -2 implied, alternate syntax
-    compare.py <dir|file> -2|-3|-5 [-e RULE]                 — n-way ensemble across all discovered .jsonl files in same directory
+    compare.py <dir>                                         — discovery 2-way diff pairwise across all .jsonl files
+    compare.py <file>                                        — discovery 2-way diff anchor-based across all .jsonl files in same direcotry
+    compare.py <file_a> <file_b>                             — explicit 2-way diff 
+    compare.py <file_a> -k key1                              — explicit 2-way diff; alternate syntax
+    compare.py <file_a> <file_b> -e RULE                     — explicit 2-way ensemble (OR, AND); -2 implied
+    compare.py <file_a> -k key1 -e RULE                      — explicit 2-way ensemble (OR, AND); -2 implied, alternate syntax
+    compare.py <dir|file> -2|-3|-5 [-e RULE]                 — n-way ensemble across all .jsonl files in same directory
     compare.py <dir> -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all key combinations; -N >= len(keys); -2 implied if two keys
     """
 
@@ -107,9 +107,11 @@ def parse_args(argv=None):
     # validate files
     if len(args.files) == 2:
         if Path(args.files[0]).is_dir() or Path(args.files[1]).is_dir():
-            parser.error('when supplying two paths, both must be files')
+            parser.error('both paths must be files')
+        if args.n_way and args.n_way != 2:
+            parser.error('only -2 (2-way) is allowed when supplying two files or one file and one key')
     elif len(args.files) > 2:
-        parser.error('supply 1 or 2 pathss')
+        parser.error('supply 1 or 2 paths')
 
     # validate --keys
     if len(args.keys) > 1:
@@ -123,7 +125,7 @@ def parse_args(argv=None):
 
     # validate --ensemble
     if args.ensemble:
-        # FIRST:ensure args.n_way
+        # FIRST: ensure args.n_way
         if not args.n_way:
             parser.error('--ensemble requires -2, -3, or -5')
         if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
@@ -149,8 +151,14 @@ def parse_args(argv=None):
 
     # validate --bad
     # TODO: allow <dir> -k key1 possibly?
-    if args.bad and args.top != 1:
-        parser.error('--bad requires --top 1')
+    if args.bad:
+        allowed = (
+            args.top == 1                                                          # --top 1
+            or (len(args.files) == 2 and not args.ensemble)                        # explicit 2-way diff
+            or (len(args.files) == 2 and args.ensemble and args.ensemble != "ALL") # explicit 2-way ensemble != ALL
+        )
+        if not allowed:
+            parser.error('--bad requires --top 1, explicit 2-way diff, or explicit 2-way ensemble other than ALL')
 
     # discover = len(args.files) == 1
     # diff = !args.ensemble
@@ -923,11 +931,14 @@ def print_2way_diff_table(rows):
     print()
 
 
-def print_explicit_2way_diff(two_results, args):
-    pid_a, results_a = two_results[0]
-    pid_b, results_b = two_results[1]
-    d = compute_pair_diff(results_a, results_b)
-    print_2way_diff_table([(pid_a, pid_b, d)])
+def print_explicit_2way_diff(files, args):
+    assert len(files.keys()) == 2
+    #pid_a, results_a = two_results[0]
+    #pid_b, results_b = two_results[1]
+    key_a, key_b, *_ = iter(files)
+    d = compute_pair_diff(files[key_a], files[key_b])
+    print_2way_diff_table([(key_a, key_b, d)])
+    return [(f"{key_a},{key_b} DIFF", d)] # the "row" print_bad_pairs likes
 
 
 SORT_DEFAULT_KEYS = {
@@ -964,14 +975,14 @@ def _sort_diff_rows(rows, sort):
         return sorted(rows, key=lambda x: (x[2][sort_key] * (-1 if sort_rev else 1), -x[2]['or_pct']))
 
 
-def print_2way_diff_anchored(seed_key, files, args):
-    """Print anchor-based diff table: seed_key vs all other discovered files."""
+def print_2way_diff_anchored(anchor_key, files, args):
+    """Print anchor-based diff table: anchor_key vs all other discovered files."""
     rows = []
     for key, results_other in files.items():
-        if key == seed_key:
+        if key == anchor_key:
             continue
-        d = compute_pair_diff(files[seed_key], results_other)
-        rows.append((seed_key, key, d))
+        d = compute_pair_diff(files[anchor_key], results_other)
+        rows.append((anchor_key, key, d))
     sorted_rows = _sort_diff_rows(rows, args.sort)
     displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
     print_2way_diff_table(displayed_rows)
@@ -1028,10 +1039,8 @@ def print_2way_ensemble(two_results, args):
     for lbl, stats in ens_rows:
         print_stats(f"  {lbl}", stats, w)
     print()
-
     if combined is not None:
-        print_bad_pairs(combined, sources=[(pid_a, results_a), (pid_b, results_b)])
-
+        print_bad_pairs(combined, sources=two_results)
 
 """
 def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
@@ -1124,89 +1133,109 @@ def print_discovery_ensemble(args, files):
     print()
     if args.print_keys:
         print_displayed_keys([(label.rsplit(' ', 1)[0], stats) for label, stats in displayed_rows])
+    return sorted_rows
 
-    if args.bad and sorted_rows:
-        top_label, _ = sorted_rows[0]
-        parts = top_label.rsplit(' ', 1)
-        if len(parts) == 2:
-            combo_pids, rule_name = parts[0].split(','), parts[1]
-            combined = apply_ensemble_labeled([files[p] for p in combo_pids], rule_name)
-            print_bad_pairs(combined, sources=[(p, files[p]) for p in combo_pids])
+
+def load_files_from_keys(args):
+    """Resolve keys to files, and load results. Returns {key: results}."""
+    directory = args.files[0]
+    files = {}
+    for key in args.keys:
+        path = resolve_key(directory, key)
+        assert key not in files, f"duplicate key: {key}"
+        files[key] = load_eval_results(path)
+    return files
+
+
+def load_files_explicit(filenames: [str]):
+    files = {}
+    for i in range(2):
+        #parsed = parse_result_filename(filenames[i])
+        #key = parsed[2] if parsed else Path(args.files[i]).stem
+        key = _key_from_path(filenames[i])
+        assert key not in files, f"duplicate key: {key}"
+        files[key] = load_eval_results(filenames[i])
+    return files
+
+
+def load_result_files(expected, args):
+    files = None
+    if args.keys and len(args.keys) > 1:
+        files = load_files_from_keys(args)
+    elif len(args.files) == 2:
+        files = load_files_explicit(args.files)
+    elif len(args.files) == 1:
+        files = discover_files_all(args.files[0])
+
+    if files:
+        if len(files) == 0:
+            print("No files found.", file=sys.stderr)
+            sys.exit(1)
+        for results in files.values():
+            label_eval_results(results, expected, args.method)
+            resolve_all_pair_labels(results)
+    return files
 
 
 # --- top-level runners ---
 
-def run_explicit_2way(args):
-    expected = load_expected_pairs(args.pairs)
-    two_results = []
-    for i in range(2):
-        results = load_eval_results(args.files[i])
-        label_eval_results(results, expected, args.method)
-        resolve_all_pair_labels(results)
-        parsed = parse_result_filename(args.files[i])
-        pid = parsed[2] if parsed else Path(args.files[i]).stem
-        two_results.append((pid, results))
-
-    if not args.ensemble:
-        print_explicit_2way_diff(two_results, args)
-    else:
-        print_2way_ensemble(two_results, args)
-
-
-def load_files_from_keys(args):
-    """Resolve keys to files, load and label eval results. Returns {key: labeled_results}."""
-    directory = args.files[0]
-    expected = load_expected_pairs(args.pairs)
-    files = {}
-    for key in args.keys:
-        path = resolve_key(directory, key)
-        r = load_eval_results(path)
-        label_eval_results(r, expected, args.method)
-        resolve_all_pair_labels(r)
-        files[key] = r
-    return files
-
-
-def run_explicit_nway(args):
-    files = load_files_from_keys(args)
-    print_discovery_ensemble(args, files)
-
-
-def run_discovery(args):
-    expected = load_expected_pairs(args.pairs)
-
-    files = discover_files_all(args.files[0])
+def run_explicit_2way(files, expected, args):
     if not files:
-        print("No files found.", file=sys.stderr)
-        sys.exit(1)
+        two_results = []
+        for i in range(2):
+            results = load_eval_results(args.files[i])
+            label_eval_results(results, expected, args.method)
+            resolve_all_pair_labels(results)
+            #parsed = parse_result_filename(args.files[i])
+            #pid = parsed[2] if parsed else Path(args.files[i]).stem
+            key = _key_from_path(args.files[i])
+            two_results.append((key, results))
 
-    for eval_results in files.values():
-        label_eval_results(eval_results, expected, args.method)
-        resolve_all_pair_labels(eval_results)
+    if args.ensemble:
+        print_2way_ensemble(two_results, args)
+    else:
+        return print_explicit_2way_diff(files, args)
 
+
+def run_explicit_nway(files, expected, args):
+    return print_discovery_ensemble(args, files)
+
+
+def run_discovery(files, expected, args):
     p = Path(args.files[0])
     print(f"\nDirectory: {p if p.is_dir() else p.parent}")
     print(f"Found: {len(files)} file(s)\n")
 
     if args.ensemble:
-        print_discovery_ensemble(args, files)
+        return print_discovery_ensemble(args, files)
     elif Path(args.files[0]).is_dir():
         print_2way_diff_all_pairs(files, args)
     else:
-        seed_key = _key_from_path(args.files[0])
-        print_2way_diff_anchored(seed_key, files, args)
+        anchor_key = _key_from_path(args.files[0])
+        print_2way_diff_anchored(anchor_key, files, args)
 
 
 def main():
     args, _ = parse_args()
 
-    if args.keys and len(args.keys) > 1:
-        run_explicit_nway(args)
-    elif len(args.files) == 1:
-        run_discovery(args)
-    elif len(args.files) == 2:
-        run_explicit_2way(args)
+    expected = load_expected_pairs(args.pairs)
+    files = load_result_files(expected, args)
 
+    if args.keys and len(args.keys) > 1:
+        rows = run_explicit_nway(files, expected, args)
+    elif len(args.files) == 1:
+        rows = run_discovery(files, expected, args)
+    elif len(args.files) == 2:
+        rows = run_explicit_2way(files, expected, args)
+
+    if args.bad and rows:
+        assert len(rows) == 1
+        top_label, _ = rows[0]
+        parts = top_label.rsplit(' ', 1)
+        if len(parts) == 2:
+            keys, rule = parts[0].split(','), parts[1]
+            combined = apply_ensemble_labeled([files[key] for key in keys], rule)
+            print_bad_pairs(combined, sources=[(key, files[key]) for key in keys])
 
 if __name__ == '__main__':
     main()
