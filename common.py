@@ -124,6 +124,30 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
                         help="Control API thinking mode (default: off)")
 
 
+def add_print_keys_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+    """Add a shared --pk/--print-keys CLI switch."""
+    parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
+                        help=help_text)
+
+
+def print_displayed_keys(rows) -> None:
+    """Print unique individual keys from displayed row labels/keys.
+
+    Each displayed row key may itself be a comma-separated combination.
+    Split each displayed key on commas, add trimmed parts to a set, then
+    print the unique set as a comma-separated list.
+    """
+    keys = set()
+    for key, _ in rows:
+        for part in str(key).split(','):
+            part = part.strip()
+            if part:
+                keys.add(part)
+    if keys:
+        print(f"{len(keys)} keys:\n")
+        print(','.join(keys))
+
+
 def load_expected_pairs(filepath: str) -> dict:
     """Load a pairs JSON file and return a {pair: expected} dict (space-separated keys)."""
     with open(filepath) as f:
@@ -269,7 +293,7 @@ def print_discovery_ranked(files_dict, sort='score'):
     print()
 
 
-def resolve_key(directory, key):
+def resolve_key(file_or_dir, key):
     """Given a directory and a discovery key like 'crosswd2.p81.qwen35', find the matching .jsonl file.
     Splits key into (prompt_file, pid, tag) and globs for a unique match."""
     parts = key.split('.', 2)
@@ -281,7 +305,8 @@ def resolve_key(directory, key):
         print(f"Error: invalid key {key!r} (expected prompt_file.pid[.tag])", file=sys.stderr)
         sys.exit(1)
 
-    d = Path(directory)
+    p = Path(file_or_dir)
+    d = p if p.is_dir() else p.parent
     pattern = f'*_{prompt_file}_{pid}_*.{tag}.jsonl' if tag else f'*_{prompt_file}_{pid}_*.jsonl'
     candidates = []
     for f in sorted(d.glob(pattern)):

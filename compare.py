@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
 """Compare prompt result files and report statistics.
-
-Usage:
-  compare.py <dir>                                   — discover all .jsonl files; pairwise 2-way diff table (all ordered pairs)
-  compare.py <file>                                  — discover all .jsonl files in same directory; anchor-based 2-way diff table
-  compare.py <file_a> <file_b>                      — compare two files: Fixed/New FP/FN table
-  compare.py -e <file>                               — discover + show pairwise ensemble combinations
-  compare.py -e <file_a> <file_b>                   — explicit 2-way ensemble (OR, AND)
-  compare.py -e -3 <file>                            — discover + include 3-way ensemble combinations
-  compare.py -k key1,key2[,...] -2 <dir>            — explicit 2-way ensemble across all key combinations
-  compare.py -k key1,key2,key3[,...] -3 <dir>       — explicit 3-way ensemble across all key combinations
-  compare.py -k key1,...,key5[,...] -5 <dir>        — explicit 5-way ensemble across all key combinations
 """
 
 import argparse
@@ -28,8 +17,155 @@ import numpy as np
 
 from common import (load_expected_pairs, load_eval_results,
                     parse_result_filename, discover_files_all,
-                    compute_stats, print_stats, resolve_key, print_bad_pairs)
+                    compute_stats, print_stats, resolve_key, print_bad_pairs,
+                    add_print_keys_arg, print_displayed_keys)
 from score import label_eval_results, resolve_all_pair_labels
+
+
+def parse_args(argv=None):
+    """Parse and validate command-line arguments. Returns (args, parser) or exits on error."""
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('files', nargs='+', metavar='path')
+    parser.add_argument("-p", '--pairs', required=True, metavar='PAIRS',
+                        help='pairs JSON file with expected values')
+    parser.add_argument('--method', default='top-token', metavar='METHOD',
+                        help='scoring method (default: top-token)')
+    parser.add_argument('-e', '--ensemble', type=str.upper,
+                        choices=['ALL', 'AND', 'OR', 'MAJORITY'],
+                        default=None, metavar='RULE',
+                        help='ensemble rule: ALL (default), AND, OR, MAJORITY (case-insensitive)')
+
+    nway_group = parser.add_mutually_exclusive_group()
+    nway_group.add_argument('-2', '--two-way', action='store_true',
+                        help='2-way ensemble across all pairwise key/file combinations')
+    nway_group.add_argument('-3', '--three-way', action='store_true',
+                        help='3-way ensemble across all triple key/file combinations')
+    nway_group.add_argument('-5', '--five-way', action='store_true',
+                        help='5-way ensemble across all quintuple key/file combinations')
+
+    parser.add_argument('-k', '--keys', metavar='KEYS',
+                        help='comma-separated discovery keys for explicit ensemble; '
+                             'positional arg must be a directory')
+    parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
+                        help='sort field: score (default), FP, FN')
+    parser.add_argument('--top', type=int, default=50, metavar='K',
+                        help='max rows to display in output tables (default: 50)')
+    parser.add_argument('--heap-size', type=int, default=100, metavar='N',
+                        help='max N-way discovery results to retain (default: 100)')
+    parser.add_argument('--bad', action='store_true',
+                        help='show FP and FN pairs for the single table entry; requires --top 1')
+    add_print_keys_arg(parser, help_text='print displayed row labels as a comma-separated list (discovery mode only)')
+    args = parser.parse_args(argv)
+
+
+    """
+    Usage:
+
+    compare.py <dir>                                         — 2-way diff pairwise across all discovered .jsonl files
+    compare.py <file>                                        — 2-way diff anchor-based across all discovered .jsonl files in same direcotry
+    compare.py <file_a> <file_b>                             — 2-way diff 
+    compare.py <file_a> -k key1                              — 2-way diff; alternate syntax
+    compare.py <file_a> <file_b> -e RULE                     — 2-way ensemble (OR, AND); -2 implied
+    compare.py <file_a> -k key1 -e RULE                      — 2-way ensemble (OR, AND); -2 implied, alternate syntax
+    compare.py <dir|file> -2|-3|-5 [-e RULE]                 — n-way ensemble across all discovered .jsonl files in same directory
+    compare.py <dir> -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all key combinations; -N >= len(keys); -2 implied if two keys
+    """
+
+    # Resolve n_way from the mutually exclusive -2/-3/-5 flags.
+    if args.five_way:
+        args.n_way = 5
+    elif args.three_way:
+        args.n_way = 3
+    elif args.two_way:
+        args.n_way = 2
+    else:
+        args.n_way = None
+
+    args.keys = [k.strip() for k in args.keys.split(',')] if args.keys else []
+
+    # fixup args.files for 2-way alternate syntax
+    if len(args.keys) == 1:
+        if len(args.files) != 1:
+            parser.error('--keys requires exactly one path argument')
+        file2 = resolve_key(args.files[0], args.keys[0]) 
+        args.files.append(str(file2))
+
+    # fixup args.n_way for implied -2 cases
+    if not args.n_way:
+        if len(args.files) == 2 and args.ensemble:
+            # compare.py <file_a> <file_b> -e RULE                        - 2-way ensemble (OR, AND)
+            args.n_way = 2
+        elif len(args.files) == 1 and len(args.keys) == 2:
+            # compare.py <dir> -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all keys
+            args.n_way = 2
+
+    # fixup args.ensemble for implied ALL cases
+    if args.n_way and not args.ensemble:
+        args.ensemble = "ALL"
+            
+    # validate files
+    if len(args.files) == 2:
+        if Path(args.files[0]).is_dir() or Path(args.files[1]).is_dir():
+            parser.error('when supplying two paths, both must be files')
+    elif len(args.files) > 2:
+        parser.error('supply 1 or 2 pathss')
+
+    # validate --keys
+    if len(args.keys) > 1:
+        # FIRST: ensure args.n_way
+        if not args.n_way:
+            parser.error('supplying two or more --keys requires -2, -3, or -5')
+        if not Path(args.files[0]).is_dir():
+            parser.error('supplying two or more --keys requires the path to be a directory')
+        if args.n_way > len(args.keys):
+            parser.error(f'-{args.n_way} requires at least {args.n_way} keys, got {len(args.keys)}')
+
+    # validate --ensemble
+    if args.ensemble:
+        # FIRST:ensure args.n_way
+        if not args.n_way:
+            parser.error('--ensemble requires -2, -3, or -5')
+        if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
+            parser.error(f'--ensemble MAJORITY is not valid with -{args.n_way}')
+
+    """
+    if args.keys:
+        if len(args.files) != 1:
+            parser.error('--keys requires exactly one positional argument')
+        if not Path(args.files[0]).is_dir():
+            parser.error(f'--keys: {args.files[0]!r} is not a directory')
+        if n_ways == 0:
+            parser.error('-k requires -2, -3, or -5')
+        args.ensemble = args.ensemble or 'ALL'
+        return args, parser
+
+    if (args.two_way or args.three_way or args.five_way) and not args.ensemble:
+        parser.error('-2/-3/-5 requires --ensemble')
+
+    if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
+        parser.error('--ensemble MAJORITY requires -3 or -5')
+    """
+
+    # validate --bad
+    # TODO: allow <dir> -k key1 possibly?
+    if args.bad and args.top != 1:
+        parser.error('--bad requires --top 1')
+
+    # discover = len(args.files) == 1
+    # diff = !args.ensemble
+
+    # validate --print-keys
+    if args.print_keys and len(args.files) > 1:
+        parser.error('--print-keys requires discovery mode')
+
+    # validate --sort
+    sort_lc = args.sort.lower()
+    valid_sort = {'score', 'fp', 'fn'}
+    if sort_lc not in valid_sort:
+        parser.error(f'--sort: invalid value {args.sort!r}; choices: score, FP, FN')
+
+    return args, parser
 
 
 def parse_result_file(path):
@@ -126,6 +262,9 @@ def apply_ensemble_labeled(results_list, rule_name):
     Final pair label uses any_correct semantics across directions."""
     n = len(results_list)
     common = set.intersection(*(set(r) for r in results_list))
+    if not common:
+        print("No common pairs")
+        sys.exit(1)
     majority_threshold = (n + 1) // 2
     combined = {}
     for pair in common:
@@ -170,7 +309,9 @@ def _build_vecs(files_dict):
     all_keys = list(files_dict.keys())
     pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
-    n = len(common)
+    if not common:
+        print("No common pairs")
+        sys.exit(1)
     first_results = files_dict[all_keys[0]]
     first_pair = next(p for p in common if 'result' in first_results[p])
     dirs = list(first_results[first_pair]['result']['logprobs'].keys())
@@ -185,7 +326,7 @@ def _build_vecs(files_dict):
         }
         for k in all_keys
     }
-    return exp_vec, yes_vecs, dirs, n
+    return exp_vec, yes_vecs, dirs, len(common)
 
 
 def _resolve_labels_np(combined_per_dir, exp_vec):
@@ -272,6 +413,9 @@ def _build_bitmasks(files_dict):
     all_keys = list(files_dict.keys())
     pair_sets = [set(p for p, d in files_dict[k].items() if 'label' in d) for k in all_keys]
     common = sorted(set.intersection(*pair_sets))
+    if not common:
+        print("No common pairs")
+        sys.exit(1)
     n = len(common)
     n_words = (n + 63) // 64
     first_results = files_dict[all_keys[0]]
@@ -757,10 +901,9 @@ def discover_files(seed_path, seed_pid):
             break
     return found
 
-# --- default (diff) output ---
 
-def print_default_table(rows):
-    """Print diff table. rows is a list of (anchor_pid, complement_pid, diff_dict)."""
+def print_2way_diff_table(rows):
+    """Print 2-way diff table. rows is a list of (anchor_pid, complement_pid, diff_dict)."""
     wa = max((len(a) for a, _, _ in rows), default=len('anchor'))
     wa = max(wa, len('anchor'))
     wc = max((len(c) for _, c, _ in rows), default=len('complement'))
@@ -780,9 +923,11 @@ def print_default_table(rows):
     print()
 
 
-def print_explicit_default(pid_a, results_a, pid_b, results_b):
+def print_explicit_2way_diff(two_results, args):
+    pid_a, results_a = two_results[0]
+    pid_b, results_b = two_results[1]
     d = compute_pair_diff(results_a, results_b)
-    print_default_table([(pid_a, pid_b, d)])
+    print_2way_diff_table([(pid_a, pid_b, d)])
 
 
 SORT_DEFAULT_KEYS = {
@@ -819,7 +964,7 @@ def _sort_diff_rows(rows, sort):
         return sorted(rows, key=lambda x: (x[2][sort_key] * (-1 if sort_rev else 1), -x[2]['or_pct']))
 
 
-def print_discovery_anchored(seed_key, files, args):
+def print_2way_diff_anchored(seed_key, files, args):
     """Print anchor-based diff table: seed_key vs all other discovered files."""
     rows = []
     for key, results_other in files.items():
@@ -828,30 +973,39 @@ def print_discovery_anchored(seed_key, files, args):
         d = compute_pair_diff(files[seed_key], results_other)
         rows.append((seed_key, key, d))
     sorted_rows = _sort_diff_rows(rows, args.sort)
-    print_default_table(sorted_rows[:args.top] if args.top else sorted_rows)
+    displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
+    print_2way_diff_table(displayed_rows)
+    if args.print_keys:
+        print_displayed_keys([(complement, diff) for _, complement, diff in displayed_rows])
 
 
-def print_discovery_all_pairs(files, args):
+def print_2way_diff_all_pairs(files, args):
     """Print diff table for all ordered pairs of discovered files."""
     rows = []
     for a, b in permutations(files, 2):
         d = compute_pair_diff(files[a], files[b])
         rows.append((a, b, d))
     sorted_rows = _sort_diff_rows(rows, args.sort)
-    print_default_table(sorted_rows[:args.top] if args.top else sorted_rows)
+    displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
+    print_2way_diff_table(displayed_rows)
+    if args.print_keys:
+        print_displayed_keys([((f"{anchor},{complement}"), diff) for anchor, complement, diff in displayed_rows])
 
 
 # --- ensemble output ---
 
-def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, sort, ensemble):
+def print_2way_ensemble(two_results, args):
+    pid_a, results_a = two_results[0]
+    pid_b, results_b = two_results[1]
+
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
         print(f"\n  ({pid_a} has {len(results_a)} pairs, {pid_b} has {len(results_b)}, "
               f"{n_common} in common)")
 
     ind_rows = [(pid_a, compute_stats(results_a)), (pid_b, compute_stats(results_b))]
-    rules = [lbl for lbl in ENSEMBLE_RULES_2 if ensemble == 'ALL' or lbl == ensemble]
-    if ensemble != 'ALL':
+    rules = [lbl for lbl in ENSEMBLE_RULES_2 if args.ensemble == 'ALL' or lbl == args.ensemble]
+    if args.ensemble != 'ALL':
         combined = apply_ensemble_labeled([results_a, results_b], rules[0])
         ens_rows = [(rules[0], compute_stats(combined))]
     else:
@@ -859,7 +1013,7 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
         ens_rows = [(lbl, compute_stats(apply_ensemble_labeled([results_a, results_b], lbl)))
                     for lbl in rules]
 
-    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[sort.lower()]
+    sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     ind_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
     ens_rows.sort(key=lambda x: x[1][sort_key], reverse=sort_rev)
 
@@ -879,6 +1033,7 @@ def print_explicit_ensemble(path_a, pid_a, results_a, path_b, pid_b, results_b, 
         print_bad_pairs(combined, sources=[(pid_a, results_a), (pid_b, results_b)])
 
 
+"""
 def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
     sizes = [len(r) for r in results_list]
     n_common = len(set(results_list[0]) & set(results_list[1]) & set(results_list[2]))
@@ -914,6 +1069,7 @@ def print_explicit_ensemble_3(keys, results_list, sort, ensemble):
 
     if combined is not None:
         print_bad_pairs(combined, sources=list(zip(keys, results_list)))
+"""
 
 
 def print_discovery_ensemble(args, files):
@@ -962,9 +1118,12 @@ def print_discovery_ensemble(args, files):
     w = max(w, len('label'))
     print(f"{'label':<{w}s}  {'correct':>16s}  {'FP':>3s}  {'FN':>3s}")
     print(f"{'─'*(w + 28)}")
-    for label, stats in sorted_rows[:args.top]:
+    displayed_rows = sorted_rows[:args.top]
+    for label, stats in displayed_rows:
         print_stats(label, stats, w)
     print()
+    if args.print_keys:
+        print_displayed_keys([(label.rsplit(' ', 1)[0], stats) for label, stats in displayed_rows])
 
     if args.bad and sorted_rows:
         top_label, _ = sorted_rows[0]
@@ -977,34 +1136,29 @@ def print_discovery_ensemble(args, files):
 
 # --- top-level runners ---
 
-def run_explicit(args):
+def run_explicit_2way(args):
     expected = load_expected_pairs(args.pairs)
-    results_a = load_eval_results(args.files[0])
-    results_b = load_eval_results(args.files[1])
-    label_eval_results(results_a, expected, args.method)
-    label_eval_results(results_b, expected, args.method)
-    resolve_all_pair_labels(results_a)
-    resolve_all_pair_labels(results_b)
-    parsed_a = parse_result_filename(args.files[0])
-    parsed_b = parse_result_filename(args.files[1])
-    pid_a = parsed_a[2] if parsed_a else Path(args.files[0]).stem
-    pid_b = parsed_b[2] if parsed_b else Path(args.files[1]).stem
+    two_results = []
+    for i in range(2):
+        results = load_eval_results(args.files[i])
+        label_eval_results(results, expected, args.method)
+        resolve_all_pair_labels(results)
+        parsed = parse_result_filename(args.files[i])
+        pid = parsed[2] if parsed else Path(args.files[i]).stem
+        two_results.append((pid, results))
 
     if not args.ensemble:
-        print_explicit_default(pid_a, results_a, pid_b, results_b)
+        print_explicit_2way_diff(two_results, args)
     else:
-        print_explicit_ensemble(args.files[0], pid_a, results_a,
-                                args.files[1], pid_b, results_b, args.sort,
-                                args.ensemble)
+        print_2way_ensemble(two_results, args)
 
 
 def load_files_from_keys(args):
     """Resolve keys to files, load and label eval results. Returns {key: labeled_results}."""
-    keys = [k.strip() for k in args.keys.split(',')]
     directory = args.files[0]
     expected = load_expected_pairs(args.pairs)
     files = {}
-    for key in keys:
+    for key in args.keys:
         path = resolve_key(directory, key)
         r = load_eval_results(path)
         label_eval_results(r, expected, args.method)
@@ -1019,18 +1173,6 @@ def run_explicit_nway(args):
 
 
 def run_discovery(args):
-    """
-    only one file was supplied. discover all other result files in same dir.
-
-    if supplied file is directory, no anchor is specified, do two-way pair-wise
-      compare of all files in both orders
-    if supplied file is a filename, it's always the anchor, one-way compare with
-      all other files
-
-    if ensemble is specified, do the ensemble thing, anchor doesn't matter, i guess?
-      seems things like "fixedfp, fixedfn" don't make any sense without an anchor.
-
-    """
     expected = load_expected_pairs(args.pairs)
 
     files = discover_files_all(args.files[0])
@@ -1042,111 +1184,28 @@ def run_discovery(args):
         label_eval_results(eval_results, expected, args.method)
         resolve_all_pair_labels(eval_results)
 
-    print(f"\nDirectory: {Path(args.files[0]).parent}")
+    p = Path(args.files[0])
+    print(f"\nDirectory: {p if p.is_dir() else p.parent}")
     print(f"Found: {len(files)} file(s)\n")
 
     if args.ensemble:
         print_discovery_ensemble(args, files)
     elif Path(args.files[0]).is_dir():
-        print_discovery_all_pairs(files, args)
+        print_2way_diff_all_pairs(files, args)
     else:
         seed_key = _key_from_path(args.files[0])
-        print_discovery_anchored(seed_key, files, args)
-
-
-def parse_args(argv=None):
-    """Parse and validate command-line arguments. Returns (args, parser) or exits on error."""
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('files', nargs='+', metavar='file')
-    parser.add_argument('--pairs', required=True, metavar='PAIRS_JSON',
-                        help='pairs JSON file with expected values')
-    parser.add_argument('--method', default='top-token', metavar='METHOD',
-                        help='scoring method (default: top-token)')
-    parser.add_argument('-e', '--ensemble', type=str.upper,
-                        choices=['ALL', 'AND', 'OR', 'MAJORITY'],
-                        default=None, metavar='TYPE',
-                        help='ensemble type: ALL (default), AND, OR, MAJORITY (case-insensitive)')
-    parser.add_argument('-3', '--three-way', action='store_true',
-                        help='include 3-way combinations in discovery ensemble mode')
-    parser.add_argument('-2', '--two-way', action='store_true',
-                        help='2-way ensemble across all pairwise key combinations (use with -k)')
-    parser.add_argument('-5', '--five-way', action='store_true',
-                        help='5-way ensemble across all quintuple key combinations (use with -k, requires >= 5 keys)')
-    parser.add_argument('-k', '--keys', metavar='KEYS',
-                        help='comma-separated discovery keys for explicit ensemble; '
-                             'positional arg must be a directory')
-    parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
-                        help='sort field: score (default), FP, FN')
-    parser.add_argument('--top', type=int, default=50, metavar='K',
-                        help='max rows to display in output tables (default: 50)')
-    parser.add_argument('--heap-size', type=int, default=100, metavar='N',
-                        help='max N-way discovery results to retain (default: 100)')
-    parser.add_argument('--bad', action='store_true',
-                        help='show FP and FN pairs for the single table entry; requires --top 1')
-    args = parser.parse_args(argv)
-
-    # Resolve n_way from the mutually exclusive -2/-3/-5 flags.
-    n_ways = sum([args.two_way, args.three_way, args.five_way])
-    if n_ways > 1:
-        parser.error('-2, -3, and -5 are mutually exclusive')
-    if n_ways == 1:
-        if args.five_way:
-            args.n_way = 5
-        elif args.three_way:
-            args.n_way = 3
-        else:
-            args.n_way = 2
-
-    if args.keys:
-        if len(args.files) != 1:
-            parser.error('--keys requires exactly one positional argument (a directory)')
-        if not Path(args.files[0]).is_dir():
-            parser.error(f'--keys: {args.files[0]!r} is not a directory')
-        if n_ways == 0:
-            parser.error('-k requires -2, -3, or -5')
-        keys = [k.strip() for k in args.keys.split(',')]
-        if len(keys) < args.n_way:
-            parser.error(f'-{args.n_way} requires at least {args.n_way} keys, got {len(keys)}')
-        if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
-            parser.error(f'--ensemble MAJORITY is not valid with -{args.n_way}')
-        args.ensemble = args.ensemble or 'ALL'
-        return args, parser
-
-    if args.ensemble and n_ways == 0:
-        parser.error('--ensemble requires -2, -3, or -5')
-
-    if (args.two_way or args.three_way or args.five_way) and not args.ensemble:
-        parser.error('-2/-3/-5 requires --ensemble')
-
-    if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
-        parser.error('--ensemble MAJORITY requires -3 or -5')
-
-    if args.bad and args.top != 1:
-        parser.error('--bad requires --top 1')
-
-    sort_lc = args.sort.lower()
-    valid_sort = {'score', 'fp', 'fn'}
-    if sort_lc not in valid_sort:
-        parser.error(f'--sort: invalid value {args.sort!r}; choices: score, FP, FN')
-
-    if len(args.files) > 2:
-        parser.error('specify 1 or 2 files')
-
-    return args, parser
+        print_2way_diff_anchored(seed_key, files, args)
 
 
 def main():
     args, _ = parse_args()
 
-    if args.keys:
+    if args.keys and len(args.keys) > 1:
         run_explicit_nway(args)
-        return
-
-    if len(args.files) == 1:
+    elif len(args.files) == 1:
         run_discovery(args)
     elif len(args.files) == 2:
-        run_explicit(args)
+        run_explicit_2way(args)
 
 
 if __name__ == '__main__':

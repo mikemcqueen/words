@@ -18,7 +18,8 @@ from pathlib import Path
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
-                    discover_files_all, compute_stats, print_discovery_ranked, resolve_key)
+                    discover_files_all, compute_stats, print_discovery_ranked, resolve_key,
+                    add_print_keys_arg, print_displayed_keys)
 
 TokenLabel = namedtuple("TokenLabel", ["token", "label"])
 
@@ -51,7 +52,7 @@ Examples:
         """
     )
     parser.add_argument("input", type=Path, help="evalpair JSONL file to score, or a directory")
-    parser.add_argument("--pairs", type=str, required=True,
+    parser.add_argument("-p", "--pairs", type=str, required=True,
                         help="Pairs JSON file with expected values")
     parser.add_argument("--method", type=str, default="top-token",
                         choices=list(METHODS.keys()),
@@ -65,8 +66,7 @@ Examples:
                              help="limit display to results with score >= M.N (directory mode only)")
     parser.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
                         help="comma-separated discovery keys to score (directory mode only)")
-    parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
-                        help="print displayed keys as a comma-separated list (directory mode only)")
+    add_print_keys_arg(parser, help_text="print displayed keys as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-pair results (single-file mode only)")
     parser.add_argument("--bad", action="store_true",
@@ -181,7 +181,7 @@ def print_discovery_table(args):
 
     print_discovery_ranked(files, args.sort)
     if args.print_keys:
-        print(','.join(key for key, _ in rows))
+        print_displayed_keys(rows)
     if args.bad:
         print_details(next(iter(files.values())), args)
 
