@@ -46,7 +46,7 @@ def parse_args(argv=None):
                         help='comma-separated discovery keys for explicit ensemble; '
                              'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
-                        help='sort field: diff=score/fixfp/fixfn/newfp/newfn; ensemble=score/FP/FN')
+                        help='sort field: diff=score/fixfp/fixfn/newfp/newfn/orfp/orfn; ensemble=score/FP/FN')
     parser.add_argument('--top', type=int, default=50, metavar='K',
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
@@ -168,7 +168,7 @@ def parse_args(argv=None):
     # validate --sort
     sort_lc = args.sort.lower()
     valid_sort = {'score', 'fp', 'fn'} if args.ensemble else {
-        'score', 'fixfp', 'fixfn', 'newfp', 'newfn'
+        'score', 'fixfp', 'fixfn', 'newfp', 'newfn', 'orfp', 'orfn'
     }
     if sort_lc not in valid_sort:
         choices = ', '.join(sorted(valid_sort))

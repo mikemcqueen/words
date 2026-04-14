@@ -10,6 +10,8 @@ SORT_DEFAULT_KEYS = {
     'fixfn':  ('fixed_fn', True),
     'newfp':  ('new_fp',   False),
     'newfn':  ('new_fn',   False),
+    'orfp':   ('or_fp',    False),
+    'orfn':   ('or_fn',    False),
 }
 
 
@@ -119,63 +121,6 @@ def compute_pair_diff(results_1, results_2, *, include_or_results=False, s1=None
         fixed_fp, fixed_fn, new_fp, new_fn,
         or_correct, or_fp, or_fn,
         s1=s1, s2=s2, or_results=or_results,
-    )
-
-
-def compute_pair_diff_both(results_1, results_2, *, s1, s2):
-    """Compute both ordered 2-way diff rows in a single pass over shared pairs."""
-    fixed_fp_1 = fixed_fn_1 = new_fp_1 = new_fn_1 = 0
-    fixed_fp_2 = fixed_fn_2 = new_fp_2 = new_fn_2 = 0
-    or_correct = or_fp = or_fn = 0
-
-    for _, d1, d2 in _common_pair_entries(results_1, results_2):
-        old_label_1 = d1.get('label')
-        old_label_2 = d2.get('label')
-        if old_label_1 is None or old_label_2 is None:
-            continue
-
-        or_label = _pair_or_label(d1, d2)
-        if or_label is None:
-            continue
-
-        if old_label_1 == 'fp' and or_label != 'fp':
-            fixed_fp_1 += 1
-        elif old_label_1 == 'fn' and or_label != 'fn':
-            fixed_fn_1 += 1
-        elif old_label_1 == 'correct':
-            if or_label == 'fp':
-                new_fp_1 += 1
-            elif or_label == 'fn':
-                new_fn_1 += 1
-
-        if old_label_2 == 'fp' and or_label != 'fp':
-            fixed_fp_2 += 1
-        elif old_label_2 == 'fn' and or_label != 'fn':
-            fixed_fn_2 += 1
-        elif old_label_2 == 'correct':
-            if or_label == 'fp':
-                new_fp_2 += 1
-            elif or_label == 'fn':
-                new_fn_2 += 1
-
-        if or_label == 'correct':
-            or_correct += 1
-        elif or_label == 'fp':
-            or_fp += 1
-        else:
-            or_fn += 1
-
-    return (
-        _pair_diff_from_counts(
-            fixed_fp_1, fixed_fn_1, new_fp_1, new_fn_1,
-            or_correct, or_fp, or_fn,
-            s1=s1, s2=s2,
-        ),
-        _pair_diff_from_counts(
-            fixed_fp_2, fixed_fn_2, new_fp_2, new_fn_2,
-            or_correct, or_fp, or_fn,
-            s1=s2, s2=s1,
-        ),
     )
 
 
