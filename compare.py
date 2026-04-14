@@ -373,6 +373,122 @@ def compute_pair_diff_both(results_1, results_2, *, s1, s2):
     )
 
 
+def _pair_has_yes(data):
+    """Return whether any direction predicted YES for a labeled pair entry."""
+    result = data.get('result')
+    if result is None:
+        return False
+    return any(result[dir_].token == 'YES' for dir_ in result['logprobs'])
+
+
+def _stats_from_label_masks(valid_mask, correct_mask, fp_mask, fn_mask):
+    """Build a stats dict from precomputed label bitmasks."""
+    total = valid_mask.bit_count()
+    correct = correct_mask.bit_count()
+    fp = fp_mask.bit_count()
+    fn = fn_mask.bit_count()
+    pct = 100 * correct / total if total else 0.0
+    return dict(correct=correct, total=total, pct=pct, fp=fp, fn=fn)
+
+
+def _build_2way_diff_masks(files):
+    """Precompute compact per-file masks for fast 2-way diff discovery."""
+    pair_bits = {}
+    expected_yes_mask = 0
+
+    for results in files.values():
+        for pair, data in results.items():
+            if data.get('label') is None:
+                continue
+            bit = pair_bits.get(pair)
+            if bit is None:
+                bit = 1 << len(pair_bits)
+                pair_bits[pair] = bit
+                if _expected(data) == 'YES':
+                    expected_yes_mask |= bit
+
+    masks_by_key = {}
+    stats_by_key = {}
+    for key, results in files.items():
+        valid_mask = correct_mask = fp_mask = fn_mask = any_yes_mask = 0
+        for pair, data in results.items():
+            label = data.get('label')
+            if label is None:
+                continue
+            bit = pair_bits[pair]
+            valid_mask |= bit
+            if label == 'correct':
+                correct_mask |= bit
+            elif label == 'fp':
+                fp_mask |= bit
+            else:
+                fn_mask |= bit
+
+            if _pair_has_yes(data):
+                any_yes_mask |= bit
+
+        masks_by_key[key] = (valid_mask, correct_mask, fp_mask, fn_mask, any_yes_mask)
+        stats_by_key[key] = _stats_from_label_masks(valid_mask, correct_mask, fp_mask, fn_mask)
+
+    return expected_yes_mask, masks_by_key, stats_by_key
+
+
+def _pair_diff_from_masks(mask_1, mask_2, expected_yes_mask, *, s1, s2):
+    """Compute one ordered 2-way diff row from precomputed per-file masks."""
+    valid_1, correct_1, fp_1, fn_1, any_yes_1 = mask_1
+    valid_2, _, _, _, any_yes_2 = mask_2
+
+    common = valid_1 & valid_2
+    or_yes_mask = common & (any_yes_1 | any_yes_2)
+    or_fp_mask = common & ~expected_yes_mask & or_yes_mask
+    or_fn_mask = common & expected_yes_mask & ~or_yes_mask
+    or_fp = or_fp_mask.bit_count()
+    or_fn = or_fn_mask.bit_count()
+    or_correct = common.bit_count() - or_fp - or_fn
+
+    return _pair_diff_from_counts(
+        (fp_1 & common & ~or_fp_mask).bit_count(),
+        (fn_1 & common & ~or_fn_mask).bit_count(),
+        (correct_1 & or_fp_mask).bit_count(),
+        (correct_1 & or_fn_mask).bit_count(),
+        or_correct, or_fp, or_fn,
+        s1=s1, s2=s2,
+    )
+
+
+def _pair_diff_both_from_masks(mask_1, mask_2, expected_yes_mask, *, s1, s2):
+    """Compute both ordered 2-way diff rows from precomputed per-file masks."""
+    valid_1, correct_1, fp_1, fn_1, any_yes_1 = mask_1
+    valid_2, correct_2, fp_2, fn_2, any_yes_2 = mask_2
+
+    common = valid_1 & valid_2
+    or_yes_mask = common & (any_yes_1 | any_yes_2)
+    or_fp_mask = common & ~expected_yes_mask & or_yes_mask
+    or_fn_mask = common & expected_yes_mask & ~or_yes_mask
+    or_fp = or_fp_mask.bit_count()
+    or_fn = or_fn_mask.bit_count()
+    or_correct = common.bit_count() - or_fp - or_fn
+
+    return (
+        _pair_diff_from_counts(
+            (fp_1 & common & ~or_fp_mask).bit_count(),
+            (fn_1 & common & ~or_fn_mask).bit_count(),
+            (correct_1 & or_fp_mask).bit_count(),
+            (correct_1 & or_fn_mask).bit_count(),
+            or_correct, or_fp, or_fn,
+            s1=s1, s2=s2,
+        ),
+        _pair_diff_from_counts(
+            (fp_2 & common & ~or_fp_mask).bit_count(),
+            (fn_2 & common & ~or_fn_mask).bit_count(),
+            (correct_2 & or_fp_mask).bit_count(),
+            (correct_2 & or_fn_mask).bit_count(),
+            or_correct, or_fp, or_fn,
+            s1=s2, s2=s1,
+        ),
+    )
+
+
 def _expected(data) -> str | None:
     """Derive the expected YES/NO value from a labeled result entry."""
     result = data.get('result')
@@ -1125,44 +1241,52 @@ def _sort_diff_rows(rows, sort):
     return sorted(rows, key=lambda x: _diff_sort_value(x[2], sort), reverse=True)
 
 
-def _compute_stats_map(files):
-    """Return per-file stats for reuse across repeated 2-way diff comparisons."""
-    return {key: compute_stats(results) for key, results in files.items()}
+def _diff_bad_rows(rows):
+    """Convert displayed diff rows into the labeled form expected by print_bad_pairs."""
+    return [(f"{anchor},{complement} DIFF", diff) for anchor, complement, diff in rows]
 
 
 def print_2way_diff_anchored(anchor_key, files, args):
     """Print anchor-based diff table: anchor_key vs all other discovered files."""
-    stats_by_key = _compute_stats_map(files)
-    anchor_results = files[anchor_key]
+    expected_yes_mask, masks_by_key, stats_by_key = _build_2way_diff_masks(files)
     anchor_stats = stats_by_key[anchor_key]
+    anchor_masks = masks_by_key[anchor_key]
     rows = []
-    for key, results_other in files.items():
+    for key in files:
         if key == anchor_key:
             continue
-        d = compute_pair_diff(anchor_results, results_other, s1=anchor_stats, s2=stats_by_key[key])
+        d = _pair_diff_from_masks(
+            anchor_masks,
+            masks_by_key[key],
+            expected_yes_mask,
+            s1=anchor_stats,
+            s2=stats_by_key[key],
+        )
         rows.append((anchor_key, key, d))
     sorted_rows = _sort_diff_rows(rows, args.sort)
     displayed_rows = sorted_rows[:args.top] if args.top else sorted_rows
     print_2way_diff_table(displayed_rows)
     if args.print_keys:
         print_displayed_keys([(complement, diff) for _, complement, diff in displayed_rows])
+    return _diff_bad_rows(displayed_rows)
 
 
-def _iter_2way_diff_all_pair_rows(files, stats_by_key):
+def _iter_2way_diff_all_pair_rows(files, stats_by_key, masks_by_key, expected_yes_mask):
     """Yield ordered all-pairs diff rows while computing each unordered pair only once."""
-    items = list(files.items())
+    items = list(files)
     reverse_rows = {}
-    for i, (anchor_key, anchor_results) in enumerate(items):
-        for j, (complement_key, complement_results) in enumerate(items):
+    for i, anchor_key in enumerate(items):
+        for j, complement_key in enumerate(items):
             if i == j:
                 continue
             if j < i:
                 yield reverse_rows.pop((i, j))
                 continue
 
-            diff_ab, diff_ba = compute_pair_diff_both(
-                anchor_results,
-                complement_results,
+            diff_ab, diff_ba = _pair_diff_both_from_masks(
+                masks_by_key[anchor_key],
+                masks_by_key[complement_key],
+                expected_yes_mask,
                 s1=stats_by_key[anchor_key],
                 s2=stats_by_key[complement_key],
             )
@@ -1172,9 +1296,9 @@ def _iter_2way_diff_all_pair_rows(files, stats_by_key):
 
 def print_2way_diff_all_pairs(files, args):
     """Print diff table for all ordered pairs of discovered files."""
-    stats_by_key = _compute_stats_map(files)
+    expected_yes_mask, masks_by_key, stats_by_key = _build_2way_diff_masks(files)
     rows = _retain_top_rows(
-        _iter_2way_diff_all_pair_rows(files, stats_by_key),
+        _iter_2way_diff_all_pair_rows(files, stats_by_key, masks_by_key, expected_yes_mask),
         args.heap_size,
         lambda row: _diff_sort_value(row[2], args.sort),
     )
@@ -1183,6 +1307,7 @@ def print_2way_diff_all_pairs(files, args):
     print_2way_diff_table(displayed_rows)
     if args.print_keys:
         print_displayed_keys([((f"{anchor},{complement}"), diff) for anchor, complement, diff in displayed_rows])
+    return _diff_bad_rows(displayed_rows)
 
 
 # --- ensemble output ---
@@ -1380,10 +1505,10 @@ def run_discovery(files, expected, args):
     if args.ensemble:
         return print_discovery_ensemble(args, files)
     elif Path(args.files[0]).is_dir():
-        print_2way_diff_all_pairs(files, args)
+        return print_2way_diff_all_pairs(files, args)
     else:
         anchor_key = _key_from_path(args.files[0])
-        print_2way_diff_anchored(anchor_key, files, args)
+        return print_2way_diff_anchored(anchor_key, files, args)
 
 
 def main():
