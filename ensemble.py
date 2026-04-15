@@ -255,10 +255,10 @@ def _screen_counts(combined_per_dir, exp_bits, not_exp, n_mask, n_pairs):
     return _score_any_yes(_reduce_any_yes(combined_per_dir), exp_bits, not_exp, n_mask, n_pairs)
 
 
-def _screen_candidates(heap, top_k, sort_key, correct, fp, fn):
+def _screen_candidates(heap, heap_max, sort_key, correct, fp, fn):
     bs = len(correct)
-    if len(heap) < top_k:
-        return np.arange(min(bs, top_k - len(heap)))
+    if len(heap) < heap_max:
+        return np.arange(min(bs, heap_max - len(heap)))
 
     min_rank = heap[0][0]
     if sort_key == 'correct':
@@ -279,21 +279,19 @@ def _screen_candidates(heap, top_k, sort_key, correct, fp, fn):
     return np.where((fn < min_fn) | ((fn == min_fn) & (correct > min_correct)))[0]
 
 
-def _heap_update(heap, counter, top_k, correct_arr, fp_arr, fn_arr,
-                 idx, pid_list, suffix, sort_key, prefix_pids=None):
-    prefix = ','.join(prefix_pids) + ',' if prefix_pids else ''
-    candidates = _screen_candidates(heap, top_k, sort_key, correct_arr, fp_arr, fn_arr)
+def _heap_update(heap, counter, heap_max, correct, fp, fn, combo_key_fn, sort_key):
+    candidates = _screen_candidates(heap, heap_max, sort_key, correct, fp, fn)
     for ci in candidates:
-        combo_key = prefix + ','.join(pid_list[j] for j in idx[ci]) + suffix
-        correct = int(correct_arr[ci])
-        fp = int(fp_arr[ci])
-        fn = int(fn_arr[ci])
-        total = correct + fp + fn
-        s = dict(correct=correct, total=total,
-                 pct=100.0 * correct / total if total else 0.0,
-                 fp=fp, fn=fn)
+        combo_key = combo_key_fn(ci)
+        c = int(correct[ci])
+        p = int(fp[ci])
+        n = int(fn[ci])
+        total = c + p + n
+        s = dict(correct=c, total=total,
+                 pct=100.0 * c / total if total else 0.0,
+                 fp=p, fn=n)
         rank = _row_rank(s, sort_key)
-        if len(heap) < top_k:
+        if len(heap) < heap_max:
             heapq.heappush(heap, (rank, counter, combo_key, s))
             counter += 1
         elif rank > heap[0][0]:
@@ -333,17 +331,17 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, threshold):
     if r == 5:
         assert threshold == 3, f"5-way majority threshold should be 3, got {threshold}"
         combined = []
-        for d in dirs:
-            yb = bits_per_dir[d]
+        for dir in dirs:
+            yb = bits_per_dir[dir]
             a = yb[idx[:, 0]]
             b = yb[idx[:, 1]]
             c = yb[idx[:, 2]]
-            d4 = yb[idx[:, 3]]
+            d = yb[idx[:, 3]]
             e = yb[idx[:, 4]]
             ab = a & b
-            cd = c & d4
+            cd = c & d
             x = a | b
-            y = c | d4
+            y = c | d
             combined.append((ab & y) | (cd & x) | (e & (ab | cd | (x & y))))
         return combined
     raise ValueError(f"bitmask majority only supports 3-way and 5-way, got r={r}")
@@ -351,8 +349,8 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, threshold):
 
 def _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj):
     three_by_max = {}
-    for c in range(2, n):
-        a_idx, b_idx = np.triu_indices(c, k=1)
+    for c_idx in range(2, n):
+        a_idx, b_idx = np.triu_indices(c_idx, k=1)
         if len(a_idx) == 0:
             continue
         entry = {}
@@ -368,11 +366,11 @@ def _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj):
             yb = bits_per_dir[d]
             a = yb[a_idx]
             b = yb[b_idx]
-            cc = yb[c]
+            c = yb[c_idx]
             ab = a & b
             a_or_b = a | b
             if do_or or do_maj:
-                dir_or = a_or_b | cc
+                dir_or = a_or_b | c
                 entry['or'][d] = dir_or
                 if do_or:
                     if entry['any_or'] is None:
@@ -380,29 +378,29 @@ def _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj):
                     else:
                         entry['any_or'] |= dir_or
             if do_and or do_maj:
-                entry['and'][d] = ab & cc
+                entry['and'][d] = ab & c
             if do_maj:
-                entry['maj'][d] = ab | (cc & a_or_b)
+                entry['maj'][d] = ab | (c & a_or_b)
         entry['ab'] = np.column_stack([a_idx, b_idx])
-        three_by_max[c] = entry
+        three_by_max[c_idx] = entry
     return three_by_max
 
 
-def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
+def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
     n_mask = np.full(exp_bits.shape, np.uint64(0xFFFFFFFFFFFFFFFF), dtype=np.uint64)
     tail = n_pairs % 64
     if tail:
         n_mask[-1] = np.uint64((1 << tail) - 1)
     not_exp = ~exp_bits & n_mask
     bits_per_dir = {d: yes_bits[d] for d in dirs}
-    pid_list = list(pids)
+    key_list = list(keys)
     r = args.n_way
     majority_threshold = (r + 1) // 2
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
-    top_k = args.heap_size
+    heap_max = args.heap_size
     heap = []
     counter = 0
-    n = len(pid_list)
+    n_keys = len(key_list)
 
     def _screen_stats(combined):
         return _screen_counts(combined, exp_bits, not_exp, n_mask, n_pairs)
@@ -423,31 +421,31 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
     do_maj = args.ensemble in ('ALL', 'MAJORITY')
 
     if r == 3:
-        for c in range(2, n):
-            a_idx, b_idx = np.triu_indices(c, k=1)
+        for c_idx in range(2, n_keys):
+            a_idx, b_idx = np.triu_indices(c_idx, k=1)
             A = len(a_idx)
             if A == 0:
                 continue
-            idx = np.column_stack([a_idx, b_idx, np.full(A, c, dtype=a_idx.dtype)])
+            idx = np.column_stack([a_idx, b_idx, np.full(A, c_idx, dtype=a_idx.dtype)])
             three = {'or': {}, 'and': {}, 'maj': {}, 'any_or': None}
             for d in dirs:
                 yb = bits_per_dir[d]
                 a = yb[a_idx]
                 b = yb[b_idx]
-                cc = yb[c]
+                c = yb[c_idx]
                 ab_and = a & b
                 a_or_b = a | b
                 if do_or or do_maj:
-                    dir_or = a_or_b | cc
+                    dir_or = a_or_b | c
                     if do_or:
                         if three['any_or'] is None:
                             three['any_or'] = dir_or.copy()
                         else:
                             three['any_or'] |= dir_or
                 if do_and:
-                    three['and'][d] = ab_and & cc
+                    three['and'][d] = ab_and & c
                 if do_maj:
-                    three['maj'][d] = ab_and | (cc & a_or_b)
+                    three['maj'][d] = ab_and | (c & a_or_b)
             batch_results = []
             if do_or:
                 any_yes = three['any_or']
@@ -464,9 +462,11 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                     dir_maj = three['maj'][d]
                     any_yes = dir_maj.copy() if any_yes is None else any_yes | dir_maj
                 batch_results.append((' MAJORITY', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
-            for suffix, correct_arr, fp_arr, fn_arr in batch_results:
-                counter = _heap_update(heap, counter, top_k, correct_arr, fp_arr, fn_arr,
-                                       idx, pid_list, suffix, sort_key)
+            for suffix, correct, fp, fn in batch_results:
+                key_fn = lambda ci, _idx=idx, _suffix=suffix: (
+                    ','.join(key_list[j] for j in _idx[ci]) + _suffix)
+                counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
+                                      key_fn, sort_key)
     elif r == 5:
         three_by_max = _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj)
 
@@ -499,17 +499,17 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                             entry['any_or'] |= dir_or
                 if do_and or do_maj:
                     entry['and'][d] = lhs & rhs
-                if do_maj:
-                    entry['xor'][d] = lhs ^ rhs
+                #if do_maj:
+                #    entry['xor'][d] = lhs ^ rhs
             entry['de'] = np.column_stack([d_idx, e_idx])
             two_from[start] = entry
 
         batch_size = 1_000_000
-        for c in range(2, n - 2):
-            if c not in three_by_max or (c + 1) not in two_from:
+        for c_idx in range(2, n - 2):
+            if c_idx not in three_by_max or (c_idx + 1) not in two_from:
                 continue
-            three = three_by_max[c]
-            two = two_from[c + 1]
+            three = three_by_max[c_idx]
+            two = two_from[c_idx + 1]
             A = len(three['ab'])
             B = len(two['de'])
             if A == 0 or B == 0:
@@ -528,10 +528,7 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                     for d in dirs:
                         dir_and = three['and'][d][row_start:row_end, None, :] & two['and'][d][None, :, :]
                         dir_and = dir_and.reshape(-1, dir_and.shape[-1])
-                        if any_yes is None:
-                            any_yes = dir_and
-                        else:
-                            any_yes |= dir_and
+                        any_yes = dir_and if any_yes is None else any_yes | dir_and
                     batch_results.append((' AND', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
                 if do_maj:
                     any_yes = None
@@ -541,42 +538,33 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                         maj3 = three['maj'][d][row_start:row_end, None, :]
                         any2 = two['or'][d][None, :, :]
                         all2 = two['and'][d][None, :, :]
-                        one2 = two['xor'][d][None, :, :]
-                        c5 = (all2 & any3) | (one2 & maj3) | (((~any2) & n_mask) & all3)
+                        #one2 = two['xor'][d][None, :, :]
+                        c5 = (all2 & any3) | (any2 & maj3) | all3 # (((~any2) & n_mask) & all3)
                         dir_maj = c5.reshape(-1, c5.shape[-1])
                         if any_yes is None:
                             any_yes = dir_maj
                         else:
                             any_yes |= dir_maj
                     batch_results.append((' MAJORITY', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
-                for suffix, any_yes, correct_arr, fp_arr, fn_arr in batch_results:
-                    candidates = _screen_candidates(heap, top_k, sort_key, correct_arr, fp_arr, fn_arr)
-                    for ci in candidates:
-                        row = ci // B + row_start
-                        col = ci % B
-                        a, b = int(three['ab'][row, 0]), int(three['ab'][row, 1])
-                        d_i, e_i = int(two['de'][col, 0]), int(two['de'][col, 1])
-                        combo_key = ','.join(pid_list[x] for x in (a, b, c, d_i, e_i)) + suffix
-                        correct = int(correct_arr[ci])
-                        fp = int(fp_arr[ci])
-                        fn = int(fn_arr[ci])
-                        s = dict(correct=correct, total=n_pairs,
-                                 pct=100.0 * correct / n_pairs if n_pairs else 0.0,
-                                 fp=fp, fn=fn)
-                        rank = _row_rank(s, sort_key)
-                        if len(heap) < top_k:
-                            heapq.heappush(heap, (rank, counter, combo_key, s))
-                            counter += 1
-                        elif rank > heap[0][0]:
-                            heapq.heapreplace(heap, (rank, counter, combo_key, s))
-                            counter += 1
+                for suffix, any_yes, correct, fp, fn in batch_results:
+                    def key_fn(ci, _three=three, _two=two, _c_idx=c_idx,
+                               _row_start=row_start, _B=B, _suffix=suffix):
+                        row = ci // _B + _row_start
+                        col = ci % _B
+                        a_idx, b_idx = int(_three['ab'][row, 0]), int(_three['ab'][row, 1])
+                        d_idx, e_idx = int(_two['de'][col, 0]), int(_two['de'][col, 1])
+                        return ','.join(key_list[x] for x in (a_idx, b_idx, _c_idx, d_idx, e_idx)) + _suffix
+                    counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
+                                           key_fn, sort_key)
     else:
         for idx in _combo_batches_np(n, r, 1_000_000):
             batch_results = []
             run_rules(idx, batch_results)
-            for suffix, combined, correct_arr, fp_arr, fn_arr in batch_results:
-                counter = _heap_update(heap, counter, top_k, correct_arr, fp_arr, fn_arr,
-                                       idx, pid_list, suffix, sort_key)
+            for suffix, combined, correct, fp, fn in batch_results:
+                key_fn = lambda ci, _idx=idx, _suffix=suffix: (
+                    ','.join(key_list[j] for j in _idx[ci]) + _suffix)
+                counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
+                                       key_fn, sort_key)
 
     rows = {}
     for _, _, label, stats in heap:
@@ -585,15 +573,15 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
 
 
 def print_2way_ensemble(two_results, args):
-    pid_a, results_a = two_results[0]
-    pid_b, results_b = two_results[1]
+    key_a, results_a = two_results[0]
+    key_b, results_b = two_results[1]
 
     n_common = len(set(results_a) & set(results_b))
     if n_common < len(results_a) or n_common < len(results_b):
-        print(f"\n  ({pid_a} has {len(results_a)} pairs, {pid_b} has {len(results_b)}, "
+        print(f"\n  ({key_a} has {len(results_a)} pairs, {key_b} has {len(results_b)}, "
               f"{n_common} in common)")
 
-    ind_rows = [(pid_a, compute_stats(results_a)), (pid_b, compute_stats(results_b))]
+    ind_rows = [(key_a, compute_stats(results_a)), (key_b, compute_stats(results_b))]
     rules = [lbl for lbl in ENSEMBLE_RULES_2 if args.ensemble == 'ALL' or lbl == args.ensemble]
     if args.ensemble != 'ALL':
         combined = apply_ensemble_labeled([results_a, results_b], rules[0])
@@ -623,7 +611,7 @@ def print_2way_ensemble(two_results, args):
 
 
 def print_discovery_ensemble(args, files):
-    pids = list(files.keys())
+    keys = list(files.keys())
     exp_vec, yes_vecs, dirs, n_pairs = _build_vecs(files)
     rows = {}
 
@@ -635,15 +623,15 @@ def print_discovery_ensemble(args, files):
     def run_nway(ensemble):
         run_args = with_ensemble(ensemble)
         exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
-        return _nway_ensemble_bitmask(pids, exp_bits, yes_bits_bm, dirs, n_pairs, run_args)
+        return nway_ensemble_bitmask(keys, exp_bits, yes_bits_bm, dirs, n_pairs, run_args)
 
     if args.ensemble == 'ALL':
-        for pid in pids:
-            rows[pid] = _stats_from_dirs([yes_vecs[pid][d] for d in dirs], exp_vec, n_pairs)
+        for key in keys:
+            rows[key] = _stats_from_dirs([yes_vecs[key][d] for d in dirs], exp_vec, n_pairs)
 
-    for pid_a, pid_b in combinations(pids, 2):
-        ya, yb = yes_vecs[pid_a], yes_vecs[pid_b]
-        pair_key = f"{pid_a},{pid_b}"
+    for key_a, key_b in combinations(keys, 2):
+        ya, yb = yes_vecs[key_a], yes_vecs[key_b]
+        pair_key = f"{key_a},{key_b}"
         if args.ensemble in ('ALL', 'OR'):
             rows[f"{pair_key} OR"] = _stats_from_dirs([ya[d] | yb[d] for d in dirs], exp_vec, n_pairs)
         if args.ensemble in ('ALL', 'AND'):
