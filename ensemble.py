@@ -349,6 +349,45 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, threshold):
     raise ValueError(f"bitmask majority only supports 3-way and 5-way, got r={r}")
 
 
+def _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj):
+    three_by_max = {}
+    for c in range(2, n):
+        a_idx, b_idx = np.triu_indices(c, k=1)
+        if len(a_idx) == 0:
+            continue
+        entry = {}
+        if do_or:
+            entry['any_or'] = None
+        if do_or or do_maj:
+            entry['or'] = {}
+        if do_and or do_maj:
+            entry['and'] = {}
+        if do_maj:
+            entry['maj'] = {}
+        for d in dirs:
+            yb = bits_per_dir[d]
+            a = yb[a_idx]
+            b = yb[b_idx]
+            cc = yb[c]
+            ab = a & b
+            a_or_b = a | b
+            if do_or or do_maj:
+                dir_or = a_or_b | cc
+                entry['or'][d] = dir_or
+                if do_or:
+                    if entry['any_or'] is None:
+                        entry['any_or'] = dir_or.copy()
+                    else:
+                        entry['any_or'] |= dir_or
+            if do_and or do_maj:
+                entry['and'][d] = ab & cc
+            if do_maj:
+                entry['maj'][d] = ab | (cc & a_or_b)
+        entry['ab'] = np.column_stack([a_idx, b_idx])
+        three_by_max[c] = entry
+    return three_by_max
+
+
 def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
     n_mask = np.full(exp_bits.shape, np.uint64(0xFFFFFFFFFFFFFFFF), dtype=np.uint64)
     tail = n_pairs % 64
@@ -379,45 +418,57 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
             combined = _bitmask_majority_colwise(bits_per_dir, dirs, idx, majority_threshold)
             batch_results.append((' MAJORITY', combined, *_screen_stats(combined)))
 
-    if r == 5:
-        do_or = args.ensemble in ('ALL', 'OR')
-        do_and = args.ensemble in ('ALL', 'AND')
-        do_maj = args.ensemble in ('ALL', 'MAJORITY')
-        three_by_max = {}
+    do_or = args.ensemble in ('ALL', 'OR')
+    do_and = args.ensemble in ('ALL', 'AND')
+    do_maj = args.ensemble in ('ALL', 'MAJORITY')
+
+    if r == 3:
         for c in range(2, n):
             a_idx, b_idx = np.triu_indices(c, k=1)
-            if len(a_idx) == 0:
+            A = len(a_idx)
+            if A == 0:
                 continue
-            entry = {}
-            if do_or:
-                entry['any_or'] = None
-            if do_or or do_maj:
-                entry['or'] = {}
-            if do_and or do_maj:
-                entry['and'] = {}
-            if do_maj:
-                entry['maj'] = {}
+            idx = np.column_stack([a_idx, b_idx, np.full(A, c, dtype=a_idx.dtype)])
+            three = {'or': {}, 'and': {}, 'maj': {}, 'any_or': None}
             for d in dirs:
                 yb = bits_per_dir[d]
                 a = yb[a_idx]
                 b = yb[b_idx]
                 cc = yb[c]
-                ab = a & b
+                ab_and = a & b
                 a_or_b = a | b
                 if do_or or do_maj:
                     dir_or = a_or_b | cc
-                    entry['or'][d] = dir_or
                     if do_or:
-                        if entry['any_or'] is None:
-                            entry['any_or'] = dir_or.copy()
+                        if three['any_or'] is None:
+                            three['any_or'] = dir_or.copy()
                         else:
-                            entry['any_or'] |= dir_or
-                if do_and or do_maj:
-                    entry['and'][d] = ab & cc
+                            three['any_or'] |= dir_or
+                if do_and:
+                    three['and'][d] = ab_and & cc
                 if do_maj:
-                    entry['maj'][d] = ab | (cc & a_or_b)
-            entry['ab'] = np.column_stack([a_idx, b_idx])
-            three_by_max[c] = entry
+                    three['maj'][d] = ab_and | (cc & a_or_b)
+            batch_results = []
+            if do_or:
+                any_yes = three['any_or']
+                batch_results.append((' OR', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+            if do_and:
+                any_yes = None
+                for d in dirs:
+                    dir_and = three['and'][d]
+                    any_yes = dir_and.copy() if any_yes is None else any_yes | dir_and
+                batch_results.append((' AND', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+            if do_maj:
+                any_yes = None
+                for d in dirs:
+                    dir_maj = three['maj'][d]
+                    any_yes = dir_maj.copy() if any_yes is None else any_yes | dir_maj
+                batch_results.append((' MAJORITY', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+            for suffix, correct_arr, fp_arr, fn_arr in batch_results:
+                counter = _heap_update(heap, counter, top_k, correct_arr, fp_arr, fn_arr,
+                                       idx, pid_list, suffix, sort_key)
+    elif r == 5:
+        three_by_max = _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj)
 
         two_from = {}
         for start in range(3, n - 1):
