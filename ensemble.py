@@ -118,18 +118,20 @@ def _stats_from_dirs(combined_per_dir, exp_vec, n):
     return dict(correct=correct, total=n, pct=pct, fp=fp, fn=fn)
 
 
-_POPCOUNT_TABLE_16 = np.array([bin(i).count('1') for i in range(65536)], dtype=np.int32)
+def _reduce_any_yes(combined_per_dir):
+    any_yes = combined_per_dir[0].copy()
+    for cv in combined_per_dir[1:]:
+        any_yes |= cv
+    return any_yes
 
 
-def _popcount(arr):
-    result = np.zeros(arr.shape, dtype=np.int32)
-    for shift in range(0, 64, 16):
-        result += _POPCOUNT_TABLE_16[(arr >> shift).astype(np.uint16)]
-    return result
-
-
-def _popcount_total(arr):
-    return _popcount(arr).sum(axis=-1)
+def _score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs):
+    pair_fp = any_yes & not_exp
+    pair_correct = (any_yes & exp_bits) | (((~any_yes) & n_mask) & not_exp)
+    correct = np.bitwise_count(pair_correct).sum(axis=-1)
+    fp = np.bitwise_count(pair_fp).sum(axis=-1)
+    fn = n_pairs - correct - fp
+    return correct, fp, fn
 
 
 def _build_bitmasks(files_dict):
@@ -161,19 +163,6 @@ def _build_bitmasks(files_dict):
         yes_bits[d] = col
 
     return exp_bits, yes_bits, dirs, n, all_keys
-
-
-def _screen_bits(combined_per_dir, exp_bits, not_exp, n_mask):
-    dir_fp = [cv & not_exp for cv in combined_per_dir]
-    dir_correct = [(cv & exp_bits) | ((~cv & n_mask) & not_exp) for cv in combined_per_dir]
-    pair_fp = dir_fp[0]
-    for dfp in dir_fp[1:]:
-        pair_fp |= dfp
-    pair_correct = dir_correct[0]
-    for dc in dir_correct[1:]:
-        pair_correct |= dc
-    pair_correct &= ~pair_fp
-    return pair_correct, pair_fp
 
 
 def _combo_batches_np(n, r, batch_size):
@@ -263,11 +252,7 @@ def _combo_batches_np_5(n, batch_size):
 
 
 def _screen_counts(combined_per_dir, exp_bits, not_exp, n_mask, n_pairs):
-    pair_correct, pair_fp = _screen_bits(combined_per_dir, exp_bits, not_exp, n_mask)
-    correct = _popcount_total(pair_correct)
-    fp = _popcount_total(pair_fp)
-    fn = n_pairs - correct - fp
-    return correct, fp, fn
+    return _score_any_yes(_reduce_any_yes(combined_per_dir), exp_bits, not_exp, n_mask, n_pairs)
 
 
 def _screen_candidates(heap, top_k, sort_key, correct, fp, fn):
@@ -404,6 +389,8 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
             if len(a_idx) == 0:
                 continue
             entry = {}
+            if do_or:
+                entry['any_or'] = None
             if do_or or do_maj:
                 entry['or'] = {}
             if do_and or do_maj:
@@ -418,7 +405,13 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                 ab = a & b
                 a_or_b = a | b
                 if do_or or do_maj:
-                    entry['or'][d] = a_or_b | cc
+                    dir_or = a_or_b | cc
+                    entry['or'][d] = dir_or
+                    if do_or:
+                        if entry['any_or'] is None:
+                            entry['any_or'] = dir_or.copy()
+                        else:
+                            entry['any_or'] |= dir_or
                 if do_and or do_maj:
                     entry['and'][d] = ab & cc
                 if do_maj:
@@ -433,6 +426,8 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
             d_idx = d_idx + start
             e_idx = e_idx + start
             entry = {}
+            if do_or:
+                entry['any_or'] = None
             if do_or or do_maj:
                 entry['or'] = {}
             if do_and or do_maj:
@@ -444,7 +439,13 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                 lhs = yb[d_idx]
                 rhs = yb[e_idx]
                 if do_or or do_maj:
-                    entry['or'][d] = lhs | rhs
+                    dir_or = lhs | rhs
+                    entry['or'][d] = dir_or
+                    if do_or:
+                        if entry['any_or'] is None:
+                            entry['any_or'] = dir_or.copy()
+                        else:
+                            entry['any_or'] |= dir_or
                 if do_and or do_maj:
                     entry['and'][d] = lhs & rhs
                 if do_maj:
@@ -468,19 +469,21 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                 chunk_size = (row_end - row_start) * B
                 batch_results = []
                 if do_or:
-                    combined = []
-                    for d in dirs:
-                        c5 = three['or'][d][row_start:row_end, None, :] | two['or'][d][None, :, :]
-                        combined.append(c5.reshape(-1, c5.shape[-1]))
-                    batch_results.append((' OR', combined, *_screen_stats(combined)))
+                    any_yes = three['any_or'][row_start:row_end, None, :] | two['any_or'][None, :, :]
+                    any_yes = any_yes.reshape(-1, any_yes.shape[-1])
+                    batch_results.append((' OR', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
                 if do_and:
-                    combined = []
+                    any_yes = None
                     for d in dirs:
-                        c5 = three['and'][d][row_start:row_end, None, :] & two['and'][d][None, :, :]
-                        combined.append(c5.reshape(-1, c5.shape[-1]))
-                    batch_results.append((' AND', combined, *_screen_stats(combined)))
+                        dir_and = three['and'][d][row_start:row_end, None, :] & two['and'][d][None, :, :]
+                        dir_and = dir_and.reshape(-1, dir_and.shape[-1])
+                        if any_yes is None:
+                            any_yes = dir_and
+                        else:
+                            any_yes |= dir_and
+                    batch_results.append((' AND', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
                 if do_maj:
-                    combined = []
+                    any_yes = None
                     for d in dirs:
                         any3 = three['or'][d][row_start:row_end, None, :]
                         all3 = three['and'][d][row_start:row_end, None, :]
@@ -489,9 +492,13 @@ def _nway_ensemble_bitmask(pids, exp_bits, yes_bits, dirs, n_pairs, args):
                         all2 = two['and'][d][None, :, :]
                         one2 = two['xor'][d][None, :, :]
                         c5 = (all2 & any3) | (one2 & maj3) | (((~any2) & n_mask) & all3)
-                        combined.append(c5.reshape(-1, c5.shape[-1]))
-                    batch_results.append((' MAJORITY', combined, *_screen_stats(combined)))
-                for suffix, combined, correct_arr, fp_arr, fn_arr in batch_results:
+                        dir_maj = c5.reshape(-1, c5.shape[-1])
+                        if any_yes is None:
+                            any_yes = dir_maj
+                        else:
+                            any_yes |= dir_maj
+                    batch_results.append((' MAJORITY', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+                for suffix, any_yes, correct_arr, fp_arr, fn_arr in batch_results:
                     candidates = _screen_candidates(heap, top_k, sort_key, correct_arr, fp_arr, fn_arr)
                     for ci in candidates:
                         row = ci // B + row_start
