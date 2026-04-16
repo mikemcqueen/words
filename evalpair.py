@@ -82,7 +82,7 @@ def send_anchor_prefix(args, ctx: str) -> None:
         return
         #raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
     if is_gemma(args.model_id):
-        prefix = "<|turn|>user\n" + m.group(1)
+        prefix = "<|turn>user\n" + m.group(1)
     else:
         prefix = "<|im_start|>user\n" + m.group(1)
     url = f"{args.host}:{args.port}/v1/completions"
