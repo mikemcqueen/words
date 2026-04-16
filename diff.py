@@ -1,7 +1,7 @@
 import heapq
 
 from common import (compute_stats, expected_yesno_from_labeled_result,
-                    print_displayed_keys)
+                    pair_has_yes, print_displayed_keys)
 
 
 SORT_DEFAULT_KEYS = {
@@ -131,12 +131,7 @@ def compute_pair_diff(results_1, results_2, *, rule='OR', include_or_results=Fal
     )
 
 
-def _pair_has_yes(data):
-    """Return whether any direction predicted YES for a labeled pair entry."""
-    result = data.get('result')
-    if result is None:
-        return False
-    return any(result[dir_].token == 'YES' for dir_ in result['logprobs'])
+_pair_has_yes = pair_has_yes
 
 
 def _stats_from_label_masks(valid_mask, correct_mask, fp_mask, fn_mask):
@@ -399,3 +394,65 @@ def print_2way_diff_all_pairs(files, args):
     if args.print_keys:
         print_displayed_keys([((f"{anchor},{complement}"), diff) for anchor, complement, diff in displayed_rows])
     return _diff_bad_rows(displayed_rows)
+
+
+def run_nopairs_2way(block_iter, rule='OR', method='top-token'):
+    """Process blocks of eval results without expected pairs; display YES/NO stats."""
+    from score import score_eval_results
+
+    rules = ENSEMBLE_RULES_2 if rule == 'ALL' else [rule]
+    total_pairs = 0
+    yes_counts = {}
+    combined_yes = {r: 0 for r in rules}
+
+    for block in block_iter:
+        file_keys = list(block.keys())
+        for fk in file_keys:
+            if fk not in yes_counts:
+                yes_counts[fk] = 0
+
+        block_size = len(next(iter(block.values())))
+        total_pairs += block_size
+
+        for fk in file_keys:
+            score_eval_results(block[fk], method)
+
+        pairs = next(iter(block.values())).keys()
+        for pair in pairs:
+            per_file_yes = {fk: block[fk][pair]["yes"] for fk in file_keys}
+
+            for fk, is_yes in per_file_yes.items():
+                if is_yes:
+                    yes_counts[fk] += 1
+
+            for r in rules:
+                if r == 'OR':
+                    pair_yes = any(per_file_yes.values())
+                elif r == 'AND':
+                    pair_yes = all(per_file_yes.values())
+                else:
+                    pair_yes = any(per_file_yes.values())
+                if pair_yes:
+                    combined_yes[r] += 1
+
+    file_keys = list(yes_counts.keys())
+    wa = max(len(file_keys[0]), len('file_a'))
+    wc = max(len(file_keys[1]), len('file_b')) if len(file_keys) > 1 else len('file_b')
+    header = (f"{'file_a':<{wa}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}  "
+              f"{'file_b':<{wc}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s} | "
+              f"{'rule':>5s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}")
+    print(header)
+    print('─' * len(header))
+    s = [{}, {}]
+    for i, fk in enumerate(file_keys[:2]):
+        s[i]['yes'] = yes_counts[fk]
+        s[i]['no'] = total_pairs - s[i]['yes']
+        s[i]['pct'] = 100 * s[i]['yes'] / total_pairs if total_pairs else 0.0
+    for r in rules:
+        c_yes = combined_yes[r]
+        c_no = total_pairs - c_yes
+        c_pct = 100 * c_yes / total_pairs if total_pairs else 0.0
+        print(f"{file_keys[0]:<{wa}s} {s[0]['pct']:5.1f}% {s[0]['yes']:>6d} {s[0]['no']:>6d}  "
+              f"{file_keys[1]:<{wc}s} {s[1]['pct']:5.1f}% {s[1]['yes']:>6d} {s[1]['no']:>6d} | "
+              f"{r:>5s} {c_pct:5.1f}% {c_yes:>6d} {c_no:>6d}")
+    print()

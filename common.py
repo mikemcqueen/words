@@ -221,6 +221,14 @@ def compute_stats(eval_results):
     return dict(correct=correct, total=total, pct=pct, fp=fp, fn=fn)
 
 
+def pair_has_yes(data) -> bool:
+    """Return whether any direction predicted YES for a scored pair entry."""
+    result = data.get('result')
+    if result is None:
+        return False
+    return any(result[dir_].token == 'YES' for dir_ in result['logprobs'])
+
+
 def expected_yesno_from_labeled_result(data) -> str | None:
     """Derive the expected YES/NO value from a labeled result entry."""
     result = data.get('result')

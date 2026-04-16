@@ -25,7 +25,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='+', metavar='path')
-    parser.add_argument("-p", '--pairs', required=True, metavar='PAIRS',
+    parser.add_argument("-p", '--pairs', required=False, default=None, metavar='PAIRS',
                         help='pairs JSON file with expected values')
     parser.add_argument('--method', default='top-token', metavar='METHOD',
                         help='scoring method (default: top-token)')
@@ -114,6 +114,12 @@ def parse_args(argv=None):
     if args.n_way and not args.ensemble:
         args.ensemble = "ALL"
             
+    # no-pairs mode: require exactly 2 files after fixups
+    if args.pairs is None:
+        if len(args.files) != 2:
+            parser.error('without --pairs, exactly 2 files are required (after key/fixup resolution)')
+        return args, parser
+
     # validate files
     if len(args.files) == 2:
         if Path(args.files[0]).is_dir() or Path(args.files[1]).is_dir():
@@ -204,6 +210,56 @@ def _key_from_path(path):
     return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
 
 
+def eval_results_block_generator(files_list):
+    """Yield aligned blocks of eval results from multiple JSONL files.
+
+    Each yielded value is a dict: {file_key: {pair: {"logprobs": ...}, ...}}
+    with up to BLOCK_SIZE pairs, identical keys across all files.
+    """
+    BLOCK_SIZE = 1000
+    keys = [_key_from_path(f) for f in files_list]
+    handles = [open(f) for f in files_list]
+    try:
+        while True:
+            block = {}
+            # Load a block from file[0]
+            primary = {}
+            for _ in range(BLOCK_SIZE):
+                line = handles[0].readline()
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    r = json.loads(line)
+                    primary[r["pair"]] = {"logprobs": r["logprobs"]}
+            if not primary:
+                break
+            block[keys[0]] = primary
+
+            # Load matching block from each additional file
+            for i in range(1, len(files_list)):
+                secondary = {}
+                for _ in range(len(primary)):
+                    line = handles[i].readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if line:
+                        r = json.loads(line)
+                        secondary[r["pair"]] = {"logprobs": r["logprobs"]}
+                sym_diff = primary.keys() ^ secondary.keys()
+                if sym_diff:
+                    raise RuntimeError(
+                        f"pair mismatch between {files_list[0]} and {files_list[i]}: "
+                        f"{len(sym_diff)} differing pairs (e.g. {next(iter(sym_diff))})")
+                block[keys[i]] = secondary
+
+            yield block
+    finally:
+        for h in handles:
+            h.close()
+
+
 def load_files_from_keys(args):
     """Resolve keys to files, and load results. Returns {key: results}."""
     directory = args.files[0]
@@ -272,6 +328,12 @@ def run_discovery(files, expected, args):
 
 def main():
     args, _ = parse_args()
+
+    if args.pairs is None:
+        block_iter = eval_results_block_generator(args.files)
+        rule = args.ensemble if args.ensemble else 'OR'
+        diff.run_nopairs_2way(block_iter, rule, args.method)
+        return
 
     expected = load_expected_pairs(args.pairs)
     files = load_result_files(expected, args)

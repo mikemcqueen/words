@@ -18,7 +18,8 @@ from pathlib import Path
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
-                    discover_files_all, compute_stats, print_discovery_ranked, resolve_key,
+                    pair_has_yes, discover_files_all, compute_stats,
+                    print_discovery_ranked, resolve_key,
                     add_print_keys_arg, print_displayed_keys)
 
 TokenLabel = namedtuple("TokenLabel", ["token", "label"])
@@ -147,6 +148,15 @@ def label_eval_results(eval_results: dict, expected: dict, method: str) -> None:
                 label = "fn"
             result[key] = tl._replace(label=label)
         data["result"] = result
+
+
+def score_eval_results(eval_results: dict, method: str = 'top-token') -> None:
+    """Apply scoring method to populate data["result"] with TokenLabels, and set data["yes"]."""
+    method_fn = METHODS[method]
+    for data in eval_results.values():
+        result = method_fn(data.get("logprobs", {}))
+        data["result"] = result
+        data["yes"] = pair_has_yes(data)
 
 
 def print_discovery_table(args):
