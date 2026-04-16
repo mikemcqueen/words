@@ -1,21 +1,47 @@
+* so it appears dense model next-token logprobs data is just way more reliable as a certainty
+  / quality predictor.  even with normalized distributions, the actual top prob pair data
+  is just significantly better, Qwen35 26B vs. 35B-MoE.
+
+  Just not sure the quality of these reasults is meaningful overall.
+
+  * Check out Gemma4 MOE
+
+
+* -2 -e should be able to show fixfp fixfn newfp newfn | RULE RULE-fp RULE-fn for each rule
+
+* idea:  have a @prepare for every @method.  then can standardize on a single comma-separated
+  --ma --method-arg 1,2,3. that gets passed to the @prepare method to prepare the method (initializes
+  a global variable with values, like METHOD_PROB_MINMAX would take 50.0,60.0 to show all results
+  that were determined by a probability between [50,60). 100 special case for max could be inclusive.
+  * might want to name this FILTER for filter.py. METHOD becomes SELECT
+
+* i should be able to specify one key and still do a 3-way ensemble. then it will always include
+  that key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
+  run with both of these keys, but only one is required a time"?  probably that just means run
+  compare.py twice with different single keys
+
+* evalpair.py auto results dir, find sibling dir of pairs dir
+
+* score.py/compare.py auto pair file discovery from first specified file (not useful for -dir -k
+  however for compare.py however).  more useful in score.py probably.
+
+* more yes pairs! (and better/more representative variety of no pairs)
+
 * 2-way explicit diff --bad with third.p3.qwen35,third.p3.qwen35_moe is really interesting
   because there is real uncertainty with a lot of the results. good example to experiment with
   rating certainty. i could imagine a "don't be a tiebreaker if certainty is below threshold"
   for majority decisions. but probably worth trying out just OR to see how it changes results.
-* BUG: it's showing OrFP 4, OrFN 1, and displaying 2 and 1?? something rotten in Denmark
-
-* BUG: results are wrong (Or%/OrFP/OrFN)
-  * python compare.py --pairs pairs/yesno.200.json results/legacy --top 5
-
-* PERF: the 2-way diff/ensemble stuff could be made faster using bitmasks.
-
-* HACK: two_results hack run_explicit_2way/print_2way_ensemble
 
 * really need to take the time to drill into low probability YES/NOs and see what I can do with that.
 
 --less important--
 
-* compare dir -k key1,key2 is the same as a 2-way explicit.
+* PERF: don't calc so much shit upfront in _score_any_yes? looks minimal, one bitwise vector &, one
+  countbits.
+
+* if there are two sort keys, ensemble.py's heap_update isn't taking that into account (probably doesn't
+  matter it would typically only matter around to results around the bound of heap_size). would be
+  an issue if the top 100+ results all had the same top two or three values for primary sorted field.
 
 * test pairs with a two-word component, three ways?
   * multiple three-ways exist (interleave, flip_interleave, etc., see notebook)

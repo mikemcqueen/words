@@ -32,6 +32,14 @@ def method(name):
     return decorator
 
 
+def extract_top_token(logprobs: list) -> str | None:
+    """Return normalized YES/NO/None from the first (highest-prob) entry in a logprobs list."""
+    if not logprobs:
+        return None
+    top_token = next(iter(logprobs[0]))
+    return parse_yesno_response(top_token)
+
+
 @method("top-token")
 def method_top_token(logprobs: dict) -> dict:
     """Return dict mapping each logprobs key to TokenLabel(token, label=None)."""
@@ -40,6 +48,8 @@ def method_top_token(logprobs: dict) -> dict:
         result[key] = TokenLabel(token=extract_top_token(value), label=None)
     return result
 
+
+# ---
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -94,14 +104,6 @@ Examples:
                 parser.error("--bad in directory mode requires --top 1 or -k with exactly one key")
         args.verbose = True
     return args
-
-
-def extract_top_token(logprobs: list) -> str | None:
-    """Return normalized YES/NO/None from the first (highest-prob) entry in a logprobs list."""
-    if not logprobs:
-        return None
-    top_token = next(iter(logprobs[0]))
-    return parse_yesno_response(top_token)
 
 
 def resolve_pair_label(result: dict) -> str:

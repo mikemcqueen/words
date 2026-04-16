@@ -23,6 +23,7 @@ from classify import classify_pairs_async
 from client import run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
 from common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
 from info import info
+from model import is_gemma
 
 def fmt_duration(s):
     """Format seconds as compact duration: 5s, 3m30s, 2h03m04s, 1 day, 2h03m04s."""
@@ -80,7 +81,10 @@ def send_anchor_prefix(args, ctx: str) -> None:
     if not m:
         return
         #raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
-    prefix = "<|im_start|>user\n" + m.group(1)
+    if is_gemma(args.model_id):
+        prefix = "<|turn|>user\n" + m.group(1)
+    else:
+        prefix = "<|im_start|>user\n" + m.group(1)
     url = f"{args.host}:{args.port}/v1/completions"
     headers = {"Content-Type": "application/json"}
     if args.key:
@@ -348,6 +352,7 @@ def main():
 
     auto_detect_max_concurrent(args)
     args.model_id = query_model_id(args.host, args.port, args.key)
+    print(f"Model: {args.model_id} Gemma={is_gemma(args.model_id)}")
 
     if args.prompt_file:
         all_prompts = load_prompts_from_file(args.prompt_file)

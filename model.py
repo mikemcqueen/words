@@ -62,7 +62,7 @@ def is_gemma_4(name: str):
     return "gemma-4" in name
 
 def is_gemma(name: str):
-    return "gemma" in name
+    return "gemma" in name.lower()
 
 def is_mlx_model(name: str) -> bool:
     return name.startswith("mlx-community/")

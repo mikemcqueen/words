@@ -46,7 +46,7 @@ def parse_args(argv=None):
                         help='comma-separated discovery keys for explicit ensemble; '
                              'positional arg must be a directory')
     parser.add_argument('-s', '--sort', default='score', metavar='FIELD',
-                        help='sort field: diff=score/fixfp/fixfn/newfp/newfn/orfp/orfn; ensemble=score/FP/FN')
+                        help='sort field: diff=score/fixfp/fixfn/newfp/newfn/fp/fn; ensemble=score/FP/FN')
     parser.add_argument('--top', type=int, default=50, metavar='K',
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
@@ -64,6 +64,7 @@ def parse_args(argv=None):
     compare.py <file>                                        — discovery 2-way diff anchor-based across all .jsonl files in same direcotry
     compare.py <file_a> <file_b>                             — explicit 2-way diff 
     compare.py <file_a> -k key1                              — explicit 2-way diff; alternate syntax
+    compare.py <dir> -k key1,key2                            — explicit 2-way diff; alternate syntax
     compare.py <file_a> <file_b> -e RULE                     — explicit 2-way ensemble (OR, AND); -2 implied
     compare.py <file_a> -k key1 -e RULE                      — explicit 2-way ensemble (OR, AND); -2 implied, alternate syntax
     compare.py <dir|file> -2|-3|-5 [-e RULE]                 — n-way ensemble across all .jsonl files in same directory
@@ -82,12 +83,23 @@ def parse_args(argv=None):
 
     args.keys = [k.strip() for k in args.keys.split(',')] if args.keys else []
 
-    # fixup args.files for 2-way alternate syntax
-    if len(args.keys) == 1:
+    # validate --keys (early: depends on original keys/files before fixups)
+    if args.keys:
         if len(args.files) != 1:
             parser.error('--keys requires exactly one path argument')
-        file2 = resolve_key(args.files[0], args.keys[0]) 
+        if len(args.keys) > 1 and not Path(args.files[0]).is_dir():
+            parser.error('--keys with multiple keys requires the path to be a directory')
+
+    # fixup args.files: 1-key alternate syntax
+    if len(args.keys) == 1:
+        file2 = resolve_key(args.files[0], args.keys[0])
         args.files.append(str(file2))
+
+    # fixup args.files: 2-key alternate syntax (explicit 2-way diff)
+    if len(args.keys) == 2 and not args.n_way:
+        directory = args.files[0]
+        args.files = [str(resolve_key(directory, k, enforce_unique=True)) for k in args.keys]
+        args.keys = []
 
     # fixup args.n_way for implied -2 cases
     if not args.n_way:
@@ -111,13 +123,10 @@ def parse_args(argv=None):
     elif len(args.files) > 2:
         parser.error('supply 1 or 2 paths')
 
-    # validate --keys
+    # validate --keys (late: depends on n_way fixup)
     if len(args.keys) > 1:
-        # FIRST: ensure args.n_way
         if not args.n_way:
             parser.error('supplying two or more --keys requires -2, -3, or -5')
-        if not Path(args.files[0]).is_dir():
-            parser.error('supplying two or more --keys requires the path to be a directory')
         if args.n_way > len(args.keys):
             parser.error(f'-{args.n_way} requires at least {args.n_way} keys, got {len(args.keys)}')
 
@@ -167,8 +176,9 @@ def parse_args(argv=None):
 
     # validate --sort
     sort_lc = args.sort.lower()
-    valid_sort = {'score', 'fp', 'fn'} if args.ensemble else {
-        'score', 'fixfp', 'fixfn', 'newfp', 'newfn', 'orfp', 'orfn'
+    explicit_2way = len(args.files) == 2
+    valid_sort = {'score', 'fp', 'fn'} if (args.ensemble and not explicit_2way) else {
+        'score', 'fixfp', 'fixfn', 'newfp', 'newfn', 'fp', 'fn'
     }
     if sort_lc not in valid_sort:
         choices = ', '.join(sorted(valid_sort))
@@ -238,10 +248,8 @@ def load_result_files(expected, args):
 # --- top-level runners ---
 
 def run_explicit_2way(files, expected, args):
-    if args.ensemble:
-        return ensemble.print_discovery_ensemble(args, files)
-    else:
-        return diff.print_explicit_2way_diff(files, args)
+    rule = args.ensemble if args.ensemble else 'OR'
+    return diff.print_explicit_2way_diff(files, args, ensemble_rule=rule)
 
 
 def run_explicit_nway(files, expected, args):

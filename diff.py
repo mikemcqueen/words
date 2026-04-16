@@ -10,8 +10,8 @@ SORT_DEFAULT_KEYS = {
     'fixfn':  ('fixed_fn', True),
     'newfp':  ('new_fp',   False),
     'newfn':  ('new_fn',   False),
-    'orfp':   ('or_fp',    False),
-    'orfn':   ('or_fn',    False),
+    'fp':     ('or_fp',    False),
+    'fn':     ('or_fn',    False),
 }
 
 
@@ -36,8 +36,8 @@ def _common_pair_entries(results_1, results_2):
             yield pair, other_data, data
 
 
-def _pair_or_label(d1, d2):
-    """Return the 2-way OR pair label using the existing YES/NO collapsing semantics."""
+def _pair_ensemble_label(d1, d2, rule='OR'):
+    """Return the 2-way ensemble pair label using the given rule (OR or AND)."""
     result_1 = d1.get('result')
     result_2 = d2.get('result')
     if result_1 is None or result_2 is None or 'label' not in d1:
@@ -47,11 +47,18 @@ def _pair_or_label(d1, d2):
     if expected is None:
         return None
 
-    pair_has_yes = False
-    for dir_ in result_1['logprobs']:
-        if result_1[dir_].token == 'YES' or result_2[dir_].token == 'YES':
-            pair_has_yes = True
-            break
+    if rule == 'OR':
+        pair_has_yes = False
+        for dir_ in result_1['logprobs']:
+            if result_1[dir_].token == 'YES' or result_2[dir_].token == 'YES':
+                pair_has_yes = True
+                break
+    else:
+        pair_has_yes = True
+        for dir_ in result_1['logprobs']:
+            if result_1[dir_].token != 'YES' or result_2[dir_].token != 'YES':
+                pair_has_yes = False
+                break
 
     if expected == 'YES':
         return 'correct' if pair_has_yes else 'fn'
@@ -79,8 +86,8 @@ def _pair_diff_from_counts(fixed_fp, fixed_fn, new_fp, new_fn,
     return diff
 
 
-def compute_pair_diff(results_1, results_2, *, include_or_results=False, s1=None, s2=None):
-    """Compare anchor labels to the 2-way OR ensemble computed with standard label semantics."""
+def compute_pair_diff(results_1, results_2, *, rule='OR', include_or_results=False, s1=None, s2=None):
+    """Compare anchor labels to the 2-way ensemble computed with standard label semantics."""
     fixed_fp = fixed_fn = new_fp = new_fn = 0
     or_results = {} if include_or_results else None
     or_correct = or_fp = or_fn = 0
@@ -89,7 +96,7 @@ def compute_pair_diff(results_1, results_2, *, include_or_results=False, s1=None
         if old_label is None:
             continue
 
-        or_label = _pair_or_label(d1, d2)
+        or_label = _pair_ensemble_label(d1, d2, rule)
         if or_label is None:
             continue
 
@@ -246,28 +253,54 @@ def print_2way_diff_table(rows):
     wa = max(wa, len('anchor'))
     wc = max((len(c) for _, c, _ in rows), default=len('complement'))
     wc = max(wc, len('complement'))
+    rules = set(d.get('rule', 'OR') for _, _, d in rows)
+    multi_rule = len(rules) > 1
+    if multi_rule:
+        wr = max(len(r) for r in rules)
+        wr = max(wr, len('Rule'))
+        rule_cols = f"{'Rule':<{wr}s} {'Rule%':>6s} {'FP':>4s} {'FN':>4s}"
+        sep_len = wa + wc + 84 + wr + 2
+    else:
+        rule = next(iter(rules))
+        rule_cols = f"{rule + '%':>6s} {'FP':>4s} {'FN':>4s}"
+        sep_len = wa + wc + 84
     print(f"{'anchor':<{wa}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s}  "
           f"{'complement':<{wc}s} {'corr%':>6s} {'FP':>4s} {'FN':>4s} | "
           f"{'score':>5s} {'FixFP':>5s} {'FixFN':>5s} {'NewFP':>5s} {'NewFN':>5s} | "
-          f"{'Or%':>6s} {'OrFP':>4s} {'OrFN':>4s}")
-    print(f"{'─'*(wa + wc + 84)}")
+          f"{rule_cols}")
+    print(f"{'─'*sep_len}")
     for anchor, complement, d in rows:
         s1, s2 = d['s1'], d['s2']
-        print(f"{anchor:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
-              f"{complement:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
-              f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
-              f"{d['new_fp']:>5d} {d['new_fn']:>5d} | "
-              f"{d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
+        rule = d.get('rule', 'OR')
+        base = (f"{anchor:<{wa}s} {s1['pct']:5.1f}% {s1['fp']:>4d} {s1['fn']:>4d}  "
+                f"{complement:<{wc}s} {s2['pct']:5.1f}% {s2['fp']:>4d} {s2['fn']:>4d} | "
+                f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
+                f"{d['new_fp']:>5d} {d['new_fn']:>5d} | ")
+        if multi_rule:
+            print(f"{base}{rule:<{wr}s} {d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
+        else:
+            print(f"{base}{d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
     print()
 
 
-def print_explicit_2way_diff(files, args):
+ENSEMBLE_RULES_2 = ['OR', 'AND']
+
+
+def print_explicit_2way_diff(files, args, ensemble_rule='OR'):
     key_a, key_b, *_ = iter(files)
     s1 = compute_stats(files[key_a])
     s2 = compute_stats(files[key_b])
-    d = compute_pair_diff(files[key_a], files[key_b], include_or_results=args.bad, s1=s1, s2=s2)
-    print_2way_diff_table([(key_a, key_b, d)])
-    return [(f"{key_a},{key_b} DIFF", d)]
+    rules = ENSEMBLE_RULES_2 if ensemble_rule == 'ALL' else [ensemble_rule]
+    rows = []
+    bad_rows = []
+    for rule in rules:
+        d = compute_pair_diff(files[key_a], files[key_b],
+                              rule=rule, include_or_results=args.bad, s1=s1, s2=s2)
+        d['rule'] = rule
+        rows.append((key_a, key_b, d))
+        bad_rows.append((f"{key_a},{key_b} DIFF", d))
+    print_2way_diff_table(rows)
+    return bad_rows
 
 
 def _diff_sort_value(diff, sort):

@@ -307,9 +307,10 @@ def print_discovery_ranked(files_dict, sort='score'):
     print()
 
 
-def resolve_key(file_or_dir, key):
+def resolve_key(file_or_dir, key, *, enforce_unique=False):
     """Given a directory and a discovery key like 'crosswd2.p81.qwen35', find the matching .jsonl file.
-    Splits key into (prompt_file, pid, tag) and globs for a unique match."""
+    Splits key into (prompt_file, pid, tag) and returns the first matching .jsonl file.
+    When enforce_unique is True, exits if multiple files match."""
     parts = key.split('.', 2)
     if len(parts) == 3:
         prompt_file, pid, tag = parts
@@ -338,7 +339,8 @@ def resolve_key(file_or_dir, key):
         print(f"Error: multiple files found for key {key!r}:", file=sys.stderr)
         for c in candidates:
             print(f"  {c.name}", file=sys.stderr)
-        #sys.exit(1)
+        if enforce_unique:
+            sys.exit(1)
     return candidates[0]
 
 
