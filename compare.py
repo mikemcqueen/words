@@ -4,8 +4,10 @@
 
 import argparse
 import json
+import queue
 import signal
 import sys
+import threading
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from pathlib import Path
@@ -235,6 +237,32 @@ def _read_jsonl_batch(handle, count):
     return json.loads(batch)
 
 
+def _prefetch(iterable):
+    """Wrap an iterable so the next item is produced in a background thread."""
+    q = queue.Queue(maxsize=1)
+    sentinel = object()
+
+    def producer():
+        try:
+            for item in iterable:
+                q.put(item)
+        except Exception as e:
+            q.put(e)
+        finally:
+            q.put(sentinel)
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+    t.join()
+
+
 def eval_results_block_generator(files_list):
     """Yield aligned blocks of eval results from multiple JSONL files.
 
@@ -339,7 +367,7 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
-        block_iter = eval_results_block_generator(args.files)
+        block_iter = _prefetch(eval_results_block_generator(args.files))
         rule = args.ensemble if args.ensemble else 'OR'
         diff.run_nopairs_2way(block_iter, rule, args.method)
         return
