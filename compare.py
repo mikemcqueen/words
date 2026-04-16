@@ -210,43 +210,52 @@ def _key_from_path(path):
     return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
 
 
+def _read_jsonl_batch(handle, count):
+    """Read up to *count* JSONL lines from *handle*, parse as one JSON array."""
+    first = None
+    while True:
+        first = handle.readline()
+        if not first:
+            return None
+        first = first.strip()
+        if first:
+            break
+    batch = "[" + first
+    got = 1
+    for _ in range(count - 1):
+        line = handle.readline()
+        if not line:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        batch += "," + line
+        got += 1
+    batch += "]"
+    return json.loads(batch)
+
+
 def eval_results_block_generator(files_list):
     """Yield aligned blocks of eval results from multiple JSONL files.
 
     Each yielded value is a dict: {file_key: {pair: {"logprobs": ...}, ...}}
     with up to BLOCK_SIZE pairs, identical keys across all files.
     """
-    BLOCK_SIZE = 1000
+    BLOCK_SIZE = 100
     keys = [_key_from_path(f) for f in files_list]
     handles = [open(f) for f in files_list]
     try:
         while True:
             block = {}
-            # Load a block from file[0]
-            primary = {}
-            for _ in range(BLOCK_SIZE):
-                line = handles[0].readline()
-                if not line:
-                    break
-                line = line.strip()
-                if line:
-                    r = json.loads(line)
-                    primary[r["pair"]] = {"logprobs": r["logprobs"]}
-            if not primary:
+            rows = _read_jsonl_batch(handles[0], BLOCK_SIZE)
+            if rows is None:
                 break
+            primary = {r["pair"]: {"logprobs": r["logprobs"]} for r in rows}
             block[keys[0]] = primary
 
-            # Load matching block from each additional file
             for i in range(1, len(files_list)):
-                secondary = {}
-                for _ in range(len(primary)):
-                    line = handles[i].readline()
-                    if not line:
-                        break
-                    line = line.strip()
-                    if line:
-                        r = json.loads(line)
-                        secondary[r["pair"]] = {"logprobs": r["logprobs"]}
+                rows = _read_jsonl_batch(handles[i], len(primary))
+                secondary = {r["pair"]: {"logprobs": r["logprobs"]} for r in rows} if rows else {}
                 sym_diff = primary.keys() ^ secondary.keys()
                 if sym_diff:
                     raise RuntimeError(
