@@ -1,19 +1,20 @@
 import heapq
-
 import numpy as np
 
 from common import (compute_stats, expected_yesno_from_labeled_result,
                     pair_has_yes, print_displayed_keys)
 
+from ensemble import ENSEMBLE_RULES_2
 
-SORT_DEFAULT_KEYS = {
+
+SORT_DIFF_KEYS = {
     'score':  ('score',    True),
     'fixfp':  ('fixed_fp', True),
     'fixfn':  ('fixed_fn', True),
     'newfp':  ('new_fp',   False),
     'newfn':  ('new_fn',   False),
-    'fp':     ('or_fp',    False),
-    'fn':     ('or_fn',    False),
+    'fp':     ('ens_fp',   False),
+    'fn':     ('ens_fn',   False),
 }
 
 
@@ -38,7 +39,7 @@ def _common_pair_entries(results_1, results_2):
             yield pair, other_data, data
 
 
-def _pair_ensemble_label(d1, d2, rule='OR'):
+def _pair_ensemble_label(d1, d2, rule):
     """Return the 2-way ensemble pair label using the given rule (OR or AND)."""
     result_1 = d1.get('result')
     result_2 = d2.get('result')
@@ -56,6 +57,7 @@ def _pair_ensemble_label(d1, d2, rule='OR'):
                 pair_has_yes = True
                 break
     else:
+        assert rule == 'AND', rule
         pair_has_yes = True
         for dir_ in result_1['logprobs']:
             if result_1[dir_].token != 'YES' or result_2[dir_].token != 'YES':
@@ -68,8 +70,8 @@ def _pair_ensemble_label(d1, d2, rule='OR'):
 
 
 def _pair_diff_from_counts(fixed_fp, fixed_fn, new_fp, new_fn,
-                           or_correct, or_fp, or_fn, *, s1, s2, or_results=None):
-    total = or_correct + or_fp + or_fn
+                           correct, fp, fn, *, s1, s2, results=None):
+    total = ens_correct + ens_fp + ens_fn
     score = 2 * fixed_fn + fixed_fp - new_fp
     diff = dict(
         fixed_fp=fixed_fp,
@@ -79,48 +81,48 @@ def _pair_diff_from_counts(fixed_fp, fixed_fn, new_fp, new_fn,
         score=score,
         s1=s1,
         s2=s2,
-        or_pct=100 * or_correct / total if total else 0.0,
-        or_fp=or_fp,
-        or_fn=or_fn,
+        ens_pct=100 * correct / total if total else 0.0,
+        ens_fp=fp,
+        ens_fn=fn,
     )
-    if or_results is not None:
-        diff['or_results'] = or_results
+    if results is not None:
+        diff['ens_results'] = results
     return diff
 
 
-def compute_pair_diff(results_1, results_2, *, rule='OR', include_or_results=False, s1=None, s2=None):
+def compute_pair_diff(results_1, results_2, *, rule, include_ens_results=False, s1=None, s2=None):
     """Compare anchor labels to the 2-way ensemble computed with standard label semantics."""
     fixed_fp = fixed_fn = new_fp = new_fn = 0
-    or_results = {} if include_or_results else None
-    or_correct = or_fp = or_fn = 0
+    ens_results = {} if include_ens_results else None
+    ens_correct = ens_fp = ens_fn = 0
     for pair, d1, d2 in _common_pair_entries(results_1, results_2):
         old_label = d1.get('label')
         if old_label is None:
             continue
 
-        or_label = _pair_ensemble_label(d1, d2, rule)
-        if or_label is None:
+        ens_label = _pair_ensemble_label(d1, d2, rule)
+        if ens_label is None:
             continue
 
-        if old_label == 'fp' and or_label != 'fp':
+        if old_label == 'fp' and ens_label != 'fp':
             fixed_fp += 1
-        elif old_label == 'fn' and or_label != 'fn':
+        elif old_label == 'fn' and ens_label != 'fn':
             fixed_fn += 1
         elif old_label == 'correct':
-            if or_label == 'fp':
+            if ens_label == 'fp':
                 new_fp += 1
-            elif or_label == 'fn':
+            elif ens_label == 'fn':
                 new_fn += 1
 
-        if or_label == 'correct':
-            or_correct += 1
-        elif or_label == 'fp':
-            or_fp += 1
+        if ens_label == 'correct':
+            ens_correct += 1
+        elif ens_label == 'fp':
+            ens_fp += 1
         else:
-            or_fn += 1
+            ens_fn += 1
 
-        if include_or_results:
-            or_results[pair] = {'label': or_label}
+        if include_ens_results:
+            ens_results[pair] = {'label': ens_label}
 
     if s1 is None:
         s1 = compute_stats(results_1)
@@ -128,12 +130,9 @@ def compute_pair_diff(results_1, results_2, *, rule='OR', include_or_results=Fal
         s2 = compute_stats(results_2)
     return _pair_diff_from_counts(
         fixed_fp, fixed_fn, new_fp, new_fn,
-        or_correct, or_fp, or_fn,
-        s1=s1, s2=s2, or_results=or_results,
+        ens_correct, ens_fp, ens_fn,
+        s1=s1, s2=s2, ens_results=ens_results,
     )
-
-
-_pair_has_yes = pair_has_yes
 
 
 def _stats_from_label_masks(valid_mask, correct_mask, fp_mask, fn_mask):
@@ -179,7 +178,7 @@ def _build_2way_diff_masks(files):
             else:
                 fn_mask |= bit
 
-            if _pair_has_yes(data):
+            if pair_has_yes(data):
                 any_yes_mask |= bit
 
         masks_by_key[key] = (valid_mask, correct_mask, fp_mask, fn_mask, any_yes_mask)
@@ -194,19 +193,19 @@ def _pair_diff_from_masks(mask_1, mask_2, expected_yes_mask, *, s1, s2):
     valid_2, _, _, _, any_yes_2 = mask_2
 
     common = valid_1 & valid_2
-    or_yes_mask = common & (any_yes_1 | any_yes_2)
-    or_fp_mask = common & ~expected_yes_mask & or_yes_mask
-    or_fn_mask = common & expected_yes_mask & ~or_yes_mask
-    or_fp = or_fp_mask.bit_count()
-    or_fn = or_fn_mask.bit_count()
-    or_correct = common.bit_count() - or_fp - or_fn
+    ens_yes_mask = common & (any_yes_1 | any_yes_2)
+    ens_fp_mask = common & ~expected_yes_mask & ens_yes_mask
+    ens_fn_mask = common & expected_yes_mask & ~ens_yes_mask
+    ens_fp = ens_fp_mask.bit_count()
+    ens_fn = ens_fn_mask.bit_count()
+    ens_correct = common.bit_count() - ens_fp - ens_fn
 
     return _pair_diff_from_counts(
-        (fp_1 & common & ~or_fp_mask).bit_count(),
-        (fn_1 & common & ~or_fn_mask).bit_count(),
-        (correct_1 & or_fp_mask).bit_count(),
-        (correct_1 & or_fn_mask).bit_count(),
-        or_correct, or_fp, or_fn,
+        (fp_1 & common & ~ens_fp_mask).bit_count(),
+        (fn_1 & common & ~ens_fn_mask).bit_count(),
+        (correct_1 & ens_fp_mask).bit_count(),
+        (correct_1 & ens_fn_mask).bit_count(),
+        ens_correct, ens_fp, ens_fn,
         s1=s1, s2=s2,
     )
 
@@ -217,28 +216,28 @@ def _pair_diff_both_from_masks(mask_1, mask_2, expected_yes_mask, *, s1, s2):
     valid_2, correct_2, fp_2, fn_2, any_yes_2 = mask_2
 
     common = valid_1 & valid_2
-    or_yes_mask = common & (any_yes_1 | any_yes_2)
-    or_fp_mask = common & ~expected_yes_mask & or_yes_mask
-    or_fn_mask = common & expected_yes_mask & ~or_yes_mask
-    or_fp = or_fp_mask.bit_count()
-    or_fn = or_fn_mask.bit_count()
-    or_correct = common.bit_count() - or_fp - or_fn
+    ens_yes_mask = common & (any_yes_1 | any_yes_2)
+    ens_fp_mask = common & ~expected_yes_mask & ens_yes_mask
+    ens_fn_mask = common & expected_yes_mask & ~ens_yes_mask
+    ens_fp = ens_fp_mask.bit_count()
+    ens_fn = ens_fn_mask.bit_count()
+    ens_correct = common.bit_count() - ens_fp - ens_fn
 
     return (
         _pair_diff_from_counts(
-            (fp_1 & common & ~or_fp_mask).bit_count(),
-            (fn_1 & common & ~or_fn_mask).bit_count(),
-            (correct_1 & or_fp_mask).bit_count(),
-            (correct_1 & or_fn_mask).bit_count(),
-            or_correct, or_fp, or_fn,
+            (fp_1 & common & ~ens_fp_mask).bit_count(),
+            (fn_1 & common & ~ens_fn_mask).bit_count(),
+            (correct_1 & ens_fp_mask).bit_count(),
+            (correct_1 & ens_fn_mask).bit_count(),
+            ens_correct, ens_fp, ens_fn,
             s1=s1, s2=s2,
         ),
         _pair_diff_from_counts(
-            (fp_2 & common & ~or_fp_mask).bit_count(),
-            (fn_2 & common & ~or_fn_mask).bit_count(),
-            (correct_2 & or_fp_mask).bit_count(),
-            (correct_2 & or_fn_mask).bit_count(),
-            or_correct, or_fp, or_fn,
+            (fp_2 & common & ~ens_fp_mask).bit_count(),
+            (fn_2 & common & ~ens_fn_mask).bit_count(),
+            (correct_2 & ens_fp_mask).bit_count(),
+            (correct_2 & ens_fn_mask).bit_count(),
+            ens_correct, ens_fp, ens_fn,
             s1=s2, s2=s1,
         ),
     )
@@ -274,16 +273,13 @@ def print_2way_diff_table(rows):
                 f"{d['score']:>+5d} {d['fixed_fp']:>5d} {d['fixed_fn']:>5d} "
                 f"{d['new_fp']:>5d} {d['new_fn']:>5d} | ")
         if multi_rule:
-            print(f"{base}{rule:<{wr}s} {d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
+            print(f"{base}{rule:<{wr}s} {d['ens_pct']:5.1f}% {d['ens_fp']:>4d} {d['ens_fn']:>4d}")
         else:
-            print(f"{base}{d['or_pct']:5.1f}% {d['or_fp']:>4d} {d['or_fn']:>4d}")
+            print(f"{base}{d['ens_pct']:5.1f}% {d['ens_fp']:>4d} {d['ens_fn']:>4d}")
     print()
 
 
-ENSEMBLE_RULES_2 = ['OR', 'AND']
-
-
-def run_nopairs_2way_projected(block_iter, rule='OR', method='top-token'):
+def run_2way_nopairs_projected(block_iter, rule, method='top-token'):
     """Process projected native blocks without materializing pair-keyed dicts."""
     import compare_native
 
@@ -319,10 +315,9 @@ def run_nopairs_2way_projected(block_iter, rule='OR', method='top-token'):
         for r in rules:
             if r == 'OR':
                 pair_yes = np.any(file_yes, axis=0)
-            elif r == 'AND':
-                pair_yes = np.all(file_yes, axis=0)
             else:
-                pair_yes = np.any(file_yes, axis=0)
+                assert r == 'AND', r
+                pair_yes = np.all(file_yes, axis=0)
             combined_yes[r] += int(pair_yes.sum())
 
     if file_keys is None:
@@ -349,7 +344,7 @@ def run_nopairs_2way_projected(block_iter, rule='OR', method='top-token'):
     print()
 
 
-def print_explicit_2way_diff(files, args, ensemble_rule='OR'):
+def print_explicit_2way_diff(files, args, ensemble_rule):
     key_a, key_b, *_ = iter(files)
     s1 = compute_stats(files[key_a])
     s2 = compute_stats(files[key_b])
@@ -358,21 +353,21 @@ def print_explicit_2way_diff(files, args, ensemble_rule='OR'):
     bad_rows = []
     for rule in rules:
         d = compute_pair_diff(files[key_a], files[key_b],
-                              rule=rule, include_or_results=args.bad, s1=s1, s2=s2)
+                              rule=rule, include_ens_results=args.bad, s1=s1, s2=s2)
         d['rule'] = rule
         rows.append((key_a, key_b, d))
-        bad_rows.append((f"{key_a},{key_b} DIFF", d))
+        bad_rows.append((f"{key_a},{key_b} {rule}", d))
     print_2way_diff_table(rows)
     return bad_rows
 
 
 def _diff_sort_value(diff, sort):
     """Return a comparable value where larger is always a better diff row."""
-    sort_key, sort_rev = SORT_DEFAULT_KEYS[sort.lower()]
+    sort_key, sort_rev = SORT_DIFF_KEYS[sort.lower()]
     if sort_key == 'score':
-        return (diff['or_pct'], -diff['or_fp'], -diff['or_fn'])
+        return (diff['ens_pct'], -diff['ens_fp'], -diff['ens_fn'])
     primary = diff[sort_key] if sort_rev else -diff[sort_key]
-    return (primary, diff['or_pct'])
+    return (primary, diff['ens_pct'])
 
 
 def _retain_top_rows(rows, limit, value_fn):
@@ -397,7 +392,7 @@ def _sort_diff_rows(rows, sort):
 
 def _diff_bad_rows(rows):
     """Convert displayed diff rows into the labeled form expected by print_bad_pairs."""
-    return [(f"{anchor},{complement} DIFF", diff) for anchor, complement, diff in rows]
+    return [(f"{anchor},{complement} {diff['rule']}", diff) for anchor, complement, diff in rows]
 
 
 def print_2way_diff_anchored(anchor_key, files, args):
@@ -462,65 +457,3 @@ def print_2way_diff_all_pairs(files, args):
     if args.print_keys:
         print_displayed_keys([((f"{anchor},{complement}"), diff) for anchor, complement, diff in displayed_rows])
     return _diff_bad_rows(displayed_rows)
-
-
-def run_nopairs_2way(block_iter, rule='OR', method='top-token'):
-    """Process blocks of eval results without expected pairs; display YES/NO stats."""
-    from score import score_eval_results
-
-    rules = ENSEMBLE_RULES_2 if rule == 'ALL' else [rule]
-    total_pairs = 0
-    yes_counts = {}
-    combined_yes = {r: 0 for r in rules}
-
-    for block in block_iter:
-        file_keys = list(block.keys())
-        for fk in file_keys:
-            if fk not in yes_counts:
-                yes_counts[fk] = 0
-
-        block_size = len(next(iter(block.values())))
-        total_pairs += block_size
-
-        for fk in file_keys:
-            score_eval_results(block[fk], method)
-
-        pairs = next(iter(block.values())).keys()
-        for pair in pairs:
-            per_file_yes = {fk: block[fk][pair]["yes"] for fk in file_keys}
-
-            for fk, is_yes in per_file_yes.items():
-                if is_yes:
-                    yes_counts[fk] += 1
-
-            for r in rules:
-                if r == 'OR':
-                    pair_yes = any(per_file_yes.values())
-                elif r == 'AND':
-                    pair_yes = all(per_file_yes.values())
-                else:
-                    pair_yes = any(per_file_yes.values())
-                if pair_yes:
-                    combined_yes[r] += 1
-
-    file_keys = list(yes_counts.keys())
-    wa = max(len(file_keys[0]), len('file_a'))
-    wc = max(len(file_keys[1]), len('file_b')) if len(file_keys) > 1 else len('file_b')
-    header = (f"{'file_a':<{wa}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}  "
-              f"{'file_b':<{wc}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s} | "
-              f"{'rule':>5s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}")
-    print(header)
-    print('─' * len(header))
-    s = [{}, {}]
-    for i, fk in enumerate(file_keys[:2]):
-        s[i]['yes'] = yes_counts[fk]
-        s[i]['no'] = total_pairs - s[i]['yes']
-        s[i]['pct'] = 100 * s[i]['yes'] / total_pairs if total_pairs else 0.0
-    for r in rules:
-        c_yes = combined_yes[r]
-        c_no = total_pairs - c_yes
-        c_pct = 100 * c_yes / total_pairs if total_pairs else 0.0
-        print(f"{file_keys[0]:<{wa}s} {s[0]['pct']:5.1f}% {s[0]['yes']:>6d} {s[0]['no']:>6d}  "
-              f"{file_keys[1]:<{wc}s} {s[1]['pct']:5.1f}% {s[1]['yes']:>6d} {s[1]['no']:>6d} | "
-              f"{r:>5s} {c_pct:5.1f}% {c_yes:>6d} {c_no:>6d}")
-    print()

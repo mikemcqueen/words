@@ -1,9 +1,10 @@
-ver/**
-__pycache__/**
-wt/**
-out/**
-out*
+api_key
+build/
+junk/
 data*/**
-words/**
+final/**
+out/**
 results/**
-junk/**
+words/**
+wt/**
+__pycache__/

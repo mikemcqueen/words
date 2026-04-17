@@ -16,6 +16,8 @@ from common import (load_expected_pairs, load_eval_results,
                     resolve_key, print_bad_pairs,
                     add_print_keys_arg, print_displayed_keys)
 from score import label_eval_results, resolve_all_pair_labels
+from diff import SORT_DIFF_KEYS
+from ensemble import SORT_ENSEMBLE_KEYS
 
 import diff
 import ensemble
@@ -146,24 +148,6 @@ def parse_args(argv=None):
         if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
             parser.error(f'--ensemble MAJORITY is not valid with -{args.n_way}')
 
-    """
-    if args.keys:
-        if len(args.files) != 1:
-            parser.error('--keys requires exactly one positional argument')
-        if not Path(args.files[0]).is_dir():
-            parser.error(f'--keys: {args.files[0]!r} is not a directory')
-        if n_ways == 0:
-            parser.error('-k requires -2, -3, or -5')
-        args.ensemble = args.ensemble or 'ALL'
-        return args, parser
-
-    if (args.two_way or args.three_way or args.five_way) and not args.ensemble:
-        parser.error('-2/-3/-5 requires --ensemble')
-
-    if args.ensemble == 'MAJORITY' and args.n_way % 2 == 0:
-        parser.error('--ensemble MAJORITY requires -3 or -5')
-    """
-
     # validate --bad
     # TODO: allow <dir> -k key1 possibly?
     if args.bad:
@@ -185,9 +169,11 @@ def parse_args(argv=None):
     # validate --sort
     sort_lc = args.sort.lower()
     explicit_2way = len(args.files) == 2
-    valid_sort = {'score', 'fp', 'fn'} if (args.ensemble and not explicit_2way) else {
-        'score', 'fixfp', 'fixfn', 'newfp', 'newfn', 'fp', 'fn'
-    }
+    valid_sort = (
+        set(SORT_ENSEMBLE_KEYS)
+        if (args.ensemble and not explicit_2way)
+        else set(SORT_DIFF_KEYS)
+    )
     if sort_lc not in valid_sort:
         choices = ', '.join(sorted(valid_sort))
         parser.error(f'--sort: invalid value {args.sort!r}; choices: {choices}')
@@ -214,7 +200,7 @@ def _key_from_path(path):
 
 def _prefetch(iterable):
     """Wrap an iterable so the next item is produced in a background thread."""
-    q = queue.Queue(maxsize=2)
+    q = queue.Queue(maxsize=1)
     sentinel = object()
 
     def producer():
@@ -311,7 +297,7 @@ def main():
         compare_native.require_native()
         block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
         rule = args.ensemble if args.ensemble else 'OR'
-        diff.run_nopairs_2way_projected(block_iter, rule, args.method)
+        diff.run_2way_nopairs_projected(block_iter, rule, args.method)
         return
 
     expected = load_expected_pairs(args.pairs)
@@ -330,11 +316,8 @@ def main():
         parts = top_label.rsplit(' ', 1)
         if len(parts) == 2:
             keys, rule = parts[0].split(','), parts[1]
-            if rule == 'DIFF':
-                combined = row_data.get('or_results')
-                if combined is None:
-                    combined = ensemble.apply_ensemble_labeled([files[key] for key in keys], 'OR')
-            else:
+            combined = row_data.get('ens_results')
+            if combined is None:
                 combined = ensemble.apply_ensemble_labeled([files[key] for key in keys], rule)
             print_bad_pairs(combined, sources=[(key, files[key]) for key in keys])
 
