@@ -261,5 +261,45 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
         np.testing.assert_allclose(probs[1, :, 0], [0.6, 0.6, 0.6])
 
 
+    def test_projected_loader_exposes_pairs_when_available(self):
+        if not compare_native.native_available():
+            self.skipTest("native extension is not available")
+
+        records = [
+            {"pair": "pair_0", "seq": 0, "logprobs": {"fwd": [{"YES": 0.9}], "rvs": [{"NO": 0.8}]}},
+            {"pair": "pair_1", "seq": 1, "logprobs": {"fwd": [{"NO": 0.7}], "rvs": [{"YES": 0.6}]}},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files = [self._write_records_file(tmpdir, "hosta.tag1", records)]
+            block = next(compare_native.iter_projected_blocks(files, chunk_size=10))
+
+        self.assertEqual(["pair_0", "pair_1"], list(block.pairs()))
+
+    def test_projected_loader_pairs_respects_truncation_when_available(self):
+        if not compare_native.native_available():
+            self.skipTest("native extension is not available")
+
+        records_a = [
+            {"pair": f"pair_{i}", "seq": i, "logprobs": {"fwd": [{"YES": 0.9}], "rvs": [{"NO": 0.8}]}}
+            for i in range(5)
+        ]
+        records_b = [
+            {"pair": f"pair_{i}", "seq": i, "logprobs": {"fwd": [{"NO": 0.6}], "rvs": [{"YES": 0.7}]}}
+            for i in range(3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files = [
+                self._write_records_file(tmpdir, "hosta.tag1", records_a),
+                self._write_records_file(tmpdir, "hostb.tag2", records_b),
+            ]
+            blocks = list(compare_native.iter_projected_blocks(files, chunk_size=10))
+
+        block = blocks[0]
+        self.assertEqual(block.size, len(block.pairs()))
+        self.assertEqual(["pair_0", "pair_1", "pair_2"], list(block.pairs()))
+
+
 if __name__ == "__main__":
     unittest.main()

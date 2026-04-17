@@ -162,13 +162,15 @@ void validate_pair_alignment(const std::vector<std::string> &paths,
 class ProjectedChunk {
  public:
   ProjectedChunk(std::vector<std::string> keys, std::vector<std::string> directions, size_t rows,
-                 size_t capacity, std::vector<uint8_t> labels, std::vector<double> probs)
+                 size_t capacity, std::vector<uint8_t> labels, std::vector<double> probs,
+                 std::vector<std::string> pairs)
       : keys_(std::move(keys)),
         directions_(std::move(directions)),
         rows_(rows),
         capacity_(capacity),
         labels_(std::move(labels)),
-        probs_(std::move(probs)) {}
+        probs_(std::move(probs)),
+        pairs_(std::move(pairs)) {}
 
   const std::vector<std::string> &keys() const { return keys_; }
   const std::vector<std::string> &directions() const { return directions_; }
@@ -183,6 +185,8 @@ class ProjectedChunk {
          static_cast<py::ssize_t>(sizeof(uint8_t))},
         labels_.data(), py::cast(this));
   }
+
+  const std::vector<std::string> &pairs() const { return pairs_; }
 
   py::array_t<double> probs() const {
     return py::array_t<double>(
@@ -201,6 +205,7 @@ class ProjectedChunk {
   size_t capacity_;
   std::vector<uint8_t> labels_;
   std::vector<double> probs_;
+  std::vector<std::string> pairs_;
 };
 
 class ProjectedAlignedJsonlReader {
@@ -234,7 +239,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedAlignedJsonlReader &iter() { return *this; }
 
   ProjectedChunk next() {
-    ProjectedChunk chunk({}, {}, 0, 0, {}, {});
+    ProjectedChunk chunk({}, {}, 0, 0, {}, {}, {});
     {
       py::gil_scoped_release release;
       chunk = read_next_chunk();
@@ -249,7 +254,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedChunk read_next_chunk() {
     std::vector<ProjectedRow> primary = read_rows_for_file(0, chunk_size_);
     if (primary.empty()) {
-      return ProjectedChunk(keys_, directions_, 0, 0, {}, {});
+      return ProjectedChunk(keys_, directions_, 0, 0, {}, {}, {});
     }
 
     if (directions_.empty()) {
@@ -292,7 +297,12 @@ class ProjectedAlignedJsonlReader {
       }
     }
 
-    return ProjectedChunk(keys_, directions_, live_rows, n_rows, std::move(labels), std::move(probs));
+    std::vector<std::string> pair_ids;
+    pair_ids.reserve(live_rows);
+    for (size_t i = 0; i < live_rows; ++i) {
+      pair_ids.push_back(primary[i].pair);
+    }
+    return ProjectedChunk(keys_, directions_, live_rows, n_rows, std::move(labels), std::move(probs), std::move(pair_ids));
   }
 
   void fill_arrays(const std::vector<ProjectedRow> &rows, size_t file_index, size_t capacity,
@@ -390,6 +400,7 @@ PYBIND11_MODULE(_compare_native, m) {
       .def("directions", &ProjectedChunk::directions)
       .def("labels", &ProjectedChunk::labels)
       .def("probs", &ProjectedChunk::probs)
+      .def("pairs", &ProjectedChunk::pairs)
       .def_property_readonly("size", &ProjectedChunk::size);
 
   py::class_<ProjectedAlignedJsonlReader>(m, "ProjectedAlignedJsonlReader")

@@ -1,35 +1,9 @@
 import argparse
-import json
+import sys
 
-from common import parse_yesno_response
+import numpy as np
 
-
-def iter_lines(path):
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                yield json.loads(line)
-
-
-def all_no_none(obj):
-    for dim_entries in obj["logprobs"].values():
-        if not dim_entries:
-            continue
-        for tok, prob in dim_entries[0].items():
-            if parse_yesno_response(tok) == "YES":
-                return False
-    return True
-
-
-def any_yes(obj, args):
-    for dim_entries in obj["logprobs"].values():
-        if not dim_entries:
-            continue
-        for tok, prob in dim_entries[0].items():
-            if parse_yesno_response(tok) == "YES" and args.prob_min <= prob < args.prob_max:
-                return True
-    return False
+import compare_native
 
 
 def main():
@@ -46,10 +20,25 @@ def main():
     if args.prob_max == 1.0:
         args.prob_max += 0.1
 
-    for obj in iter_lines(args.file):
-        keep = any_yes(obj, args) if args.yes else all_no_none(obj)
-        if keep:
-            print(obj["pair"])
+    compare_native.require_native()
+    blocks = compare_native.iter_projected_blocks([args.file], chunk_size=8192)
+
+    out = sys.stdout.write
+    yes_label = compare_native.LABEL_YES
+    for block in blocks:
+        labels = np.asarray(block.labels())[0]   # shape (rows, dirs)
+        if args.yes:
+            probs = np.asarray(block.probs())[0]
+            mask = (
+                (labels == yes_label)
+                & (probs >= args.prob_min)
+                & (probs < args.prob_max)
+            ).any(axis=1)
+        else:
+            mask = (labels != yes_label).all(axis=1)
+        pairs = block.pairs()
+        for idx in np.flatnonzero(mask):
+            out(pairs[idx] + "\n")
 
 if __name__ == "__main__":
     main()
