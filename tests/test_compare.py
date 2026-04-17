@@ -7,7 +7,6 @@ import numpy as np
 
 import compare_native
 from compare import (
-    _aligned_chunk_generator,
     _block_generator_from_chunks,
     _parsed_eval_results_chunk_generator,
     _prefetch,
@@ -126,28 +125,6 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
             auto_blocks = list(eval_results_block_generator(files, loader="auto"))
 
         self.assertEqual(python_blocks, auto_blocks)
-
-    def test_loader_native_requires_extension(self):
-        if compare_native.native_available():
-            self.skipTest("native extension is available")
-        with self.assertRaisesRegex(RuntimeError, "native compare loader unavailable"):
-            list(_aligned_chunk_generator(["a", "b"], loader="native"))
-
-    def test_native_loader_matches_python_blocks_when_available(self):
-        if not compare_native.native_available():
-            self.skipTest("native extension is not available")
-
-        pairs = [f"pair_{i}" for i in range(250)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            python_blocks = list(eval_results_block_generator(files, loader="python"))
-            native_blocks = list(eval_results_block_generator(files, loader="native"))
-
-        self.assertEqual(python_blocks, native_blocks)
 
     def test_projected_loader_exposes_compact_arrays_when_available(self):
         if not compare_native.native_available():

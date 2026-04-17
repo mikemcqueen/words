@@ -21,25 +21,6 @@ constexpr uint8_t kUnknownLabel = 0;
 constexpr uint8_t kNoLabel = 1;
 constexpr uint8_t kYesLabel = 2;
 
-struct TokenProb {
-  std::string token;
-  double prob;
-};
-
-struct DirectionValue {
-  enum class Kind { kArray, kObject, kScalarDouble };
-  Kind kind = Kind::kArray;
-  std::vector<TokenProb> token_probs;
-  double scalar_double = 0.0;
-};
-
-using DirectionLogprobs = std::vector<std::pair<std::string, DirectionValue>>;
-
-struct ParsedRow {
-  std::string pair;
-  DirectionLogprobs logprobs;
-};
-
 struct DirectionProjection {
   std::string name;
   uint8_t label = kUnknownLabel;
@@ -180,66 +161,6 @@ void validate_pair_alignment(const std::vector<std::string> &paths,
   }
 }
 
-class AlignedChunk {
- public:
-  AlignedChunk(std::vector<std::string> keys, std::vector<std::vector<ParsedRow>> rows_by_file)
-      : keys_(std::move(keys)), rows_by_file_(std::move(rows_by_file)) {}
-
-  const std::vector<std::string> &keys() const { return keys_; }
-
-  size_t size() const { return rows_by_file_.empty() ? 0 : rows_by_file_[0].size(); }
-
-  std::vector<std::string> pairs() const {
-    std::vector<std::string> result;
-    if (rows_by_file_.empty()) {
-      return result;
-    }
-    result.reserve(rows_by_file_[0].size());
-    for (const auto &row : rows_by_file_[0]) {
-      result.push_back(row.pair);
-    }
-    return result;
-  }
-
-  py::list rows_for_file(size_t index) const {
-    if (index >= rows_by_file_.size()) {
-      throw py::index_error("file index out of range");
-    }
-    py::list rows;
-    for (const auto &row : rows_by_file_[index]) {
-      py::dict py_row;
-      py_row["pair"] = row.pair;
-      py::dict py_logprobs;
-      for (const auto &dir_entry : row.logprobs) {
-        if (dir_entry.second.kind == DirectionValue::Kind::kArray) {
-          py::list tokens;
-          for (const auto &token_prob : dir_entry.second.token_probs) {
-            py::dict token_entry;
-            token_entry[py::str(token_prob.token)] = token_prob.prob;
-            tokens.append(token_entry);
-          }
-          py_logprobs[py::str(dir_entry.first)] = tokens;
-        } else if (dir_entry.second.kind == DirectionValue::Kind::kObject) {
-          py::dict tokens;
-          for (const auto &token_prob : dir_entry.second.token_probs) {
-            tokens[py::str(token_prob.token)] = token_prob.prob;
-          }
-          py_logprobs[py::str(dir_entry.first)] = tokens;
-        } else {
-          py_logprobs[py::str(dir_entry.first)] = py::float_(dir_entry.second.scalar_double);
-        }
-      }
-      py_row["logprobs"] = py_logprobs;
-      rows.append(py_row);
-    }
-    return rows;
-  }
-
- private:
-  std::vector<std::string> keys_;
-  std::vector<std::vector<ParsedRow>> rows_by_file_;
-};
-
 class ProjectedChunk {
  public:
   ProjectedChunk(std::vector<std::string> keys, std::vector<std::string> directions, size_t rows,
@@ -280,163 +201,6 @@ class ProjectedChunk {
   size_t rows_;
   std::vector<uint8_t> labels_;
   std::vector<double> probs_;
-};
-
-class AlignedJsonlReader {
- public:
-  AlignedJsonlReader(const std::vector<std::string> &paths, size_t chunk_size)
-      : paths_(paths), chunk_size_(chunk_size) {
-    initialize();
-  }
-
-  AlignedJsonlReader(const AlignedJsonlReader &) = delete;
-  AlignedJsonlReader &operator=(const AlignedJsonlReader &) = delete;
-  AlignedJsonlReader(AlignedJsonlReader &&) = default;
-  AlignedJsonlReader &operator=(AlignedJsonlReader &&) = default;
-
-  AlignedJsonlReader &iter() { return *this; }
-
-  AlignedChunk next() {
-    std::vector<std::vector<ParsedRow>> rows_by_file;
-    {
-      py::gil_scoped_release release;
-      rows_by_file = read_next_chunk();
-    }
-    if (rows_by_file.empty()) {
-      throw py::stop_iteration();
-    }
-    return AlignedChunk(keys_, std::move(rows_by_file));
-  }
-
- protected:
-  void initialize() {
-    if (paths_.empty()) {
-      throw std::runtime_error("at least one path is required");
-    }
-    if (chunk_size_ == 0) {
-      throw std::runtime_error("chunk_size must be > 0");
-    }
-
-    keys_.reserve(paths_.size());
-    handles_.reserve(paths_.size());
-    parsers_.resize(paths_.size());
-    for (const auto &path : paths_) {
-      handles_.emplace_back(path);
-      if (!handles_.back().is_open()) {
-        throw std::runtime_error("failed to open " + path);
-      }
-      keys_.push_back(parse_key_from_path(path));
-    }
-  }
-
-  std::vector<std::vector<ParsedRow>> read_next_chunk() {
-    std::vector<ParsedRow> primary = read_rows_for_file(0, chunk_size_);
-    if (primary.empty()) {
-      return {};
-    }
-
-    std::vector<std::vector<ParsedRow>> rows_by_file(paths_.size());
-    rows_by_file[0] = std::move(primary);
-
-    for (size_t i = 1; i < paths_.size(); ++i) {
-      rows_by_file[i] = read_rows_for_file(i, rows_by_file[0].size());
-      validate_pair_alignment(paths_, rows_by_file[0], rows_by_file[i], i);
-    }
-
-    return rows_by_file;
-  }
-
-  std::vector<ParsedRow> read_rows_for_file(size_t file_index, size_t count) {
-    std::vector<ParsedRow> rows;
-    rows.reserve(count);
-
-    std::string line;
-    while (rows.size() < count && std::getline(handles_[file_index], line)) {
-      if (!line.empty() && line.back() == '\r') {
-        line.pop_back();
-      }
-      if (line.empty()) {
-        continue;
-      }
-      rows.push_back(parse_line(file_index, line));
-    }
-    return rows;
-  }
-
-  ParsedRow parse_line(size_t file_index, const std::string &line) {
-    simdjson::padded_string padded(line);
-    auto doc_result = parsers_[file_index].parse(padded);
-    if (doc_result.error()) {
-      throw std::runtime_error("invalid JSON in " + paths_[file_index] + ": " +
-                               std::string(simdjson::error_message(doc_result.error())));
-    }
-    simdjson::dom::element doc = doc_result.value_unsafe();
-
-    auto pair_result = doc["pair"].get_string();
-    if (pair_result.error()) {
-      throw std::runtime_error("missing pair in " + paths_[file_index]);
-    }
-
-    ParsedRow row;
-    row.pair = std::string(pair_result.value_unsafe());
-
-    auto logprobs_result = doc["logprobs"].get_object();
-    if (logprobs_result.error()) {
-      throw std::runtime_error("missing logprobs in " + paths_[file_index]);
-    }
-
-    for (auto field : logprobs_result.value_unsafe()) {
-      const auto key = std::string(field.key);
-      DirectionValue dir_value;
-      auto arr_result = field.value.get_array();
-      if (!arr_result.error()) {
-        dir_value.kind = DirectionValue::Kind::kArray;
-        for (auto token_entry : arr_result.value_unsafe()) {
-          auto token_obj_result = token_entry.get_object();
-          if (token_obj_result.error()) {
-            throw std::runtime_error("invalid token-prob entry in " + paths_[file_index]);
-          }
-          for (auto token_field : token_obj_result.value_unsafe()) {
-            auto prob_result = token_field.value.get_double();
-            if (prob_result.error()) {
-              throw std::runtime_error("invalid probability in " + paths_[file_index]);
-            }
-            dir_value.token_probs.push_back(
-                TokenProb{std::string(token_field.key), prob_result.value_unsafe()});
-          }
-        }
-      } else {
-        auto obj_result = field.value.get_object();
-        if (!obj_result.error()) {
-          dir_value.kind = DirectionValue::Kind::kObject;
-          for (auto token_field : obj_result.value_unsafe()) {
-            auto prob_result = token_field.value.get_double();
-            if (prob_result.error()) {
-              throw std::runtime_error("invalid probability in " + paths_[file_index]);
-            }
-            dir_value.token_probs.push_back(
-                TokenProb{std::string(token_field.key), prob_result.value_unsafe()});
-          }
-        } else {
-          auto scalar_result = field.value.get_double();
-          if (scalar_result.error()) {
-            throw std::runtime_error("invalid logprobs entry in " + paths_[file_index]);
-          }
-          dir_value.kind = DirectionValue::Kind::kScalarDouble;
-          dir_value.scalar_double = scalar_result.value_unsafe();
-        }
-      }
-      row.logprobs.push_back({key, std::move(dir_value)});
-    }
-
-    return row;
-  }
-
-  std::vector<std::string> paths_;
-  size_t chunk_size_;
-  std::vector<std::string> keys_;
-  std::vector<std::ifstream> handles_;
-  std::vector<simdjson::dom::parser> parsers_;
 };
 
 class ProjectedAlignedJsonlReader {
@@ -608,24 +372,12 @@ PYBIND11_MODULE(_compare_native, m) {
   m.attr("LABEL_NO") = py::int_(kNoLabel);
   m.attr("LABEL_YES") = py::int_(kYesLabel);
 
-  py::class_<AlignedChunk>(m, "AlignedChunk")
-      .def("keys", &AlignedChunk::keys)
-      .def("pairs", &AlignedChunk::pairs)
-      .def("rows_for_file", &AlignedChunk::rows_for_file)
-      .def_property_readonly("size", &AlignedChunk::size);
-
   py::class_<ProjectedChunk>(m, "ProjectedChunk")
       .def("keys", &ProjectedChunk::keys)
       .def("directions", &ProjectedChunk::directions)
       .def("labels", &ProjectedChunk::labels)
       .def("probs", &ProjectedChunk::probs)
       .def_property_readonly("size", &ProjectedChunk::size);
-
-  py::class_<AlignedJsonlReader>(m, "AlignedJsonlReader")
-      .def(py::init<const std::vector<std::string> &, size_t>(), py::arg("paths"), py::arg("chunk_size"))
-      .def("__iter__", [](AlignedJsonlReader &self) -> AlignedJsonlReader & { return self; },
-           py::return_value_policy::reference_internal)
-      .def("__next__", &AlignedJsonlReader::next);
 
   py::class_<ProjectedAlignedJsonlReader>(m, "ProjectedAlignedJsonlReader")
       .def(py::init<const std::vector<std::string> &, size_t>(), py::arg("paths"), py::arg("chunk_size"))

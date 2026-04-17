@@ -5,13 +5,13 @@ from __future__ import annotations
 _IMPORT_ERROR = None
 
 try:
-    from _compare_native import (
-        AlignedJsonlReader,
-        LABEL_NO,
-        LABEL_UNKNOWN,
-        LABEL_YES,
-        ProjectedAlignedJsonlReader,
-    )
+    import _compare_native as _compare_native_module
+
+    AlignedJsonlReader = getattr(_compare_native_module, "AlignedJsonlReader", None)
+    ProjectedAlignedJsonlReader = getattr(_compare_native_module, "ProjectedAlignedJsonlReader", None)
+    LABEL_UNKNOWN = _compare_native_module.LABEL_UNKNOWN
+    LABEL_NO = _compare_native_module.LABEL_NO
+    LABEL_YES = _compare_native_module.LABEL_YES
 except ImportError as exc:  # pragma: no cover - exercised when extension is absent
     AlignedJsonlReader = None
     ProjectedAlignedJsonlReader = None
@@ -22,7 +22,7 @@ except ImportError as exc:  # pragma: no cover - exercised when extension is abs
 
 
 def native_available() -> bool:
-    return AlignedJsonlReader is not None
+    return ProjectedAlignedJsonlReader is not None
 
 
 def require_native() -> None:
@@ -34,7 +34,8 @@ def require_native() -> None:
 
 def iter_aligned_chunks(files_list, chunk_size=100):
     """Return a native iterator over aligned parsed chunks."""
-    require_native()
+    if AlignedJsonlReader is None:
+        raise RuntimeError("native aligned chunk loader unavailable")
     return AlignedJsonlReader(files_list, chunk_size)
 
 
