@@ -3,7 +3,6 @@
 """
 
 import argparse
-import json
 import queue
 import signal
 import sys
@@ -213,31 +212,6 @@ def _key_from_path(path):
     return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
 
 
-def _read_jsonl_batch(handle, count):
-    """Read up to *count* JSONL lines from *handle*, parse as one JSON array."""
-    first = None
-    while True:
-        first = handle.readline()
-        if not first:
-            return None
-        first = first.strip()
-        if first:
-            break
-    batch = "[" + first
-    got = 1
-    for _ in range(count - 1):
-        line = handle.readline()
-        if not line:
-            break
-        line = line.strip()
-        if not line:
-            continue
-        batch += "," + line
-        got += 1
-    batch += "]"
-    return json.loads(batch)
-
-
 def _prefetch(iterable):
     """Wrap an iterable so the next item is produced in a background thread."""
     q = queue.Queue(maxsize=2)
@@ -262,95 +236,6 @@ def _prefetch(iterable):
             raise item
         yield item
     t.join()
-
-
-def _parsed_eval_results_chunk_generator(files_list, chunk_size=100):
-    """Yield aligned parsed JSONL chunks keyed by file discovery key."""
-    keys = [_key_from_path(f) for f in files_list]
-    handles = [open(f) for f in files_list]
-    try:
-        while True:
-            rows = _read_jsonl_batch(handles[0], chunk_size)
-            if rows is None:
-                break
-
-            chunk = {keys[0]: rows}
-            primary_pairs = [r["pair"] for r in rows]
-
-            for i in range(1, len(files_list)):
-                rows = _read_jsonl_batch(handles[i], len(primary_pairs))
-                secondary = rows if rows else []
-                secondary_pairs = [r["pair"] for r in secondary]
-                sym_diff = set(primary_pairs) ^ set(secondary_pairs)
-                if sym_diff:
-                    raise RuntimeError(
-                        f"pair mismatch between {files_list[0]} and {files_list[i]}: "
-                        f"{len(sym_diff)} differing pairs (e.g. {next(iter(sym_diff))})")
-                chunk[keys[i]] = secondary
-
-            yield chunk
-    finally:
-        for h in handles:
-            h.close()
-
-
-def _aligned_chunk_generator(files_list, chunk_size=100):
-    """Yield aligned parsed chunks from the Python backend."""
-    yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
-
-
-def _projected_block_generator(files_list, chunk_size=100):
-    """Yield compact projected blocks for the no-pairs fast path."""
-    if compare_native.native_available():
-        return compare_native.iter_projected_blocks(files_list, chunk_size)
-    return None
-
-
-def _block_generator_from_chunks(chunks_iter, block_size=100):
-    """Build eval result blocks from aligned parsed JSON chunks."""
-    pending_rows = None
-
-    for chunk in chunks_iter:
-        chunk_rows = chunk
-        chunk_keys = list(chunk_rows.keys())
-        if pending_rows is None:
-            pending_rows = {key: [] for key in chunk_keys}
-
-        primary_key = chunk_keys[0]
-        for key in chunk_keys:
-            pending_rows[key].extend(chunk_rows[key])
-
-        while len(pending_rows[primary_key]) >= block_size:
-            yield {
-                key: {
-                    row["pair"]: {"logprobs": row["logprobs"]}
-                    for row in pending_rows[key][:block_size]
-                }
-                for key in chunk_keys
-            }
-            for key in chunk_keys:
-                del pending_rows[key][:block_size]
-
-    if pending_rows and pending_rows[next(iter(pending_rows))]:
-        yield {
-            key: {
-                row["pair"]: {"logprobs": row["logprobs"]}
-                for row in rows
-            }
-            for key, rows in pending_rows.items()
-        }
-
-
-def eval_results_block_generator(files_list):
-    """Yield aligned blocks of eval results from multiple JSONL files.
-
-    Each yielded value is a dict: {file_key: {pair: {"logprobs": ...}, ...}}
-    with up to BLOCK_SIZE pairs, identical keys across all files.
-    """
-    BLOCK_SIZE = 1000
-    JSON_BATCH_SIZE = 100
-    chunks_iter = _aligned_chunk_generator(files_list, JSON_BATCH_SIZE)
-    yield from _block_generator_from_chunks(chunks_iter, BLOCK_SIZE)
 
 
 def load_files_from_keys(args):
@@ -423,16 +308,10 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
-        projected_iter = _projected_block_generator(args.files, chunk_size=1000)
-        if projected_iter is not None:
-            block_iter = _prefetch(projected_iter)
-            rule = args.ensemble if args.ensemble else 'OR'
-            diff.run_nopairs_2way_projected(block_iter, rule, args.method)
-            return
-        parsed_iter = _prefetch(_aligned_chunk_generator(args.files))
-        block_iter = _block_generator_from_chunks(parsed_iter)
+        compare_native.require_native()
+        block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
         rule = args.ensemble if args.ensemble else 'OR'
-        diff.run_nopairs_2way(block_iter, rule, args.method)
+        diff.run_nopairs_2way_projected(block_iter, rule, args.method)
         return
 
     expected = load_expected_pairs(args.pairs)

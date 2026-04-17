@@ -6,12 +6,7 @@ from pathlib import Path
 import numpy as np
 
 import compare_native
-from compare import (
-    _block_generator_from_chunks,
-    _parsed_eval_results_chunk_generator,
-    _prefetch,
-    eval_results_block_generator,
-)
+from compare import _prefetch
 from score import score_eval_results
 
 
@@ -30,106 +25,6 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 json.dump(record, handle)
                 handle.write("\n")
         return str(path)
-
-    def test_parsed_chunk_generator_yields_aligned_chunks(self):
-        pairs = [f"pair_{i}" for i in range(250)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            chunks = list(_parsed_eval_results_chunk_generator(files, chunk_size=100))
-
-        self.assertEqual([100, 100, 50], [len(chunk["third.p3.tag1"]) for chunk in chunks])
-        self.assertEqual(
-            [row["pair"] for row in chunks[0]["third.p3.tag1"]],
-            pairs[:100],
-        )
-        self.assertEqual(
-            [row["pair"] for row in chunks[2]["third.p3.tag2"]],
-            pairs[200:],
-        )
-
-    def test_parsed_chunk_generator_pair_mismatch_raises(self):
-        primary_pairs = [f"pair_{i}" for i in range(120)]
-        secondary_pairs = primary_pairs.copy()
-        secondary_pairs[100] = "pair_mismatch"
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", primary_pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", secondary_pairs),
-            ]
-
-            with self.assertRaisesRegex(RuntimeError, "pair mismatch"):
-                list(_parsed_eval_results_chunk_generator(files, chunk_size=100))
-
-    def test_block_generator_batches_chunks_into_100_pair_blocks(self):
-        pairs = [f"pair_{i}" for i in range(250)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            blocks = list(eval_results_block_generator(files))
-
-        self.assertEqual([250], [len(next(iter(block.values()))) for block in blocks])
-        self.assertEqual(
-            set(blocks[0]["third.p3.tag1"].keys()),
-            set(pairs),
-        )
-
-    def test_final_partial_block_is_yielded(self):
-        pairs = [f"pair_{i}" for i in range(150)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            blocks = list(eval_results_block_generator(files))
-
-        self.assertEqual(1, len(blocks))
-        self.assertEqual(150, len(blocks[0]["third.p3.tag1"]))
-        self.assertEqual(150, len(blocks[0]["third.p3.tag2"]))
-
-    def test_prefetched_chunk_pipeline_matches_direct_blocks(self):
-        pairs = [f"pair_{i}" for i in range(250)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            expected_blocks = list(eval_results_block_generator(files))
-            prefetched_blocks = list(
-                _block_generator_from_chunks(
-                    _prefetch(_parsed_eval_results_chunk_generator(files, chunk_size=100)),
-                    block_size=1000,
-                )
-            )
-
-        self.assertEqual(expected_blocks, prefetched_blocks)
-
-    def test_eval_results_block_generator_matches_python_blocks(self):
-        pairs = [f"pair_{i}" for i in range(250)]
-        with tempfile.TemporaryDirectory() as tmpdir:
-            files = [
-                self._write_result_file(tmpdir, "hosta.tag1", pairs),
-                self._write_result_file(tmpdir, "hostb.tag2", pairs),
-            ]
-
-            expected_blocks = list(
-                _block_generator_from_chunks(
-                    _parsed_eval_results_chunk_generator(files, chunk_size=100),
-                    block_size=1000,
-                )
-            )
-            actual_blocks = list(eval_results_block_generator(files))
-
-        self.assertEqual(expected_blocks, actual_blocks)
 
     def test_projected_loader_exposes_compact_arrays_when_available(self):
         if not compare_native.native_available():
@@ -245,6 +140,28 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "direction mismatch"):
                 list(compare_native.iter_projected_blocks(files, chunk_size=10))
 
+    def test_prefetched_projected_blocks_match_direct_iteration_when_available(self):
+        if not compare_native.native_available():
+            self.skipTest("native extension is not available")
+
+        pairs = [f"pair_{i}" for i in range(250)]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files = [
+                self._write_result_file(tmpdir, "hosta.tag1", pairs),
+                self._write_result_file(tmpdir, "hostb.tag2", pairs),
+            ]
+
+            direct_blocks = list(compare_native.iter_projected_blocks(files, chunk_size=100))
+            prefetched_blocks = list(_prefetch(compare_native.iter_projected_blocks(files, chunk_size=100)))
+
+        self.assertEqual(len(direct_blocks), len(prefetched_blocks))
+        for direct_block, prefetched_block in zip(direct_blocks, prefetched_blocks):
+            self.assertEqual(list(direct_block.keys()), list(prefetched_block.keys()))
+            self.assertEqual(list(direct_block.directions()), list(prefetched_block.directions()))
+            self.assertEqual(direct_block.size, prefetched_block.size)
+            np.testing.assert_array_equal(np.asarray(direct_block.labels()), np.asarray(prefetched_block.labels()))
+            np.testing.assert_allclose(np.asarray(direct_block.probs()), np.asarray(prefetched_block.probs()))
+
     def test_projected_labels_match_python_top_token_results_when_available(self):
         if not compare_native.native_available():
             self.skipTest("native extension is not available")
@@ -280,11 +197,17 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 self._write_records_file(tmpdir, "hostb.tag2", records_b),
             ]
 
-            python_blocks = list(eval_results_block_generator(files))
             projected_block = next(compare_native.iter_projected_blocks(files, chunk_size=10))
 
         expected_yes = {}
-        for key, rows in python_blocks[0].items():
+        for key, records in {
+            "third.p3.tag1": records_a,
+            "third.p3.tag2": records_b,
+        }.items():
+            rows = {
+                record["pair"]: {"logprobs": record["logprobs"]}
+                for record in records
+            }
             score_eval_results(rows, "top-token")
             expected_yes[key] = np.array([rows[pair]["yes"] for pair in rows], dtype=np.bool_)
 
