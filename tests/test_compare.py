@@ -217,5 +217,49 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
             np.testing.assert_array_equal(expected_yes[key], actual_yes[file_index])
 
 
+    def test_projected_loader_tolerates_truncated_secondary_when_available(self):
+        if not compare_native.native_available():
+            self.skipTest("native extension is not available")
+
+        records_a = [
+            {"pair": f"pair_{i}", "seq": i, "logprobs": {"fwd": [{"YES": 0.9}, {"NO": 0.1}], "rvs": [{"NO": 0.8}, {"YES": 0.2}]}}
+            for i in range(5)
+        ]
+        records_b = [
+            {"pair": f"pair_{i}", "seq": i, "logprobs": {"fwd": [{"NO": 0.6}, {"YES": 0.4}], "rvs": [{"YES": 0.7}, {"NO": 0.3}]}}
+            for i in range(3)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            files = [
+                self._write_records_file(tmpdir, "hosta.tag1", records_a),
+                self._write_records_file(tmpdir, "hostb.tag2", records_b),
+            ]
+
+            blocks = list(compare_native.iter_projected_blocks(files, chunk_size=10))
+
+        self.assertEqual(1, len(blocks))
+        block = blocks[0]
+        self.assertEqual(3, block.size)
+
+        labels = np.asarray(block.labels())
+        probs = np.asarray(block.probs())
+        self.assertEqual((2, 3, 2), labels.shape)
+        self.assertEqual((2, 3, 2), probs.shape)
+
+        # File 0 rows 0-2 fwd direction
+        np.testing.assert_array_equal(
+            labels[0, :, 0],
+            [compare_native.LABEL_YES, compare_native.LABEL_YES, compare_native.LABEL_YES],
+        )
+        # File 1 rows 0-2 fwd direction
+        np.testing.assert_array_equal(
+            labels[1, :, 0],
+            [compare_native.LABEL_NO, compare_native.LABEL_NO, compare_native.LABEL_NO],
+        )
+        np.testing.assert_allclose(probs[0, :, 0], [0.9, 0.9, 0.9])
+        np.testing.assert_allclose(probs[1, :, 0], [0.6, 0.6, 0.6])
+
+
 if __name__ == "__main__":
     unittest.main()

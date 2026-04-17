@@ -1,13 +1,12 @@
+* automatic model-name (tag) detection.
+
 * so it appears dense model next-token logprobs data is just way more reliable as a certainty
   / quality predictor.  even with normalized distributions, the actual top prob pair data
   is just significantly better, Qwen35 26B vs. 35B-MoE.
 
-  Just not sure the quality of these reasults is meaningful overall.
+  Just not sure the quality of these results is meaningful overall.
 
   * Check out Gemma4 MOE
-
-
-* -2 -e should be able to show fixfp fixfn newfp newfn | RULE RULE-fp RULE-fn for each rule
 
 * idea:  have a @prepare for every @method.  then can standardize on a single comma-separated
   --ma --method-arg 1,2,3. that gets passed to the @prepare method to prepare the method (initializes

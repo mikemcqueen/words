@@ -1,4 +1,5 @@
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <fstream>
 #include <regex>
@@ -149,11 +150,8 @@ void validate_pair_alignment(const std::vector<std::string> &paths,
                              const std::vector<RowT> &primary,
                              const std::vector<RowT> &secondary,
                              size_t secondary_index) {
-  if (secondary.size() != primary.size()) {
-    throw std::runtime_error("pair mismatch between " + paths[0] + " and " + paths[secondary_index] +
-                             ": truncated secondary file");
-  }
-  for (size_t j = 0; j < primary.size(); ++j) {
+  const size_t common = std::min(primary.size(), secondary.size());
+  for (size_t j = 0; j < common; ++j) {
     if (primary[j].pair != secondary[j].pair) {
       throw std::runtime_error("pair mismatch between " + paths[0] + " and " + paths[secondary_index] +
                                ": differing pair " + secondary[j].pair);
@@ -164,10 +162,11 @@ void validate_pair_alignment(const std::vector<std::string> &paths,
 class ProjectedChunk {
  public:
   ProjectedChunk(std::vector<std::string> keys, std::vector<std::string> directions, size_t rows,
-                 std::vector<uint8_t> labels, std::vector<double> probs)
+                 size_t capacity, std::vector<uint8_t> labels, std::vector<double> probs)
       : keys_(std::move(keys)),
         directions_(std::move(directions)),
         rows_(rows),
+        capacity_(capacity),
         labels_(std::move(labels)),
         probs_(std::move(probs)) {}
 
@@ -179,7 +178,7 @@ class ProjectedChunk {
     return py::array_t<uint8_t>(
         {static_cast<py::ssize_t>(keys_.size()), static_cast<py::ssize_t>(rows_),
          static_cast<py::ssize_t>(directions_.size())},
-        {static_cast<py::ssize_t>(rows_ * directions_.size() * sizeof(uint8_t)),
+        {static_cast<py::ssize_t>(capacity_ * directions_.size() * sizeof(uint8_t)),
          static_cast<py::ssize_t>(directions_.size() * sizeof(uint8_t)),
          static_cast<py::ssize_t>(sizeof(uint8_t))},
         labels_.data(), py::cast(this));
@@ -189,7 +188,7 @@ class ProjectedChunk {
     return py::array_t<double>(
         {static_cast<py::ssize_t>(keys_.size()), static_cast<py::ssize_t>(rows_),
          static_cast<py::ssize_t>(directions_.size())},
-        {static_cast<py::ssize_t>(rows_ * directions_.size() * sizeof(double)),
+        {static_cast<py::ssize_t>(capacity_ * directions_.size() * sizeof(double)),
          static_cast<py::ssize_t>(directions_.size() * sizeof(double)),
          static_cast<py::ssize_t>(sizeof(double))},
         probs_.data(), py::cast(this));
@@ -199,6 +198,7 @@ class ProjectedChunk {
   std::vector<std::string> keys_;
   std::vector<std::string> directions_;
   size_t rows_;
+  size_t capacity_;
   std::vector<uint8_t> labels_;
   std::vector<double> probs_;
 };
@@ -234,7 +234,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedAlignedJsonlReader &iter() { return *this; }
 
   ProjectedChunk next() {
-    ProjectedChunk chunk({}, {}, 0, {}, {});
+    ProjectedChunk chunk({}, {}, 0, 0, {}, {});
     {
       py::gil_scoped_release release;
       chunk = read_next_chunk();
@@ -249,7 +249,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedChunk read_next_chunk() {
     std::vector<ProjectedRow> primary = read_rows_for_file(0, chunk_size_);
     if (primary.empty()) {
-      return ProjectedChunk(keys_, directions_, 0, {}, {});
+      return ProjectedChunk(keys_, directions_, 0, 0, {}, {});
     }
 
     if (directions_.empty()) {
@@ -266,27 +266,40 @@ class ProjectedAlignedJsonlReader {
     const size_t n_files = paths_.size();
     const size_t n_rows = primary.size();
     const size_t n_dirs = directions_.size();
+    size_t live_rows = n_rows;
+    std::vector<std::pair<size_t, size_t>> truncations;
+
     std::vector<uint8_t> labels(n_files * n_rows * n_dirs, kUnknownLabel);
     std::vector<double> probs(n_files * n_rows * n_dirs, 0.0);
 
-    fill_arrays(primary, 0, labels, probs);
+    fill_arrays(primary, 0, n_rows, labels, probs);
 
     for (size_t file_index = 1; file_index < n_files; ++file_index) {
       std::vector<ProjectedRow> rows = read_rows_for_file(file_index, n_rows);
+      if (rows.size() < live_rows) {
+        truncations.emplace_back(file_index, live_rows - rows.size());
+        live_rows = rows.size();
+      }
       validate_pair_alignment(paths_, primary, rows, file_index);
       validate_direction_schema(rows, file_index);
-      fill_arrays(rows, file_index, labels, probs);
+      fill_arrays(rows, file_index, n_rows, labels, probs);
     }
 
-    return ProjectedChunk(keys_, directions_, n_rows, std::move(labels), std::move(probs));
+    if (!truncations.empty() && live_rows > 0) {
+      for (const auto &t : truncations) {
+        std::fprintf(stderr, "WARNING: %s truncated; dropped %zu pair(s) from chunk\n",
+                     paths_[t.first].c_str(), t.second);
+      }
+    }
+
+    return ProjectedChunk(keys_, directions_, live_rows, n_rows, std::move(labels), std::move(probs));
   }
 
-  void fill_arrays(const std::vector<ProjectedRow> &rows, size_t file_index, std::vector<uint8_t> &labels,
-                   std::vector<double> &probs) const {
-    const size_t n_rows = rows.size();
+  void fill_arrays(const std::vector<ProjectedRow> &rows, size_t file_index, size_t capacity,
+                   std::vector<uint8_t> &labels, std::vector<double> &probs) const {
     const size_t n_dirs = directions_.size();
-    const size_t file_offset = file_index * n_rows * n_dirs;
-    for (size_t row_index = 0; row_index < n_rows; ++row_index) {
+    const size_t file_offset = file_index * capacity * n_dirs;
+    for (size_t row_index = 0; row_index < rows.size(); ++row_index) {
       for (size_t dir_index = 0; dir_index < n_dirs; ++dir_index) {
         const size_t offset = file_offset + row_index * n_dirs + dir_index;
         labels[offset] = rows[row_index].directions[dir_index].label;
