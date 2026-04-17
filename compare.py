@@ -318,6 +318,17 @@ def _aligned_chunk_generator(files_list, chunk_size=100, loader='auto'):
     yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
 
 
+def _projected_block_generator(files_list, chunk_size=100, loader='auto'):
+    """Yield compact projected blocks for the no-pairs fast path."""
+    if loader == 'python':
+        return None
+    if loader == 'native':
+        return compare_native.iter_projected_blocks(files_list, chunk_size)
+    if compare_native.native_available():
+        return compare_native.iter_projected_blocks(files_list, chunk_size)
+    return None
+
+
 def _block_generator_from_chunks(chunks_iter, block_size=100):
     """Build eval result blocks from aligned parsed JSON chunks."""
     pending_rows = None
@@ -435,6 +446,12 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
+        projected_iter = _projected_block_generator(args.files, chunk_size=1000, loader=args.loader)
+        if projected_iter is not None:
+            block_iter = _prefetch(projected_iter)
+            rule = args.ensemble if args.ensemble else 'OR'
+            diff.run_nopairs_2way_projected(block_iter, rule, args.method)
+            return
         parsed_iter = _prefetch(_aligned_chunk_generator(args.files, loader=args.loader))
         block_iter = _block_generator_from_chunks(parsed_iter)
         rule = args.ensemble if args.ensemble else 'OR'

@@ -1,5 +1,7 @@
 import heapq
 
+import numpy as np
+
 from common import (compute_stats, expected_yesno_from_labeled_result,
                     pair_has_yes, print_displayed_keys)
 
@@ -279,6 +281,72 @@ def print_2way_diff_table(rows):
 
 
 ENSEMBLE_RULES_2 = ['OR', 'AND']
+
+
+def run_nopairs_2way_projected(block_iter, rule='OR', method='top-token'):
+    """Process projected native blocks without materializing pair-keyed dicts."""
+    import compare_native
+
+    if method != 'top-token':
+        raise RuntimeError(f"projected native loader does not support method {method!r}")
+
+    rules = ENSEMBLE_RULES_2 if rule == 'ALL' else [rule]
+    total_pairs = 0
+    yes_counts = {}
+    combined_yes = {r: 0 for r in rules}
+    file_keys = None
+
+    for block in block_iter:
+        keys = list(block.keys())
+        if file_keys is None:
+            file_keys = keys
+        for fk in keys:
+            if fk not in yes_counts:
+                yes_counts[fk] = 0
+
+        labels = np.asarray(block.labels())
+        if labels.ndim != 3:
+            raise RuntimeError("projected native block labels must be 3D")
+        if labels.shape[0] != len(keys):
+            raise RuntimeError("projected native block key count mismatch")
+
+        file_yes = np.any(labels == compare_native.LABEL_YES, axis=2)
+        total_pairs += int(labels.shape[1])
+
+        for file_index, fk in enumerate(keys):
+            yes_counts[fk] += int(file_yes[file_index].sum())
+
+        for r in rules:
+            if r == 'OR':
+                pair_yes = np.any(file_yes, axis=0)
+            elif r == 'AND':
+                pair_yes = np.all(file_yes, axis=0)
+            else:
+                pair_yes = np.any(file_yes, axis=0)
+            combined_yes[r] += int(pair_yes.sum())
+
+    if file_keys is None:
+        file_keys = []
+    wa = max(len(file_keys[0]), len('file_a')) if file_keys else len('file_a')
+    wc = max(len(file_keys[1]), len('file_b')) if len(file_keys) > 1 else len('file_b')
+    header = (f"{'file_a':<{wa}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}  "
+              f"{'file_b':<{wc}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s} | "
+              f"{'rule':>5s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}")
+    print(header)
+    print('─' * len(header))
+    s = [{}, {}]
+    for i, fk in enumerate(file_keys[:2]):
+        s[i]['yes'] = yes_counts[fk]
+        s[i]['no'] = total_pairs - s[i]['yes']
+        s[i]['pct'] = 100 * s[i]['yes'] / total_pairs if total_pairs else 0.0
+    for r in rules:
+        c_yes = combined_yes[r]
+        c_no = total_pairs - c_yes
+        c_pct = 100 * c_yes / total_pairs if total_pairs else 0.0
+        print(f"{file_keys[0]:<{wa}s} {s[0]['pct']:5.1f}% {s[0]['yes']:>6d} {s[0]['no']:>6d}  "
+              f"{file_keys[1]:<{wc}s} {s[1]['pct']:5.1f}% {s[1]['yes']:>6d} {s[1]['no']:>6d} | "
+              f"{r:>5s} {c_pct:5.1f}% {c_yes:>6d} {c_no:>6d}")
+    print()
 
 
 def print_explicit_2way_diff(files, args, ensemble_rule='OR'):
