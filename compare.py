@@ -54,8 +54,6 @@ def parse_args(argv=None):
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
                         help='max discovery results to retain before final sort (default: 100)')
-    parser.add_argument('--loader', choices=['auto', 'python', 'native'], default='auto',
-                        help='no-pairs loader backend (default: auto)')
     parser.add_argument('--bad', action='store_true',
                         help='show FP and FN pairs for the single table entry; requires --top 1')
     add_print_keys_arg(parser, help_text='print displayed row labels as a comma-separated list (discovery mode only)')
@@ -296,34 +294,13 @@ def _parsed_eval_results_chunk_generator(files_list, chunk_size=100):
             h.close()
 
 
-def _normalize_aligned_chunk(chunk):
-    """Return a {key: [row, ...]} mapping for either Python or native chunks."""
-    if isinstance(chunk, dict):
-        return chunk
-    keys = chunk.keys()
-    return {key: chunk.rows_for_file(i) for i, key in enumerate(keys)}
-
-
-def _aligned_chunk_generator(files_list, chunk_size=100, loader='auto'):
-    """Yield aligned parsed chunks from the selected backend."""
-    if loader == 'python':
-        yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
-        return
-    if loader == 'native':
-        yield from compare_native.iter_aligned_chunks(files_list, chunk_size)
-        return
-    if compare_native.native_available():
-        yield from compare_native.iter_aligned_chunks(files_list, chunk_size)
-        return
+def _aligned_chunk_generator(files_list, chunk_size=100):
+    """Yield aligned parsed chunks from the Python backend."""
     yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
 
 
-def _projected_block_generator(files_list, chunk_size=100, loader='auto'):
+def _projected_block_generator(files_list, chunk_size=100):
     """Yield compact projected blocks for the no-pairs fast path."""
-    if loader == 'python':
-        return None
-    if loader == 'native':
-        return compare_native.iter_projected_blocks(files_list, chunk_size)
     if compare_native.native_available():
         return compare_native.iter_projected_blocks(files_list, chunk_size)
     return None
@@ -334,7 +311,7 @@ def _block_generator_from_chunks(chunks_iter, block_size=100):
     pending_rows = None
 
     for chunk in chunks_iter:
-        chunk_rows = _normalize_aligned_chunk(chunk)
+        chunk_rows = chunk
         chunk_keys = list(chunk_rows.keys())
         if pending_rows is None:
             pending_rows = {key: [] for key in chunk_keys}
@@ -364,7 +341,7 @@ def _block_generator_from_chunks(chunks_iter, block_size=100):
         }
 
 
-def eval_results_block_generator(files_list, loader='python'):
+def eval_results_block_generator(files_list):
     """Yield aligned blocks of eval results from multiple JSONL files.
 
     Each yielded value is a dict: {file_key: {pair: {"logprobs": ...}, ...}}
@@ -372,7 +349,7 @@ def eval_results_block_generator(files_list, loader='python'):
     """
     BLOCK_SIZE = 1000
     JSON_BATCH_SIZE = 100
-    chunks_iter = _aligned_chunk_generator(files_list, JSON_BATCH_SIZE, loader=loader)
+    chunks_iter = _aligned_chunk_generator(files_list, JSON_BATCH_SIZE)
     yield from _block_generator_from_chunks(chunks_iter, BLOCK_SIZE)
 
 
@@ -446,13 +423,13 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
-        projected_iter = _projected_block_generator(args.files, chunk_size=1000, loader=args.loader)
+        projected_iter = _projected_block_generator(args.files, chunk_size=1000)
         if projected_iter is not None:
             block_iter = _prefetch(projected_iter)
             rule = args.ensemble if args.ensemble else 'OR'
             diff.run_nopairs_2way_projected(block_iter, rule, args.method)
             return
-        parsed_iter = _prefetch(_aligned_chunk_generator(args.files, loader=args.loader))
+        parsed_iter = _prefetch(_aligned_chunk_generator(args.files))
         block_iter = _block_generator_from_chunks(parsed_iter)
         rule = args.ensemble if args.ensemble else 'OR'
         diff.run_nopairs_2way(block_iter, rule, args.method)

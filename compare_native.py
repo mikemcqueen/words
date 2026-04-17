@@ -1,19 +1,12 @@
-"""Optional native fast path for aligned eval-result chunk loading."""
+"""Optional native fast path for projected eval-result loading."""
 
 from __future__ import annotations
 
 _IMPORT_ERROR = None
 
 try:
-    import _compare_native as _compare_native_module
-
-    AlignedJsonlReader = getattr(_compare_native_module, "AlignedJsonlReader", None)
-    ProjectedAlignedJsonlReader = getattr(_compare_native_module, "ProjectedAlignedJsonlReader", None)
-    LABEL_UNKNOWN = _compare_native_module.LABEL_UNKNOWN
-    LABEL_NO = _compare_native_module.LABEL_NO
-    LABEL_YES = _compare_native_module.LABEL_YES
+    from _compare_native import LABEL_NO, LABEL_UNKNOWN, LABEL_YES, ProjectedAlignedJsonlReader
 except ImportError as exc:  # pragma: no cover - exercised when extension is absent
-    AlignedJsonlReader = None
     ProjectedAlignedJsonlReader = None
     LABEL_UNKNOWN = 0
     LABEL_NO = 1
@@ -30,14 +23,6 @@ def require_native() -> None:
         return
     detail = f": {_IMPORT_ERROR}" if _IMPORT_ERROR is not None else ""
     raise RuntimeError(f"native compare loader unavailable{detail}")
-
-
-def iter_aligned_chunks(files_list, chunk_size=100):
-    """Return a native iterator over aligned parsed chunks."""
-    if AlignedJsonlReader is None:
-        raise RuntimeError("native aligned chunk loader unavailable")
-    return AlignedJsonlReader(files_list, chunk_size)
-
 
 def iter_projected_blocks(files_list, chunk_size=100):
     """Return a native iterator over compact projected blocks."""

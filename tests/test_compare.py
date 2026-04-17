@@ -113,7 +113,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
 
         self.assertEqual(expected_blocks, prefetched_blocks)
 
-    def test_loader_auto_matches_python_blocks(self):
+    def test_eval_results_block_generator_matches_python_blocks(self):
         pairs = [f"pair_{i}" for i in range(250)]
         with tempfile.TemporaryDirectory() as tmpdir:
             files = [
@@ -121,10 +121,15 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 self._write_result_file(tmpdir, "hostb.tag2", pairs),
             ]
 
-            python_blocks = list(eval_results_block_generator(files, loader="python"))
-            auto_blocks = list(eval_results_block_generator(files, loader="auto"))
+            expected_blocks = list(
+                _block_generator_from_chunks(
+                    _parsed_eval_results_chunk_generator(files, chunk_size=100),
+                    block_size=1000,
+                )
+            )
+            actual_blocks = list(eval_results_block_generator(files))
 
-        self.assertEqual(python_blocks, auto_blocks)
+        self.assertEqual(expected_blocks, actual_blocks)
 
     def test_projected_loader_exposes_compact_arrays_when_available(self):
         if not compare_native.native_available():
@@ -275,7 +280,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 self._write_records_file(tmpdir, "hostb.tag2", records_b),
             ]
 
-            python_blocks = list(eval_results_block_generator(files, loader="python"))
+            python_blocks = list(eval_results_block_generator(files))
             projected_block = next(compare_native.iter_projected_blocks(files, chunk_size=10))
 
         expected_yes = {}
