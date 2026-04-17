@@ -6,7 +6,12 @@ import json
 import time
 import sys
 
-from compare import eval_results_block_generator, _key_from_path
+from compare import (
+    _aligned_chunk_generator,
+    _block_generator_from_chunks,
+    _parsed_eval_results_chunk_generator,
+    eval_results_block_generator,
+)
 from score import score_eval_results
 from diff import ENSEMBLE_RULES_2
 
@@ -15,44 +20,33 @@ FILES = [
     "final/s1/results/an.test4.4_third_p3_mini.qwen35_moe.jsonl",
 ]
 
-def bench_loading_only(block_size):
-    """Time just the JSON parsing / file reading (what eval_results_block_generator does)."""
-    keys = [_key_from_path(f) for f in FILES]
-    handles = [open(f) for f in FILES]
+def bench_loading_only(block_size, loader):
+    """Time read + batched JSON parse only."""
     total_pairs = 0
     t0 = time.perf_counter()
-    while True:
-        primary = {}
-        for _ in range(block_size):
-            line = handles[0].readline()
-            if not line:
-                break
-            line = line.strip()
-            if line:
-                r = json.loads(line)
-                primary[r["pair"]] = {"logprobs": r["logprobs"]}
-        if not primary:
-            break
-
-        secondary = {}
-        for _ in range(len(primary)):
-            line = handles[1].readline()
-            if not line:
-                break
-            line = line.strip()
-            if line:
-                r = json.loads(line)
-                secondary[r["pair"]] = {"logprobs": r["logprobs"]}
-
-        total_pairs += len(primary)
-
+    for chunk in _aligned_chunk_generator(FILES, chunk_size=block_size, loader=loader):
+        chunk_keys = chunk.keys() if isinstance(chunk, dict) else chunk.keys()
+        key = next(iter(chunk_keys))
+        if isinstance(chunk, dict):
+            total_pairs += len(chunk[key])
+        else:
+            total_pairs += chunk.size
     t1 = time.perf_counter()
-    for h in handles:
-        h.close()
     return t1 - t0, total_pairs
 
 
-def bench_full_pipeline():
+def bench_block_build_only(block_size):
+    """Time block construction from already-parsed chunks."""
+    chunks = list(_parsed_eval_results_chunk_generator(FILES, chunk_size=block_size))
+    total_pairs = 0
+    t0 = time.perf_counter()
+    for block in _block_generator_from_chunks(chunks, block_size=block_size):
+        total_pairs += len(next(iter(block.values())))
+    t1 = time.perf_counter()
+    return t1 - t0, total_pairs
+
+
+def bench_full_pipeline(loader):
     """Time the complete no-pairs 2-way pipeline (load + score + diff logic)."""
     rules = ENSEMBLE_RULES_2
     t0 = time.perf_counter()
@@ -61,7 +55,7 @@ def bench_full_pipeline():
     yes_counts = {}
     combined_yes = {r: 0 for r in rules}
 
-    for block in eval_results_block_generator(FILES):
+    for block in eval_results_block_generator(FILES, loader=loader):
         file_keys = list(block.keys())
         for fk in file_keys:
             if fk not in yes_counts:
@@ -153,6 +147,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('-r', '--runs', type=int, default=1)
     parser.add_argument('-b', '--block-size', type=int, default=100)
+    parser.add_argument('--loader', choices=['auto', 'python', 'native'], default='auto')
     args = parser.parse_args()
 
     print(f"Files: {FILES[0]}")
@@ -164,8 +159,9 @@ if __name__ == '__main__':
         ("1. Raw readline (no parse)", bench_raw_readline, "raw"),
         ("2. readline + json.loads (per-line)", bench_json_lines, "json"),
         (f"3. readline + json.loads (batched {args.block_size})", lambda: bench_json_batch(args.block_size), "batch"),
-        ("4. Block loading (json + dict build)", lambda: bench_loading_only(args.block_size), "load"),
-        ("5. Full pipeline (load + score + diff)", bench_full_pipeline, "full"),
+        ("4. Parsed chunk loading (read + batch parse)", lambda: bench_loading_only(args.block_size, args.loader), "parse"),
+        ("5. Block build from parsed chunks", lambda: bench_block_build_only(args.block_size), "build"),
+        ("6. Full pipeline (load + score + diff)", lambda: bench_full_pipeline(args.loader), "full"),
     ]:
         times = []
         count = 0
@@ -184,12 +180,14 @@ if __name__ == '__main__':
     t_raw = avg_times["raw"]
     t_json = avg_times["json"]
     t_batch = avg_times["batch"]
-    t_load = avg_times["load"]
+    t_parse = avg_times["parse"]
+    t_build = avg_times["build"]
     t_full = avg_times["full"]
 
     print(f"Raw I/O:            {t_raw:.3f}s ({100*t_raw/t_full:.1f}% of full)")
     print(f"JSON parse (line):  {t_json - t_raw:.3f}s ({100*(t_json-t_raw)/t_full:.1f}% of full)")
     print(f"JSON parse (batch): {t_batch - t_raw:.3f}s ({100*(t_batch-t_raw)/t_full:.1f}% of full)")
-    print(f"Dict build:         {t_load - t_json:.3f}s ({100*(t_load-t_json)/t_full:.1f}% of full)")
-    print(f"Processing:         {t_full - t_load:.3f}s ({100*(t_full-t_load)/t_full:.1f}% of full)")
+    print(f"Parsed chunks:      {t_parse:.3f}s ({100*t_parse/t_full:.1f}% of full)")
+    print(f"Block build:        {t_build:.3f}s ({100*t_build/t_full:.1f}% of full)")
+    print(f"Processing:         {t_full - t_parse - t_build:.3f}s ({100*(t_full-t_parse-t_build)/t_full:.1f}% of full)")
     print(f"Full pipeline:      {t_full:.3f}s")

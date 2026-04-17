@@ -20,6 +20,7 @@ from score import label_eval_results, resolve_all_pair_labels
 
 import diff
 import ensemble
+import compare_native
 
 
 def parse_args(argv=None):
@@ -53,6 +54,8 @@ def parse_args(argv=None):
                         help='max rows to display in output tables (default: 50)')
     parser.add_argument('--heap-size', type=int, default=100, metavar='N',
                         help='max discovery results to retain before final sort (default: 100)')
+    parser.add_argument('--loader', choices=['auto', 'python', 'native'], default='auto',
+                        help='no-pairs loader backend (default: auto)')
     parser.add_argument('--bad', action='store_true',
                         help='show FP and FN pairs for the single table entry; requires --top 1')
     add_print_keys_arg(parser, help_text='print displayed row labels as a comma-separated list (discovery mode only)')
@@ -239,7 +242,7 @@ def _read_jsonl_batch(handle, count):
 
 def _prefetch(iterable):
     """Wrap an iterable so the next item is produced in a background thread."""
-    q = queue.Queue(maxsize=1)
+    q = queue.Queue(maxsize=2)
     sentinel = object()
 
     def producer():
@@ -263,38 +266,103 @@ def _prefetch(iterable):
     t.join()
 
 
-def eval_results_block_generator(files_list):
+def _parsed_eval_results_chunk_generator(files_list, chunk_size=100):
+    """Yield aligned parsed JSONL chunks keyed by file discovery key."""
+    keys = [_key_from_path(f) for f in files_list]
+    handles = [open(f) for f in files_list]
+    try:
+        while True:
+            rows = _read_jsonl_batch(handles[0], chunk_size)
+            if rows is None:
+                break
+
+            chunk = {keys[0]: rows}
+            primary_pairs = [r["pair"] for r in rows]
+
+            for i in range(1, len(files_list)):
+                rows = _read_jsonl_batch(handles[i], len(primary_pairs))
+                secondary = rows if rows else []
+                secondary_pairs = [r["pair"] for r in secondary]
+                sym_diff = set(primary_pairs) ^ set(secondary_pairs)
+                if sym_diff:
+                    raise RuntimeError(
+                        f"pair mismatch between {files_list[0]} and {files_list[i]}: "
+                        f"{len(sym_diff)} differing pairs (e.g. {next(iter(sym_diff))})")
+                chunk[keys[i]] = secondary
+
+            yield chunk
+    finally:
+        for h in handles:
+            h.close()
+
+
+def _normalize_aligned_chunk(chunk):
+    """Return a {key: [row, ...]} mapping for either Python or native chunks."""
+    if isinstance(chunk, dict):
+        return chunk
+    keys = chunk.keys()
+    return {key: chunk.rows_for_file(i) for i, key in enumerate(keys)}
+
+
+def _aligned_chunk_generator(files_list, chunk_size=100, loader='auto'):
+    """Yield aligned parsed chunks from the selected backend."""
+    if loader == 'python':
+        yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
+        return
+    if loader == 'native':
+        yield from compare_native.iter_aligned_chunks(files_list, chunk_size)
+        return
+    if compare_native.native_available():
+        yield from compare_native.iter_aligned_chunks(files_list, chunk_size)
+        return
+    yield from _parsed_eval_results_chunk_generator(files_list, chunk_size)
+
+
+def _block_generator_from_chunks(chunks_iter, block_size=100):
+    """Build eval result blocks from aligned parsed JSON chunks."""
+    pending_rows = None
+
+    for chunk in chunks_iter:
+        chunk_rows = _normalize_aligned_chunk(chunk)
+        chunk_keys = list(chunk_rows.keys())
+        if pending_rows is None:
+            pending_rows = {key: [] for key in chunk_keys}
+
+        primary_key = chunk_keys[0]
+        for key in chunk_keys:
+            pending_rows[key].extend(chunk_rows[key])
+
+        while len(pending_rows[primary_key]) >= block_size:
+            yield {
+                key: {
+                    row["pair"]: {"logprobs": row["logprobs"]}
+                    for row in pending_rows[key][:block_size]
+                }
+                for key in chunk_keys
+            }
+            for key in chunk_keys:
+                del pending_rows[key][:block_size]
+
+    if pending_rows and pending_rows[next(iter(pending_rows))]:
+        yield {
+            key: {
+                row["pair"]: {"logprobs": row["logprobs"]}
+                for row in rows
+            }
+            for key, rows in pending_rows.items()
+        }
+
+
+def eval_results_block_generator(files_list, loader='python'):
     """Yield aligned blocks of eval results from multiple JSONL files.
 
     Each yielded value is a dict: {file_key: {pair: {"logprobs": ...}, ...}}
     with up to BLOCK_SIZE pairs, identical keys across all files.
     """
-    BLOCK_SIZE = 100
-    keys = [_key_from_path(f) for f in files_list]
-    handles = [open(f) for f in files_list]
-    try:
-        while True:
-            block = {}
-            rows = _read_jsonl_batch(handles[0], BLOCK_SIZE)
-            if rows is None:
-                break
-            primary = {r["pair"]: {"logprobs": r["logprobs"]} for r in rows}
-            block[keys[0]] = primary
-
-            for i in range(1, len(files_list)):
-                rows = _read_jsonl_batch(handles[i], len(primary))
-                secondary = {r["pair"]: {"logprobs": r["logprobs"]} for r in rows} if rows else {}
-                sym_diff = primary.keys() ^ secondary.keys()
-                if sym_diff:
-                    raise RuntimeError(
-                        f"pair mismatch between {files_list[0]} and {files_list[i]}: "
-                        f"{len(sym_diff)} differing pairs (e.g. {next(iter(sym_diff))})")
-                block[keys[i]] = secondary
-
-            yield block
-    finally:
-        for h in handles:
-            h.close()
+    BLOCK_SIZE = 1000
+    JSON_BATCH_SIZE = 100
+    chunks_iter = _aligned_chunk_generator(files_list, JSON_BATCH_SIZE, loader=loader)
+    yield from _block_generator_from_chunks(chunks_iter, BLOCK_SIZE)
 
 
 def load_files_from_keys(args):
@@ -367,7 +435,8 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
-        block_iter = _prefetch(eval_results_block_generator(args.files))
+        parsed_iter = _prefetch(_aligned_chunk_generator(args.files, loader=args.loader))
+        block_iter = _block_generator_from_chunks(parsed_iter)
         rule = args.ensemble if args.ensemble else 'OR'
         diff.run_nopairs_2way(block_iter, rule, args.method)
         return
