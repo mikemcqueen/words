@@ -41,6 +41,19 @@ def extract_top_token(logprobs: list) -> str | None:
     return parse_yesno_response(top_token)
 
 
+def print_displayed_pids(rows) -> None:
+    """Print unique prompt ids from displayed discovery row keys."""
+    pids = set()
+    for key, _ in rows:
+        for label in str(key).split(','):
+            parts = label.strip().split('.')
+            if len(parts) >= 2 and parts[1]:
+                pids.add(parts[1])
+    if pids:
+        print(f"{len(pids)} pids:\n")
+        print(f"({'|'.join(sorted(pids))})")
+
+
 @method("top-token")
 def method_top_token(logprobs: dict) -> dict:
     """Return dict mapping each logprobs key to TokenLabel(token, label=None)."""
@@ -77,7 +90,10 @@ Examples:
                              help="limit display to results with score >= M.N (directory mode only)")
     parser.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
                         help="comma-separated discovery keys to score (directory mode only)")
-    add_print_keys_arg(parser, help_text="print displayed keys as a comma-separated list (directory mode only)")
+    print_group = parser.add_mutually_exclusive_group()
+    add_print_keys_arg(print_group, help_text="print displayed keys as a comma-separated list (directory mode only)")
+    print_group.add_argument("--pp", "--print-pids", dest="print_pids", action="store_true",
+                             help="print displayed prompt ids as a comma-separated list (directory mode only)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print per-pair results (single-file mode only)")
     parser.add_argument("--bad", action="store_true",
@@ -98,6 +114,8 @@ Examples:
             parser.error("--keys requires a directory input")
         if args.print_keys:
             parser.error("--print-keys requires a directory input")
+        if args.print_pids:
+            parser.error("--print-pids requires a directory input")
     if args.bad:
         if args.input.is_dir():
             one_key = args.keys is not None and len([k for k in args.keys.split(',') if k.strip()]) == 1
@@ -178,13 +196,11 @@ def print_discovery_table(args):
         resolve_all_pair_labels(eval_results)
 
     rows = [(key, compute_stats(records)) for key, records in files.items()]
-    sort_lc = args.sort.lower()
-    if sort_lc == 'fp':
-        rows.sort(key=lambda x: (x[1]['fp'], -x[1]['pct']))
-    elif sort_lc == 'fn':
-        rows.sort(key=lambda x: (x[1]['fn'], -x[1]['pct']))
-    else:
-        rows.sort(key=lambda x: x[1]['pct'], reverse=True)
+    _sort_keys = {'score': lambda x: -x[1]['pct'], 'fp': lambda x: x[1]['fp'], 'fn': lambda x: x[1]['fn']}
+    _sort_order = ['score', 'fp', 'fn']
+    sort_lc = args.sort.lower() if args.sort.lower() in _sort_keys else 'score'
+    cols = [sort_lc] + [c for c in _sort_order if c != sort_lc]
+    rows.sort(key=lambda x: tuple(_sort_keys[c](x) for c in cols))
     if args.top is not None:
         rows = rows[:args.top]
     elif args.min_score is not None:
@@ -194,6 +210,8 @@ def print_discovery_table(args):
     print_discovery_ranked(files, args.sort)
     if args.print_keys:
         print_displayed_keys(rows)
+    if args.print_pids:
+        print_displayed_pids(rows)
     if args.bad:
         print_details(next(iter(files.values())), args)
 

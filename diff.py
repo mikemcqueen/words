@@ -71,7 +71,7 @@ def _pair_ensemble_label(d1, d2, rule):
 
 def _pair_diff_from_counts(fixed_fp, fixed_fn, new_fp, new_fn,
                            correct, fp, fn, *, s1, s2, results=None):
-    total = ens_correct + ens_fp + ens_fn
+    total = correct + fp + fn
     score = 2 * fixed_fn + fixed_fp - new_fp
     diff = dict(
         fixed_fp=fixed_fp,
@@ -131,7 +131,7 @@ def compute_pair_diff(results_1, results_2, *, rule, include_ens_results=False, 
     return _pair_diff_from_counts(
         fixed_fp, fixed_fn, new_fp, new_fn,
         ens_correct, ens_fp, ens_fn,
-        s1=s1, s2=s2, ens_results=ens_results,
+        s1=s1, s2=s2, results=ens_results,
     )
 
 

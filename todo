@@ -1,12 +1,24 @@
-* automatic model-name (tag) detection.
+* need to work on the prompt improvement task.
+
+* does eval_prompt work with logprobs yet?
+  * maybe a better question is what is the purpose of eval_prompt now that evalpair stores output
+    in a nice clean jsonl?
+    *  eval_prompt saves reasoning, which may be helpful at some later point in filtering.
+
+
+* still some fudgy logic around 2-way diff vs. ensemble/-2 specification. if two files (or keys)
+  are supplied, it's a two-way "diff", period. Right? It uses an ensemble rule (OR by default),
+  but because it's a 2-way there are special metrics we can extract from the comparison?  Or is
+  that not true? Maybe it's really only true that an *anchored* two-way diff has those special
+  metrics, and I went on a bender and tried to apply that approach to all 2-way "ensembles"?
+
+* BUG: explict 2-way diff needs explicit rule supplied or it barfs.
 
 * so it appears dense model next-token logprobs data is just way more reliable as a certainty
   / quality predictor.  even with normalized distributions, the actual top prob pair data
   is just significantly better, Qwen35 26B vs. 35B-MoE.
 
   Just not sure the quality of these results is meaningful overall.
-
-  * Check out Gemma4 MOE
 
 * idea:  have a @prepare for every @method.  then can standardize on a single comma-separated
   --ma --method-arg 1,2,3. that gets passed to the @prepare method to prepare the method (initializes
@@ -19,10 +31,11 @@
   run with both of these keys, but only one is required a time"?  probably that just means run
   compare.py twice with different single keys
 
-* evalpair.py auto results dir, find sibling dir of pairs dir
-
-* score.py/compare.py auto pair file discovery from first specified file (not useful for -dir -k
-  however for compare.py however).  more useful in score.py probably.
+* auto param detection:
+  * evalpair.py auto results dir, find sibling dir of pairs dir
+  * score.py/compare.py auto pair file discovery from first specified file (not useful for -dir -k
+    however for compare.py however).  more useful in score.py probably.
+  * automatic model-name (tag) detection.
 
 * more yes pairs! (and better/more representative variety of no pairs)
 

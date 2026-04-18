@@ -75,16 +75,39 @@ def print_retries(retry_map, file=sys.stdout, successful_requests=None):
     print(header, file=file)
 
 
+def get_system_prompt_templated(args):
+    if not "Qwen" in args.model_id:
+        print(f"{args.model_id} has not yet been verified to work with a system prompt")
+        sys.exit()
+    return "<|im_start|>system\n" + args.system_prompt + "<|im_end|>\n"
+
+
+def get_completion_prefix(args):
+    if is_gemma(args.model_id):
+        return "<|turn>user\n"
+    
+    if "phi" in args.model_id:
+        return "<|im_start|>user<|im_sep|>"
+
+    """
+    # NOTE HARDCODED DATE:
+    if "gpt-oss" in args.model_id:
+        return "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-04-17\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>user<|message|>"
+    """
+
+    # Qwen family, others
+    return "<|im_start|>user\n"
+
 def send_anchor_prefix(args, ctx: str) -> None:
     """Send prompt prefix up to 'Clue' to v1/completions for KV cache warming."""
     m = re.search(r'^(.*Clue)', ctx, re.DOTALL)
     if not m:
         return
         #raise ValueError("send_anchor_prefix: no 'Clue' found in prompt context")
-    if is_gemma(args.model_id):
-        prefix = "<|turn>user\n" + m.group(1)
-    else:
-        prefix = "<|im_start|>user\n" + m.group(1)
+    prefix = ""
+    if args.system_prompt:
+        prefix = get_system_prompt_templated(args)
+    prefix += get_completion_prefix(args) + m.group(1)
     url = f"{args.host}:{args.port}/v1/completions"
     headers = {"Content-Type": "application/json"}
     if args.key:
@@ -109,7 +132,7 @@ def parse_args():
     # Prompt input: either --prompt or (--prompt-file + --pid)
     prompt_group = parser.add_mutually_exclusive_group(required=True)
     prompt_group.add_argument('--prompt', type=str, help='Prompt context (use {PAIR} as placeholder)')
-    prompt_group.add_argument('--prompt-file', type=str, help='JSON file containing prompts')
+    prompt_group.add_argument('--prompt-file', type=str, help='JSONL file containing prompts')
 
     pid_group = parser.add_mutually_exclusive_group()
     pid_group.add_argument('--pid', '--prompt-id', type=str, dest='prompt_id',
