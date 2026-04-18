@@ -9,6 +9,8 @@ Review the word pairs that you loaded from the supplied pairs file.
 
 For this skill check to pass, it must meet all of the following requirements:
 
+* The prompt must not be an exact replicate of an existing prompt.
+
 * The prompt needs to be general, and not specific to any of those word pairs, or even to single words
   from those word pairs.
 

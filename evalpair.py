@@ -76,9 +76,13 @@ def print_retries(retry_map, file=sys.stdout, successful_requests=None):
 
 
 def get_system_prompt_templated(args):
+    if "phi" in args.model_id:
+        return "<|im_start|>system<|im_sep|>" + args.system_prompt + "<|im_end|>"
+
     if not "Qwen" in args.model_id:
         print(f"{args.model_id} has not yet been verified to work with a system prompt")
         sys.exit()
+
     return "<|im_start|>system\n" + args.system_prompt + "<|im_end|>\n"
 
 

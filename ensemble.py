@@ -347,9 +347,9 @@ def _bitmask_majority_colwise(bits_per_dir, dirs, idx, threshold):
     raise ValueError(f"bitmask majority only supports 3-way and 5-way, got r={r}")
 
 
-def _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj):
+def _build_three_by_max(bits_per_dir, dirs, n_keys, do_or, do_and, do_maj):
     three_by_max = {}
-    for c_idx in range(2, n):
+    for c_idx in range(2, n_keys):
         a_idx, b_idx = np.triu_indices(c_idx, k=1)
         if len(a_idx) == 0:
             continue
@@ -468,11 +468,11 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
                 counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
                                       key_fn, sort_key)
     elif r == 5:
-        three_by_max = _build_three_by_max(bits_per_dir, dirs, n, do_or, do_and, do_maj)
+        three_by_max = _build_three_by_max(bits_per_dir, dirs, n_keys, do_or, do_and, do_maj)
 
         two_from = {}
-        for start in range(3, n - 1):
-            pool = n - start
+        for start in range(3, n_keys - 1):
+            pool = n_keys - start
             d_idx, e_idx = np.triu_indices(pool, k=1)
             d_idx = d_idx + start
             e_idx = e_idx + start
@@ -505,7 +505,7 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
             two_from[start] = entry
 
         batch_size = 1_000_000
-        for c_idx in range(2, n - 2):
+        for c_idx in range(2, n_keys - 2):
             if c_idx not in three_by_max or (c_idx + 1) not in two_from:
                 continue
             three = three_by_max[c_idx]
@@ -557,7 +557,7 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
                     counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
                                            key_fn, sort_key)
     else:
-        for idx in _combo_batches_np(n, r, 1_000_000):
+        for idx in _combo_batches_np(n_keys, r, 1_000_000):
             batch_results = []
             run_rules(idx, batch_results)
             for suffix, combined, correct, fp, fn in batch_results:

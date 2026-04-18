@@ -1,0 +1,68 @@
+ba-g4-26  : bartowski/google_gemma-4-26B-A4B-it-Q4_K_M.gguf
+un-qt5-27 : unsloth/Qwen3.5-27B-Q4_K_M.gguf
+un-qt5-35 : unsloth/Qwen3.5-35B-A3B-Q3_K_M.gguf
+
+NOTES: phi 4 prompts.p247
+
+prob   phi4-q4* qt5-27  qt5-35   g4-26*       prob      g4-26  ph4-q4
+----------------------------------------      -----------------------
+50%       4286   45105   31095   27191        99.9%      8041    2070
+60%       3813   26720    7178   25944        99.99%     3930     759
+70%       3307   15666    1063   24632        99.999%    1850     299
+80%       2762    8203      65   23100        99.9999%    877      42
+90%       2052    3045       0   21039        100%        286       0
+
+* incomplete data
+
+First table shows distribution of YES responses and the number that had a
+probability >= prob across several models.
+
+Second table drills into the detail of models which have dense distribution
+of probabilities above 99%.
+
+un-qt5-27: dense model has the highest quality top results. The top 10% (3045)
+           are high to very-high quality, informally eyeballed.
+
+un-qt5-35: TODO: comment about results above 90%
+
+ba-g4-26:  TODO: comment about 100% prob results
+
+phi4-q4:   TODO: comment about phi4
+
+     qt5-35  g4-26* phi4-q4
+---------------------------
+50%    1874    828      599
+0%     1909    834
+
+* incomplete data
+
+common lines between un-qt5-27's top 10% (3045) and other models YES answers with
+prob >= 50% and prob > 0% (every yes answer). Both qt5 and g4 MoE models have very
+few (~100) YES results below 50% probability.  un-qt5-27 has ~3000.
+
+Another way of looking at this, is that un-qt5-27 dense selected ~3000 YES tokens
+with 90% probability. Out of ~30k YES tokens that each MoE selected, at any proba-
+bility, only ~2k (*and ~800, ~600, incomplete data)  match the dense models top 10%
+selections.
+
+It's not clear the the MoE models serve any useful purpose, or at least it's not
+*obvious* that they are best suited for this purpose. Their best purpose may be
+as a logical AND source with the dense model, if I can determine that the quality
+of the diff of non-AND sources between dense/moe model is worse.
+
+I should look into hosting lower quant q35 and g4 dense models.
+
+TODO
+
+* review 65, 286, 42 entries from qt5-35, g26, phi4 respectively, comm with qt5-27's
+  top 10%. manually review remaining entries from those lists to determine quality.
+  the question we're asking is: are the top-rated ~.1% of tokens from other models
+  consistently good quality, or a mixed bag? and then based on the result we either 
+  apply that decision to, or investigate further into the top 1%, 10%, etc.
+  
+* update g4-26 numbers when it completes
+
+* review qt5-35's top 10%, update comment above
+* review g4-26's 100% prob, update comment above
+* review diff of qt5-35 matched/umatched vs qt5-27 tokens for quality difference
+

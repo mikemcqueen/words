@@ -37,9 +37,9 @@ std::string parse_key_from_path(const std::string &path) {
   const auto slash = path.find_last_of("/\\");
   const std::string filename = slash == std::string::npos ? path : path.substr(slash + 1);
   std::string stem = filename;
-  const auto dot = stem.rfind('.');
-  if (dot != std::string::npos) {
-    stem = stem.substr(0, dot);
+  auto dot_pos = stem.rfind('.');
+  if (dot_pos != std::string::npos) {
+    stem = stem.substr(0, dot_pos);
   }
 
   std::vector<std::string> parts;
@@ -66,24 +66,39 @@ std::string parse_key_from_path(const std::string &path) {
     }
   }
   if (prompt_id_index <= 0 || prompt_id_index + 1 >= static_cast<int>(parts.size())) {
-    throw std::runtime_error("could not parse key from filename: " + filename);
+    throw std::runtime_error("could not parse prompt id from filename: " + filename);
   }
 
   const std::string &prompt_file = parts[prompt_id_index - 1];
   const std::string &prompt_id = parts[prompt_id_index];
   std::string host;
+  std::string sys_prompt;
   for (size_t i = static_cast<size_t>(prompt_id_index + 1); i < parts.size(); ++i) {
-    if (!host.empty()) {
-      host += "_";
+    if (host.empty()) { 
+      host = std::move(parts[i]);
+      continue;
     }
-    host += parts[i];
+    if (sys_prompt.empty()) {
+      sys_prompt = std::move(parts[i]);
+      continue;
+    }
+    throw std::runtime_error("could not parse prompt id from filename: " + filename);
   }
+  std::string& tag_src = sys_prompt.empty() ? host : sys_prompt;
   std::string tag;
-  const auto host_dot = host.find('.');
-  if (host_dot != std::string::npos) {
-    tag = host.substr(host_dot + 1);
+  dot_pos = tag_src.find('.');
+  if (dot_pos != std::string::npos) {
+    tag = tag_src.substr(dot_pos + 1);
+    tag_src.erase(dot_pos);
   }
-  return tag.empty() ? prompt_file + "." + prompt_id : prompt_file + "." + prompt_id + "." + tag;
+  std::string key = prompt_file + "." + prompt_id;
+  if (!sys_prompt.empty()) {
+    key += "." + sys_prompt;
+  }
+  if (!tag.empty()) {
+    key += "." + tag;
+  }
+  return key;
 }
 
 uint8_t classify_token(const std::string &token) {

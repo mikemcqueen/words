@@ -174,8 +174,9 @@ def parse_result_filename(name):
     """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}.json.
     Returns (pair_file, prompt_file, prompt_id, host) or None if no match."""
     stem = Path(name).stem
-    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
-    return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)) if m else None
+    #m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
+    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:_([^._]+))?(?:\.(.+))?$', stem)
+    return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)) if m else None
 
 
 def discover_files_all(seed_path):
@@ -188,10 +189,10 @@ def discover_files_all(seed_path):
         parsed = parse_result_filename(jsonl_file.name)
         if parsed is None:
             continue
-        _, prompt_file, prompt_id, _, tag = parsed
-        if not tag:
-            tag = ""
-        key = f"{prompt_file}.{prompt_id}.{tag}"
+        _, prompt_file, prompt_id, _, sys_prompt, tag = parsed
+        tag = "." + tag if tag else ""
+        sys_prompt = "." + sys_prompt if sys_prompt else ""
+        key = f"{prompt_file}.{prompt_id}{sys_prompt}{tag}"
         candidates.append((key, jsonl_file))
 
     def _load(item):
@@ -336,7 +337,7 @@ def resolve_key(file_or_dir, key, *, enforce_unique=False):
         parsed = parse_result_filename(f.name)
         if parsed is None:
             continue
-        _, pf, ppid, _, ptag = parsed
+        _, pf, ppid, _, psys, ptag = parsed
         if pf == prompt_file and ppid == pid and (ptag or '') == tag:
             candidates.append(f)
 

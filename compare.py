@@ -188,14 +188,20 @@ def parse_args(argv=None):
 
     return args, parser
 
+
 def _key_from_path(path):
     """Parse a discovery key from a result filename. Exits on failure."""
     parsed = parse_result_filename(Path(path).name)
     if parsed is None:
         print(f"Error: could not parse key from filename: {Path(path).name}", file=sys.stderr)
         sys.exit(1)
-    _, prompt_file, prompt_id, _, tag = parsed
-    return f"{prompt_file}.{prompt_id}.{tag}" if tag else f"{prompt_file}.{prompt_id}"
+    _, prompt_file, prompt_id, _, sys_prompt, tag = parsed
+    key = f"{prompt_file}.{prompt_id}"
+    if sys_prompt:
+        k = key + "." + sys_prompt
+    if tag:
+        k = key + "." + tag
+    return key
 
 
 def _prefetch(iterable):
