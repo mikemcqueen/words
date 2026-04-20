@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here="$(cd -- "$(dirname -- "$0")" && pwd)"
+cd "$here"
+exec "$here/../.torch/bin/python" -m workflow.wf "$@"
