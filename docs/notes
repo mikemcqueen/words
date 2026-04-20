@@ -1,68 +1,67 @@
-ba-g4-26  : bartowski/google_gemma-4-26B-A4B-it-Q4_K_M.gguf
-un-qt5-27 : unsloth/Qwen3.5-27B-Q4_K_M.gguf
-un-qt5-35 : unsloth/Qwen3.5-35B-A3B-Q3_K_M.gguf
+18-Apr-2026
 
-NOTES: phi 4 prompts.p247
+Based on below-the-line CoT, I think that ~2mo/S is reasonable but ~6.5mo/S is not, for the first S.
 
-prob   phi4-q4* qt5-27  qt5-35   g4-26*       prob      g4-26  ph4-q4
-----------------------------------------      -----------------------
-50%       4286   45105   31095   27191        99.9%      8041    2070
-60%       3813   26720    7178   25944        99.99%     3930     759
-70%       3307   15666    1063   24632        99.999%    1850     299
-80%       2762    8203      65   23100        99.9999%    877      42
-90%       2052    3045       0   21039        100%        286       0
+2mo is reasonable because during that ~2mo first automated run of S1 (or whichever i choose first),
+I will also be working on:
+  a) manual review of partial results,
+  b) possible 2nd-pass auto-review of top probabilities from dense model 1st-pass (e.g. via thinking
+     reponses from a MoE model on Mac)
+  c) discovery/development/refinement of review/select/retire workflow and pipeline
 
-* incomplete data
+  C) is really where the time needs to be spent; it is the most opaque to me; least intuitive; easy
+     to be distracted away from; 
 
-First table shows distribution of YES responses and the number that had a
-probability >= prob across several models.
+---------the line---------
 
-Second table drills into the detail of models which have dense distribution
-of probabilities above 99%.
+so what is the next step here?  some options:
 
-un-qt5-27: dense model has the highest quality top results. The top 10% (3045)
-           are high to very-high quality, informally eyeballed.
+  * bug fixing
+  * minor feature addition
+  * perf improvements
+  * additional model testing
+  * refining/automating model testing/evaluation pipeline
+  * refining/automating (as much as possible) the manual pair review/select/retire pipeline
+  * doing actual manual pair review
 
-un-qt5-35: TODO: comment about results above 90%
+  A Brutal Truth:
 
-ba-g4-26:  TODO: comment about 100% prob results
+  I think that manual pair review is ultimately the work I'm (mostly) avoiding by doing other work,
+  with the exception of the other work related to the manual pair pipeline. And in fact I think it
+  is arguable that actual manual pair review should not start until that pipeline is (mostly, or at
+  least more than currently) in place.
 
-phi4-q4:   TODO: comment about phi4
+  Unless the explicit determination is, "I have no idea what this is going to look like, and don't
+  want to spend any time thinking or guessing about it", in which case, fire off one round of manual
+  review in order to get a feel for the shape of the problem first.
 
-     qt5-35  g4-26* phi4-q4
----------------------------
-50%    1874    828      599
-0%     1909    834
+  Key takeaway:
 
-* incomplete data
+  If I'm not doing manual review, or builing the pipeline for manual review, I'm probably avoiding
+  doing it.
 
-common lines between un-qt5-27's top 10% (3045) and other models YES answers with
-prob >= 50% and prob > 0% (every yes answer). Both qt5 and g4 MoE models have very
-few (~100) YES results below 50% probability.  un-qt5-27 has ~3000.
-
-Another way of looking at this, is that un-qt5-27 dense selected ~3000 YES tokens
-with 90% probability. Out of ~30k YES tokens that each MoE selected, at any proba-
-bility, only ~2k (*and ~800, ~600, incomplete data)  match the dense models top 10%
-selections.
-
-It's not clear the the MoE models serve any useful purpose, or at least it's not
-*obvious* that they are best suited for this purpose. Their best purpose may be
-as a logical AND source with the dense model, if I can determine that the quality
-of the diff of non-AND sources between dense/moe model is worse.
-
-I should look into hosting lower quant q35 and g4 dense models.
-
-TODO
-
-* review 65, 286, 42 entries from qt5-35, g26, phi4 respectively, comm with qt5-27's
-  top 10%. manually review remaining entries from those lists to determine quality.
-  the question we're asking is: are the top-rated ~.1% of tokens from other models
-  consistently good quality, or a mixed bag? and then based on the result we either 
-  apply that decision to, or investigate further into the top 1%, 10%, etc.
+  Counterpoint:
   
-* update g4-26 numbers when it completes
+  It would be really really nice to find a performant model for the mac mini (and even PC2) that
+  produced meaningful results. The difference between 1M pairs a day and 2.5M pairs a day is 30M/
+  month vs. 75M/mo.
 
-* review qt5-35's top 10%, update comment above
-* review g4-26's 100% prob, update comment above
-* review diff of qt5-35 matched/umatched vs qt5-27 tokens for quality difference
+  For reference, S1 has 200M min-4-letter combos. That extra processing is the difference between
+  between taking ~2.5 months and ~6.5 months for a first-pass auto-filter on just S1 alone. Combos
+  for subsequent S2+ should drop significantly due to having already been filtered. 
 
+  Ok now that I see those numbers, let me consider a 4x improvement that I might get from a 3090
+  instead of wasting my time on the Mac.
+
+  4M/day = 120M/mo. 200M in 50 days or ~1.5mo. So I knock a month off S1 time for $1000. That'll
+  generate .003 * 200M = 600K results for manual review? I'd need to consistently review 12k/day
+  to be ready for the next batch in 50 days. I think 1000 in 15 minutes is a conservative estimate,
+  so 4k/hr, 12k in 3 hours. Every day. Hmmm... probably not going to happen.
+
+  In any case, 2.5mo with Mac/PC2 is *way* better than 6.5mo. But I also want to avoid being locked
+  into a "mass manual review of everything is the best/only way" mindset/approach. That's why work 
+  on the pipeline is so important. It is probable/potential/hopeful that in the process of defining
+  and implementing the tools and processes needed to reduce the cognitive & processing load of exec-
+  uting the workflow, that I also discover & formalize new approaches and "optimizations" to the
+  process itself, that may in turn lead to less of a need for, or at least a more directed approach
+  to, both automatic and manual review for subsequent S.
