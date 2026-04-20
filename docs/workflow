@@ -1,0 +1,39 @@
+Q1_out  : 1st-pass output queue. From automated YES/NO classifier (evalpair.py)
+R1      : 1st-pass results. Results from 1st-pass output queue.
+R1_filt : 1st-pass results filtered. Results minus all results (C_all) that have already been reviewed.
+R1_yes  : 1st-pass results yes. Results auto-classified as YES from 1st-pass.
+R1_no   : 1st-pass results no. Results auto-classified as NO from 1st-pass.
+Q1_yes  : 1st-pass YES queue. Items from 1st-pass output queue awaiting manual YES classification
+D1      : 1st-pass done. Complete set of items that have completed 1st-pass classification
+
+Q2_in   : 2nd-pass input queue. Items awaiting 2nd pass.
+
+C_yes   : Classified YES. Manually classified YES
+C_no    : Classified NO. Manually classified NO
+C_all   : Classified all. C_yes ∪ C_no
+
+1.0) I have a list of pairs I'd like to sumbit to the 1st-pass YES/NO classifier.
+
+1.1) There are results (R1) to process from the 1st-pass YES/NO classifier (Q1_out).
+  a) Add the results to the "1st-pass classification done" set.                D1 <- (D1 ∪ R1)
+     i. Might want to add to a "model specific" set also/instead.              Dm <- (Dm ∪ R1)
+  b) Filter any results that have already been manually classified.            R1_filt <- R1 - C_all
+  c) Split results into YES and NO (filter.py).                                R1_filt -> (R1_yes, R1_no)
+     i. YES go to "need manual review" queue.                                  Q1_yes <- Q1_yes ∪ R1_yes
+    ii. NO go to the "need 2nd pass" queue.                                    Q2_in <- Q2_in ∪ R1_no
+
+1.2) There are results (M1_yes) to process in the 1st-pass manual review YES queue (Q1_yes).
+  a) Manually classify YES results, leaving remainder as OTHER (tbd).          M1_yes -> (Y, M1_other)
+  b) Add YES results to YES-classified set.                                    C_yes = C_yes ∪ Y
+  c) Do something with OTHER results:
+     i. If OTHER have been manually classified NO, add to NO-classified set.   C_no = C_no ∪ M1_other
+    ii. Else if OTHER remain unclassified, add to "need 2nd pass" queue.       Q2_in <- Q2_in ∪ M1_other
+   iii. Maybe it's a mix of both. Split OTHER, execute i. or ii. depending.
+
+
+
+Notes:
+
+* i have a feeling i'm going to need some Sentence-specific stuff in here, that I
+  haven't hashed out yet
+

@@ -1,10 +1,23 @@
+* FOCUS: discovery/development/refinement of review/select/retire workflow and pipeline
+  * workflow
+    * define a few foreseen high-level workflows
+    * look at what they have in common, where they differ
+    * see how those commonalities and differences can be defined as component entities or
+      processes in a larger system
+    * redefine the workflows using those defined components
+    * loop
+
+* qt35-27B should always be running on an s1/pairs/2 partial dataset.
+  * manual review of top 10% results as they come in.
+
+* run an.test4 on qt5-9b for s&g
+
 * need to work on the prompt improvement task.
 
 * does eval_prompt work with logprobs yet?
   * maybe a better question is what is the purpose of eval_prompt now that evalpair stores output
     in a nice clean jsonl?
     *  eval_prompt saves reasoning, which may be helpful at some later point in filtering.
-
 
 * still some fudgy logic around 2-way diff vs. ensemble/-2 specification. if two files (or keys)
   are supplied, it's a two-way "diff", period. Right? It uses an ensemble rule (OR by default),
@@ -15,7 +28,7 @@
 * BUG: explict 2-way diff needs explicit rule supplied or it barfs.
 
 * so it appears dense model next-token logprobs data is just way more reliable as a certainty
-  / quality predictor.  even with normalized distributions, the actual top prob pair data
+  / quality predictor.  even after normalizing distributions, the actual top prob pair data
   is just significantly better, Qwen35 26B vs. 35B-MoE.
 
   Just not sure the quality of these results is meaningful overall.
