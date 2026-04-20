@@ -1,12 +1,12 @@
 def help_summary():
-    return "queue   — wipe the queue (stub)"
+    return "Usage: wf wipe queue NUM"
 
 
-def run(argv):
-    print("wipe queue: not yet implemented")
+def run(command, opts, argv):
+    print(f"{command}: not yet implemented (dir={opts.dir})")
     return 0
 
 
-def help(argv):
+def help(command, opts, argv):
     print(help_summary())
     return 0

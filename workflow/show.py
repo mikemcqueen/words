@@ -8,9 +8,9 @@ def help_summary():
     return "show    — display workflow state (all | queue)"
 
 
-def run(argv):
-    return dispatch_run(SUBCOMMANDS, argv)
+def run(command, opts, argv):
+    return dispatch_run(command, SUBCOMMANDS, opts, argv)
 
 
-def help(argv):
-    return dispatch_help(SUBCOMMANDS, argv)
+def help(command, opts, argv):
+    return dispatch_help(command, SUBCOMMANDS, opts, argv)
