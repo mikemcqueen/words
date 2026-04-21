@@ -1,15 +1,17 @@
-from workflow import show_all, show_queue
+from workflow import show_all, show_queue, config, log
 from workflow.dispatch import dispatch_run, dispatch_help
 
-SUBCOMMANDS = {"all": show_all, "queue": show_queue}
 
-
-def help_summary():
+def help_summary(name):
     return "show    — display workflow state (all | queue)"
 
 
 def run(command, opts, argv):
-    return dispatch_run(command, SUBCOMMANDS, opts, argv)
+    parser = config.arg_parser()
+    args = parser.parse_args(argv)
+
+    config.validate_parsed_args(command, parser, args)
+    log.success(f"valid: show {args.root} {' '.join(args.path)}")
 
 
 def help(command, opts, argv):

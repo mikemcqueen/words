@@ -4,7 +4,7 @@ from workflow.dispatch import dispatch_run, dispatch_help
 SUBCOMMANDS = {"pairs": submit_pairs}
 
 
-def help_summary():
+def help_summary(name):
     return "submit  — submit items (pairs)"
 
 

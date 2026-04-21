@@ -1,4 +1,4 @@
-def help_summary():
+def help_summary(name):
     return "queue   — show the queue (stub)"
 
 

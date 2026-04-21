@@ -2,14 +2,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from workflow import init, show, submit, wipe
+from workflow import init, show, submit, wipe, eval as eval_cmd
 from workflow.dispatch import dispatch_run
+
 
 COMMANDS = {
     "init":    init,
     "show":    show,
     "submit":  submit,
-    "wipe":    wipe
+    "eval":    eval_cmd
+#  ,"wipe":    wipe
 }
 
 

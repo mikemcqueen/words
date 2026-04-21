@@ -1,13 +1,11 @@
-from workflow import wipe_queue
+from workflow import eval_pairs
 from workflow.dispatch import dispatch_run, dispatch_help
 
-SUBCOMMANDS = {
-    "queue": wipe_queue
-}
+SUBCOMMANDS = {"pairs": eval_pairs}
 
 
 def help_summary(name):
-    return "wipe    — wipe workflow state (queue)"
+    return "eval    — run evaluators (pairs)"
 
 
 def run(command, opts, argv):

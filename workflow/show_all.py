@@ -1,4 +1,4 @@
-def help_summary():
+def help_summary(name):
     return "all     — show everything (stub)"
 
 
