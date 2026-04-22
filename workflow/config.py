@@ -1,5 +1,8 @@
 import argparse
 
+from pathlib import Path
+from workflow import fs
+
 
 _PHASE1 = {
     "description": "First-pass: automated YES/NO classification by evalpair.",
@@ -113,3 +116,19 @@ def arg_parser():
         p.add_argument("path", nargs="*")
 
     return parser
+
+
+def path(parts: [str], opts) -> Path:
+    path = opts.dir / config.ROOT
+    fs.raise_if_not_dir(path)
+
+    all_parts = []
+    allowed_parts = LAYOUT["parts"]
+    for part in parts:
+        if not part in allowed_parts:
+            raise ValueError(f"{' '.join(all_parts)}/{part} is not part of the layout configuration")
+        all_parts.append(part)
+        cur_parts = cur_parts[part]["parts"] if "parts" in cur_parts[part] else {}
+        path = path / part
+        fs.raise_if_not_dir(path)
+    return path

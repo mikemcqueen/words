@@ -40,6 +40,25 @@ def _resolve_pair_file(qdir: Path, argv) -> Path | None:
     return files[0]
 
 
+def _eval_pairs(src_dir: Path, src_pairs: Path, dst_dir: Path) -> Path:
+    done_pairs = p1 / "done" / "pairs"
+    dst_pairs = dst_dir / src_pairs.name
+    dst_orig = dst_dir / f"{src_pairs.name}.orig"
+
+    if dst_pairs.exists() or orig.exists():
+        log.warn(f"already running: {dst_pairs}")
+        return None
+
+    if done_pairs.is_file():
+        (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
+        src_pairs.rename(dst_orig)
+    else:
+        src_pairs.rename(dst_orig)
+        dst_pairs.write_bytes(dst_orig.read_bytes())
+
+    return dst_pairs
+
+
 def run(command, opts, argv):
     p1 = _phase1_dir(opts)
     if p1 is None:
@@ -58,21 +77,10 @@ def run(command, opts, argv):
     if not rdir.is_dir():
         log.error(f"{rdir} does not exist; run `wf init` first")
         return 1
-
-    done_pairs = p1 / "done" / "pairs"
-    dst = rdir / src.name
-    orig = rdir / f"{src.name}.orig"
-
-    if dst.exists() or orig.exists():
-        log.warn(f"already running: {dst}")
+    
+    dst = _eval_pairs(qdir, src, rdir)
+    if not dst:
         return 1
-
-    if done_pairs.is_file():
-        (comm["-23", str(src), str(done_pairs)] > str(dst))()
-        src.rename(orig)
-    else:
-        src.rename(orig)
-        dst.write_bytes(orig.read_bytes())
-
+    
     log.success(f"Ready for evalpairs: {dst}")
     return 0

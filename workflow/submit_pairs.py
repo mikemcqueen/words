@@ -1,47 +1,39 @@
+
 from pathlib import Path
 from plumbum.cmd import sort
-from workflow import log, config
+from workflow import config, fs, log
 
 
 def help_summary(name):
     return "pairs   — submit a pairs file into p1/queued (sorted, deduped)"
 
 
-def _queued_dir(opts) -> Path | None:
+# TODO: config.path
+def _queued_dir(opts) -> Path:
     d = opts.dir / config.ROOT / "p1" / "queued"
-    if not d.is_dir():
-        log.error(f"{d} does not exist; run `wf init` first")
-        return None
+    fs.raise_if_not_dir(d)
     return d
 
 
-def _resolve_input(argv) -> Path | None:
+def _resolve_input(argv) -> Path:
     if not argv:
         log.error("submit pairs: missing <pair-file> argument")
         return None
     src = Path(argv[0]).resolve()
-    if not src.is_file():
-        log.error(f"not a file: {src}")
-        return None
+    fs.raise_if_not_file(src)
     return src
 
 
-def _sort_unique(src: Path, dst: Path) -> bool:
+def _sort_unique(src: Path, dst: Path):
     (sort["-u", str(src)] > str(dst))()
-    return True
 
 
 def run(command, opts, argv):
     src = _resolve_input(argv)
-    if src is None:
-        return 2
-    qdir = _queued_dir(opts)
-    if qdir is None:
-        return 1
-    dst = qdir / src.name
+    dst = _queued_dir(opts) / src.name
     if dst.exists():
-        log.warn(f"already queued: {dst}")
-        return 1
+        log.warn(f"Already queued: {dst}")
+        return 2
     _sort_unique(src, dst)
     log.success(f"Queued {dst}")
     return 0
