@@ -4,7 +4,7 @@ from pathlib import Path
 
 from src.filter import filter_results
 
-from . import log, fs, config
+from workflow import log, fs, config
 
 
 def help_summary(name):

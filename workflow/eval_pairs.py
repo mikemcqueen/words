@@ -1,7 +1,7 @@
 from pathlib import Path
 from plumbum.cmd import comm
 
-from . import log, fs, config
+from workflow import log, fs, config
 
 def help_summary(name):
     return "pairs   — move a queued pairs file to the running stage"

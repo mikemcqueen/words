@@ -2,7 +2,7 @@ import argparse
 
 from pathlib import Path
 
-from . import fs
+from workflow import fs
 
 
 _PHASE1 = {

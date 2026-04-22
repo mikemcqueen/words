@@ -3,7 +3,7 @@
 from pathlib import Path
 from plumbum.cmd import sort
 
-from . import fs, log, config
+from workflow import fs, log, config
 
 
 def help_summary(name):
