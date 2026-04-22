@@ -1,10 +1,10 @@
 import heapq
 import numpy as np
 
-from common import (compute_stats, expected_yesno_from_labeled_result,
-                    pair_has_yes, print_displayed_keys)
+from src.common import (compute_stats, expected_yesno_from_labeled_result,
+                    key_from_path, pair_has_yes, print_displayed_keys)
 
-from ensemble import ENSEMBLE_RULES_2
+from src.ensemble import ENSEMBLE_RULES_2
 
 
 SORT_DIFF_KEYS = {
@@ -122,6 +122,7 @@ def compute_pair_diff(results_1, results_2, *, rule, include_ens_results=False, 
             ens_fn += 1
 
         if include_ens_results:
+            assert ens_results is not None
             ens_results[pair] = {'label': ens_label}
 
     if s1 is None:
@@ -251,6 +252,7 @@ def print_2way_diff_table(rows):
     wc = max(wc, len('complement'))
     rules = set(d.get('rule', 'OR') for _, _, d in rows)
     multi_rule = len(rules) > 1
+    wr = 0
     if multi_rule:
         wr = max(len(r) for r in rules)
         wr = max(wr, len('Rule'))
@@ -279,7 +281,7 @@ def print_2way_diff_table(rows):
     print()
 
 
-def run_2way_nopairs_projected(block_iter, rule, method='top-token'):
+def run_2way_nopairs_projected(block_iter, filenames, rule, method='top-token'):
     """Process projected native blocks without materializing pair-keyed dicts."""
     import compare_native
 
@@ -288,29 +290,21 @@ def run_2way_nopairs_projected(block_iter, rule, method='top-token'):
 
     rules = ENSEMBLE_RULES_2 if rule == 'ALL' else [rule]
     total_pairs = 0
-    yes_counts = {}
+    yes_counts = [0] * len(filenames)
     combined_yes = {r: 0 for r in rules}
-    file_keys = None
 
     for block in block_iter:
-        keys = list(block.keys())
-        if file_keys is None:
-            file_keys = keys
-        for fk in keys:
-            if fk not in yes_counts:
-                yes_counts[fk] = 0
-
         labels = np.asarray(block.labels())
         if labels.ndim != 3:
             raise RuntimeError("projected native block labels must be 3D")
-        if labels.shape[0] != len(keys):
-            raise RuntimeError("projected native block key count mismatch")
+        if labels.shape[0] != len(filenames):
+            raise RuntimeError("projected native block file count mismatch")
 
-        file_yes = np.any(labels == compare_native.LABEL_YES, axis=2)
+        file_yes = np.asarray(np.any(labels == compare_native.LABEL_YES, axis=2))
         total_pairs += int(labels.shape[1])
 
-        for file_index, fk in enumerate(keys):
-            yes_counts[fk] += int(file_yes[file_index].sum())
+        for file_index in range(len(filenames)):
+            yes_counts[file_index] += int(file_yes[file_index].sum())
 
         for r in rules:
             if r == 'OR':
@@ -320,8 +314,7 @@ def run_2way_nopairs_projected(block_iter, rule, method='top-token'):
                 pair_yes = np.all(file_yes, axis=0)
             combined_yes[r] += int(pair_yes.sum())
 
-    if file_keys is None:
-        file_keys = []
+    file_keys = [key_from_path(f) for f in filenames]
     wa = max(len(file_keys[0]), len('file_a')) if file_keys else len('file_a')
     wc = max(len(file_keys[1]), len('file_b')) if len(file_keys) > 1 else len('file_b')
     header = (f"{'file_a':<{wa}s} {'YES%':>6s} {'YES':>6s} {'NO':>6s}  "
@@ -330,8 +323,8 @@ def run_2way_nopairs_projected(block_iter, rule, method='top-token'):
     print(header)
     print('─' * len(header))
     s = [{}, {}]
-    for i, fk in enumerate(file_keys[:2]):
-        s[i]['yes'] = yes_counts[fk]
+    for i in range(min(2, len(file_keys))):
+        s[i]['yes'] = yes_counts[i]
         s[i]['no'] = total_pairs - s[i]['yes']
         s[i]['pct'] = 100 * s[i]['yes'] / total_pairs if total_pairs else 0.0
     for r in rules:

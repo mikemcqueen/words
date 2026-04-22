@@ -1,3 +1,5 @@
+# mypy: disable-error-code="misc"
+
 # words.py
 #
 # This version implements Asymmetric Typical Sampling based on standard deviation 
@@ -24,10 +26,9 @@ import math
 import os
 import time
 import heapq
-from typing import Dict, List, Tuple
 
-from info import info
-from model import load_model, clear_cache, is_gemma_model, is_instruct_model, specialize_prompt
+from src.info import info
+from src.model import load_model, clear_cache, is_gemma_model, is_instruct_model, specialize_prompt
 
 # Enable MPS fallback for unsupported operations
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
@@ -50,14 +51,14 @@ def is_alpha_with_trailing_period(word: str) -> bool:
             return True
     return False
 
-def is_all_ascii_alpha(s: str) -> bool:
-    return word and word.isascii() and word.isalpha()
+def is_all_ascii_alpha(word: str) -> bool:
+    return bool(word) and word.isascii() and word.isalpha()
 
 def has_leading_ascii_alpha(word: str) -> bool:
-    return word and word[0].isascii() and word[0].isalpha()
+    return bool(word) and word[0].isascii() and word[0].isalpha()
 
 def has_trailing_ascii_alpha(word: str) -> bool:
-    return word and word[-1].isascii() and word[-1].isalpha()
+    return bool(word) and word[-1].isascii() and word[-1].isalpha()
 
 def sync(device):
     if device.type == "mps":
@@ -75,10 +76,10 @@ class WordProbabilityExplorer:
         self.typicality_sigma = typicality_sigma  # Sigma threshold for asymmetric filtering
 
         # Track best log probability for each unique word
-        self.word_log_probs: Dict[str, float] = {}
+        self.word_log_probs: dict[str, float] = {}
 
         # Cache for decoded token strings - decode each token ID only once
-        self.token_text_cache: Dict[int, str] = {}
+        self.token_text_cache: dict[int, str] = {}
 
         # Statistics
         self.forward_passes = 0
@@ -106,7 +107,7 @@ class WordProbabilityExplorer:
 
         self.word_boundary_mask = self.token_info['first_token_mask'].cpu().numpy()
 
-    def _precompute_token_info(self) -> Dict:
+    def _precompute_token_info(self) -> dict:
         """
         Pre-decode and categorize all tokens in vocabulary for faster filtering.
         Also precompute static masks for efficient filtering.
@@ -209,7 +210,7 @@ class WordProbabilityExplorer:
         else:
             return "N/A (CPU)"
 
-    def pne(self, log_probs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def pne(self, log_probs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         pne = Probs, Neg_log_probs, Entropy
         """
@@ -226,7 +227,7 @@ class WordProbabilityExplorer:
         return probs, neg_log_probs, entropy
 
     def typical_sampling_batch(self, log_probs: torch.Tensor,
-                               valid_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                               valid_mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Apply asymmetric typical (entropy-based) sampling to select tokens for a batch.
         
@@ -292,7 +293,7 @@ class WordProbabilityExplorer:
         
         return selected_log_probs, selected_indices, selected_mask
 
-    def get_batched_log_probs(self, input_ids_list: List[torch.Tensor]) -> torch.Tensor:
+    def get_batched_log_probs(self, input_ids_list: list[torch.Tensor]) -> torch.Tensor:
         """
         Get log probability distributions for next token for a batch of sequences.
         Only considers valid tokens (filtered by mask) when computing softmax.
@@ -304,8 +305,7 @@ class WordProbabilityExplorer:
             log_probs: Tensor of shape [batch_size, vocab_size] with log probabilities
         """
         if not input_ids_list:
-            return (torch.empty(0, num_valid, device=self.device), 
-                    torch.empty(0, num_valid, dtype=torch.long, device=self.device))
+            raise Exception("what")
 
         # Find max length for padding
         max_len = max(ids.shape[1] for ids in input_ids_list)
@@ -359,7 +359,7 @@ class WordProbabilityExplorer:
 
         return log_probs
     
-    def find_word_log_probs(self, prompt: str, args) -> List[Tuple[str, float]]:
+    def find_word_log_probs(self, prompt: str, args) -> tuple[list[tuple[str, float]], dict]:
         """
         Find the top K most probable next words using iterative BFS with batching.
         
@@ -455,7 +455,7 @@ class WordProbabilityExplorer:
                 continue
 
             # Get pre-decoded text and strip the leading space
-            token_text = self.decode_token(token_id).strip()
+            token_text = self.decode_token(int(token_id)).strip()
 
             current_paths.append({
                 'tokens': [token_id],
@@ -484,7 +484,7 @@ class WordProbabilityExplorer:
             paths_processed = 0
             while path_idx < len(current_paths):
                 # Build a full batch by pulling valid paths (skip below-threshold)
-                batch_paths = []
+                batch_paths: list[dict] = []
                 while len(batch_paths) < BATCH_SIZE and path_idx < len(current_paths):
                     path = current_paths[path_idx]
                     path_idx += 1
@@ -621,7 +621,7 @@ class WordProbabilityExplorer:
         ]
         return word_probs
 
-def normalize_probs(word_log_probs: List[Tuple[str, float]]) -> List[float]:
+def normalize_probs(word_log_probs: list[tuple[str, float]]) -> list[float]:
     """
     Takes list of (word, log_prob) and returns a list of normalized_prob.
     """
@@ -728,9 +728,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except ImportError:
-        print(f"ImportError: {e}\n" \
-              "Possibly due to missing 'transformers' and 'torch' libraries.")
+    except ImportError as e:
+        print((f"ImportError: {e}\n"
+              "Possibly due to missing 'transformers' and 'torch' libraries."))
         print("To install them: pip install transformers torch")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")

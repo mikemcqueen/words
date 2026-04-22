@@ -1,3 +1,5 @@
+# mypy: disable-error-code="misc"
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 

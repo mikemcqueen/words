@@ -12,8 +12,8 @@ from pathlib import Path
 
 import httpx
 
-from common import add_inference_args, parse_on_off
-from model import adjust_thinking
+from src.common import add_inference_args, parse_on_off
+from src.model import adjust_thinking
 
 SERVERS = {
     "localhost": "127.0.0.1",
@@ -221,7 +221,7 @@ async def run_concurrent(items, process_fn, args):
                 pending.add(task)
 
 
-async def _post_with_retry(client, *args, label=None, quiet=False, **kwargs):
+async def _post_with_retry(client, *args, label=None, quiet=False, **kwargs) -> httpx.Response:
     """Wrap client.post() with retry logic for transient errors."""
     delays = [5, 20, 40, 60, 80]
     max_retries = len(delays)
@@ -247,6 +247,7 @@ async def _post_with_retry(client, *args, label=None, quiet=False, **kwargs):
                 ts = time.strftime("%H:%M:%S")
                 print(f"[{ts}] RETRY {attempt+1}/{max_retries}{tag} after HTTP {e.response.status_code}, waiting {delay}s", file=sys.stderr)
             await asyncio.sleep(delay)
+    raise RuntimeError("unreachable: retry loop exited without return or raise")
 
 
 def add_inference_options(payload: dict, args) -> dict:
@@ -284,7 +285,7 @@ def _extract_upstream(response) -> str | None:
     return SERVER_IPS.get(ip, addr)
 
 
-async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict]:
+async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
     """POST {base_url}/yesno with {"text": prompt}"""
     url = f"{args.host}:{args.port}/yesno"
     response = await _post_with_retry(client, url, json={"text": prompt}, label=label, quiet=getattr(args, "quiet", False))
@@ -295,7 +296,7 @@ async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str, label
     return js["response"], js, js
 
 
-def query_model_id(host: str, port: int, key: str = None) -> str:
+def query_model_id(host: str, port: int, key: str = "") -> str:
     """GET /v1/models and return the first model's ID."""
     url = f"{host}:{port}/v1/models"
     headers = {}
@@ -309,7 +310,7 @@ def query_model_id(host: str, port: int, key: str = None) -> str:
     return data[0]["id"]
 
 
-async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None) -> tuple[str, dict]:
+async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None) -> tuple[str, dict, dict]:
     """POST {base_url}/v1/chat/completions with OpenAI chat format"""
     url = f"{args.host}:{args.port}/v1/chat/completions"
 

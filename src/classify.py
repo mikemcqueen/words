@@ -3,8 +3,8 @@ import time
 
 import httpx
 
-from client import get_server_name, run_concurrent, send_openai_request
-from common import eval_with_flipped_retry, flip_pair
+from src.client import get_server_name, run_concurrent, send_openai_request
+from src.common import eval_with_flipped_retry, flip_pair
 
 
 def format_result(orig_pair, yes, flipped, upstream=None):

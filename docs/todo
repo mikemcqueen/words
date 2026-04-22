@@ -1,3 +1,11 @@
+* eval should require destination folder and copy to it?
+* and copy again if called again, even if already running?
+
+* creating a subparser for SHOW and typing ./wf SHOW gives weird help message that doesn't
+  include the "wf show" part. and it says it expects "root". need to set a meta="something" maybe.
+
+* evalpair: open output file with exclusive write flag
+
 * FOCUS: discovery/development/refinement of review/select/retire workflow and pipeline
   * workflow
     * define a few foreseen high-level workflows

@@ -11,14 +11,15 @@ Usage:
 import argparse
 import asyncio
 import json
+import sys
 import time
 
 import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import add_inference_args, load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
+from src.client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from src.common import add_inference_args, load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
 # Configuration
 PAIRS_FILE = "pairs.json"
 RESULTS_DIR = Path("results")
@@ -87,8 +88,9 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
         orig_attempt = attempts[0]
         flip_attempt = attempts[1] if len(attempts) > 1 else None
 
+        final_attempt: dict = {}
         if evaluation["decision_source"] == "flipped":
-            final_attempt = flip_attempt
+            final_attempt = flip_attempt # type: ignore
         else:
             final_attempt = orig_attempt
 

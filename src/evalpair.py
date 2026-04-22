@@ -19,11 +19,11 @@ import httpx
 
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
-from classify import classify_pairs_async
-from client import run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
-from common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
-from info import info
-from model import is_gemma
+from src.classify import classify_pairs_async
+from src.client import run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from src.common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
+from src.info import info
+from src.model import is_gemma
 
 def fmt_duration(s):
     """Format seconds as compact duration: 5s, 3m30s, 2h03m04s, 1 day, 2h03m04s."""
@@ -246,7 +246,7 @@ def apply_pair_order(orig_pair: str, order: str) -> str:
     if order == "rvs":
         words = list(reversed(words))
     elif not order == "fwd":
-        raise ValueErorr(f"Unsupported order: {order}")
+        raise ValueError(f"Unsupported order: {order}")
     return " ".join(words)
 
 
@@ -410,6 +410,7 @@ def main():
 
         pairs = get_pairs(args, skip=skip)
         retry_map = None
+        orders = []
 
         t0 = time.monotonic()
         try:
@@ -431,6 +432,7 @@ def main():
         if retry_map:
             print_retries(retry_map)
         if args.save and num_pairs > 0:
+            assert writer is not None
             print(f"{num_pairs} results saved to: {writer.path}")
 
         handle_results(args, writer)

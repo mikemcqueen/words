@@ -2,7 +2,6 @@
 #include <cstdio>
 #include <cstdint>
 #include <fstream>
-#include <regex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -32,74 +31,6 @@ struct ProjectedRow {
   std::string pair;
   std::vector<DirectionProjection> directions;
 };
-
-std::string parse_key_from_path(const std::string &path) {
-  const auto slash = path.find_last_of("/\\");
-  const std::string filename = slash == std::string::npos ? path : path.substr(slash + 1);
-  std::string stem = filename;
-  auto dot_pos = stem.rfind('.');
-  if (dot_pos != std::string::npos) {
-    stem = stem.substr(0, dot_pos);
-  }
-
-  std::vector<std::string> parts;
-  size_t start = 0;
-  while (start <= stem.size()) {
-    const auto pos = stem.find('_', start);
-    if (pos == std::string::npos) {
-      parts.push_back(stem.substr(start));
-      break;
-    }
-    parts.push_back(stem.substr(start, pos - start));
-    start = pos + 1;
-  }
-  if (parts.size() < 4) {
-    throw std::runtime_error("could not parse key from filename: " + filename);
-  }
-
-  const std::regex prompt_id_re("^p\\d+$");
-  int prompt_id_index = -1;
-  for (int i = static_cast<int>(parts.size()) - 2; i >= 1; --i) {
-    if (std::regex_match(parts[i], prompt_id_re)) {
-      prompt_id_index = i;
-      break;
-    }
-  }
-  if (prompt_id_index <= 0 || prompt_id_index + 1 >= static_cast<int>(parts.size())) {
-    throw std::runtime_error("could not parse prompt id from filename: " + filename);
-  }
-
-  const std::string &prompt_file = parts[prompt_id_index - 1];
-  const std::string &prompt_id = parts[prompt_id_index];
-  std::string host;
-  std::string sys_prompt;
-  for (size_t i = static_cast<size_t>(prompt_id_index + 1); i < parts.size(); ++i) {
-    if (host.empty()) { 
-      host = std::move(parts[i]);
-      continue;
-    }
-    if (sys_prompt.empty()) {
-      sys_prompt = std::move(parts[i]);
-      continue;
-    }
-    throw std::runtime_error("could not parse prompt id from filename: " + filename);
-  }
-  std::string& tag_src = sys_prompt.empty() ? host : sys_prompt;
-  std::string tag;
-  dot_pos = tag_src.find('.');
-  if (dot_pos != std::string::npos) {
-    tag = tag_src.substr(dot_pos + 1);
-    tag_src.erase(dot_pos);
-  }
-  std::string key = prompt_file + "." + prompt_id;
-  if (!sys_prompt.empty()) {
-    key += "." + sys_prompt;
-  }
-  if (!tag.empty()) {
-    key += "." + tag;
-  }
-  return key;
-}
 
 uint8_t classify_token(const std::string &token) {
   std::string normalized = token;
@@ -176,10 +107,10 @@ void validate_pair_alignment(const std::vector<std::string> &paths,
 
 class ProjectedChunk {
  public:
-  ProjectedChunk(std::vector<std::string> keys, std::vector<std::string> directions, size_t rows,
+  ProjectedChunk(size_t n_files, std::vector<std::string> directions, size_t rows,
                  size_t capacity, std::vector<uint8_t> labels, std::vector<double> probs,
                  std::vector<std::string> pairs)
-      : keys_(std::move(keys)),
+      : n_files_(n_files),
         directions_(std::move(directions)),
         rows_(rows),
         capacity_(capacity),
@@ -187,13 +118,12 @@ class ProjectedChunk {
         probs_(std::move(probs)),
         pairs_(std::move(pairs)) {}
 
-  const std::vector<std::string> &keys() const { return keys_; }
   const std::vector<std::string> &directions() const { return directions_; }
   size_t size() const { return rows_; }
 
   py::array_t<uint8_t> labels() const {
     return py::array_t<uint8_t>(
-        {static_cast<py::ssize_t>(keys_.size()), static_cast<py::ssize_t>(rows_),
+        {static_cast<py::ssize_t>(n_files_), static_cast<py::ssize_t>(rows_),
          static_cast<py::ssize_t>(directions_.size())},
         {static_cast<py::ssize_t>(capacity_ * directions_.size() * sizeof(uint8_t)),
          static_cast<py::ssize_t>(directions_.size() * sizeof(uint8_t)),
@@ -203,9 +133,16 @@ class ProjectedChunk {
 
   const std::vector<std::string> &pairs() const { return pairs_; }
 
+  const std::string &pair_at(size_t idx) const {
+    if (idx >= pairs_.size()) {
+      throw py::index_error();
+    }
+    return pairs_[idx];
+  }
+
   py::array_t<double> probs() const {
     return py::array_t<double>(
-        {static_cast<py::ssize_t>(keys_.size()), static_cast<py::ssize_t>(rows_),
+        {static_cast<py::ssize_t>(n_files_), static_cast<py::ssize_t>(rows_),
          static_cast<py::ssize_t>(directions_.size())},
         {static_cast<py::ssize_t>(capacity_ * directions_.size() * sizeof(double)),
          static_cast<py::ssize_t>(directions_.size() * sizeof(double)),
@@ -214,7 +151,7 @@ class ProjectedChunk {
   }
 
  private:
-  std::vector<std::string> keys_;
+  size_t n_files_;
   std::vector<std::string> directions_;
   size_t rows_;
   size_t capacity_;
@@ -234,7 +171,6 @@ class ProjectedAlignedJsonlReader {
       throw std::runtime_error("chunk_size must be > 0");
     }
 
-    keys_.reserve(paths_.size());
     handles_.reserve(paths_.size());
     parsers_.resize(paths_.size());
     for (const auto &path : paths_) {
@@ -242,7 +178,6 @@ class ProjectedAlignedJsonlReader {
       if (!handles_.back().is_open()) {
         throw std::runtime_error("failed to open " + path);
       }
-      keys_.push_back(parse_key_from_path(path));
     }
   }
 
@@ -254,7 +189,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedAlignedJsonlReader &iter() { return *this; }
 
   ProjectedChunk next() {
-    ProjectedChunk chunk({}, {}, 0, 0, {}, {}, {});
+    ProjectedChunk chunk(paths_.size(), {}, 0, 0, {}, {}, {});
     {
       py::gil_scoped_release release;
       chunk = read_next_chunk();
@@ -269,7 +204,7 @@ class ProjectedAlignedJsonlReader {
   ProjectedChunk read_next_chunk() {
     std::vector<ProjectedRow> primary = read_rows_for_file(0, chunk_size_);
     if (primary.empty()) {
-      return ProjectedChunk(keys_, directions_, 0, 0, {}, {}, {});
+      return ProjectedChunk(paths_.size(), directions_, 0, 0, {}, {}, {});
     }
 
     if (directions_.empty()) {
@@ -317,7 +252,7 @@ class ProjectedAlignedJsonlReader {
     for (size_t i = 0; i < live_rows; ++i) {
       pair_ids.push_back(primary[i].pair);
     }
-    return ProjectedChunk(keys_, directions_, live_rows, n_rows, std::move(labels), std::move(probs), std::move(pair_ids));
+    return ProjectedChunk(paths_.size(), directions_, live_rows, n_rows, std::move(labels), std::move(probs), std::move(pair_ids));
   }
 
   void fill_arrays(const std::vector<ProjectedRow> &rows, size_t file_index, size_t capacity,
@@ -397,7 +332,6 @@ class ProjectedAlignedJsonlReader {
 
   std::vector<std::string> paths_;
   size_t chunk_size_;
-  std::vector<std::string> keys_;
   std::vector<std::string> directions_;
   std::vector<std::ifstream> handles_;
   std::vector<simdjson::dom::parser> parsers_;
@@ -411,11 +345,11 @@ PYBIND11_MODULE(_compare_native, m) {
   m.attr("LABEL_YES") = py::int_(kYesLabel);
 
   py::class_<ProjectedChunk>(m, "ProjectedChunk")
-      .def("keys", &ProjectedChunk::keys)
       .def("directions", &ProjectedChunk::directions)
       .def("labels", &ProjectedChunk::labels)
       .def("probs", &ProjectedChunk::probs)
       .def("pairs", &ProjectedChunk::pairs)
+      .def("pair_at", &ProjectedChunk::pair_at, py::arg("idx"))
       .def_property_readonly("size", &ProjectedChunk::size);
 
   py::class_<ProjectedAlignedJsonlReader>(m, "ProjectedAlignedJsonlReader")

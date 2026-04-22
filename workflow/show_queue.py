@@ -10,5 +10,5 @@ def run(command, opts, argv):
 
 
 def help(command, opts, argv):
-    print(help_summary())
+    print(help_summary(command))
     return 0

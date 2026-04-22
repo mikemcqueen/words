@@ -42,5 +42,5 @@ if __name__ == "__main__":
         if isinstance(e, OSError):
             log.error(f"{e.strerror}: {e.filename}")
         else:
-            log.error(e)
+            log.error(str(e))
         raise SystemExit(1)

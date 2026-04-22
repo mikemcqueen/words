@@ -26,6 +26,7 @@ while True:
         print(f"verbose: off")
         continue
 
+    response = None
     if tokenizer.chat_template is not None:
         messages = [{"role": "user", "content": prompt}]
         prompt = tokenizer.apply_chat_template(

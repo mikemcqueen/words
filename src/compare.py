@@ -11,17 +11,17 @@ import threading
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from pathlib import Path
 
-from common import (load_expected_pairs, load_eval_results,
-                    parse_result_filename, discover_files_all,
+from src.common import (load_expected_pairs, load_eval_results,
+                    parse_result_filename, key_from_path, discover_files_all,
                     resolve_key, print_bad_pairs,
                     add_print_keys_arg, print_displayed_keys)
-from score import label_eval_results, resolve_all_pair_labels
-from diff import SORT_DIFF_KEYS
-from ensemble import SORT_ENSEMBLE_KEYS
+from src.score import label_eval_results, resolve_all_pair_labels
+from src.diff import SORT_DIFF_KEYS
+from src.ensemble import SORT_ENSEMBLE_KEYS
 
-import diff
-import ensemble
-import compare_native
+from src import diff
+from src import ensemble
+from src import compare_native
 
 
 def parse_args(argv=None):
@@ -189,21 +189,6 @@ def parse_args(argv=None):
     return args, parser
 
 
-def _key_from_path(path):
-    """Parse a discovery key from a result filename. Exits on failure."""
-    parsed = parse_result_filename(Path(path).name)
-    if parsed is None:
-        print(f"Error: could not parse key from filename: {Path(path).name}", file=sys.stderr)
-        sys.exit(1)
-    _, prompt_file, prompt_id, _, sys_prompt, tag = parsed
-    key = f"{prompt_file}.{prompt_id}"
-    if sys_prompt:
-        k = key + "." + sys_prompt
-    if tag:
-        k = key + "." + tag
-    return key
-
-
 def _prefetch(iterable):
     """Wrap an iterable so the next item is produced in a background thread."""
     q = queue.Queue(maxsize=1)
@@ -241,12 +226,12 @@ def load_files_from_keys(args):
     return files
 
 
-def load_files_explicit(filenames: [str]):
+def load_files_explicit(filenames: list[str]):
     files = {}
     for i in range(2):
         #parsed = parse_result_filename(filenames[i])
         #key = parsed[2] if parsed else Path(args.files[i]).stem
-        key = _key_from_path(filenames[i])
+        key = key_from_path(filenames[i])
         assert key not in files, f"duplicate key: {key}"
         files[key] = load_eval_results(filenames[i])
     return files
@@ -292,7 +277,7 @@ def run_discovery(files, expected, args):
     elif Path(args.files[0]).is_dir():
         return diff.print_2way_diff_all_pairs(files, args)
     else:
-        anchor_key = _key_from_path(args.files[0])
+        anchor_key = key_from_path(args.files[0])
         return diff.print_2way_diff_anchored(anchor_key, files, args)
 
 
@@ -303,12 +288,14 @@ def main():
         compare_native.require_native()
         block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
         rule = args.ensemble if args.ensemble else 'OR'
-        diff.run_2way_nopairs_projected(block_iter, rule, args.method)
+        diff.run_2way_nopairs_projected(block_iter, args.files, rule, args.method)
         return
 
     expected = load_expected_pairs(args.pairs)
     files = load_result_files(expected, args)
+    assert files is not None
 
+    rows = None
     if args.keys and len(args.keys) > 1:
         rows = run_explicit_nway(files, expected, args)
     elif len(args.files) == 1:

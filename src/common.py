@@ -124,7 +124,7 @@ def add_inference_args(parser: argparse.ArgumentParser) -> None:
                         help="Control API thinking mode (default: off)")
 
 
-def add_print_keys_arg(parser: argparse.ArgumentParser, *, help_text: str) -> None:
+def add_print_keys_arg(parser, *, help_text: str) -> None:
     """Add a shared --pk/--print-keys CLI switch."""
     parser.add_argument("--pk", "--print-keys", dest="print_keys", action="store_true",
                         help=help_text)
@@ -179,6 +179,22 @@ def parse_result_filename(name):
     return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)) if m else None
 
 
+def key_from_path(path) -> str:
+    """Display key for a result file: {prompt_file}.{prompt_id}[.{sys}][.{tag}].
+    Raises ValueError if the filename doesn't match the expected pattern."""
+    name = Path(path).name
+    parsed = parse_result_filename(name)
+    if parsed is None:
+        raise ValueError(f"could not parse key from filename: {name}")
+    _, prompt_file, prompt_id, _, sys_prompt, tag = parsed
+    key = f"{prompt_file}.{prompt_id}"
+    if sys_prompt:
+        key += f".{sys_prompt}"
+    if tag:
+        key += f".{tag}"
+    return key
+
+
 def discover_files_all(seed_path):
     """Return {prompt_file.prompt_id[.tag]: eval_results} for all .jsonl files in seed's directory.
     seed_path may be a file (uses its parent) or a directory."""
@@ -186,13 +202,10 @@ def discover_files_all(seed_path):
     directory = p if p.is_dir() else p.parent
     candidates = []
     for jsonl_file in sorted(directory.glob('*.jsonl')):
-        parsed = parse_result_filename(jsonl_file.name)
-        if parsed is None:
+        try:
+            key = key_from_path(jsonl_file)
+        except ValueError:
             continue
-        _, prompt_file, prompt_id, _, sys_prompt, tag = parsed
-        tag = "." + tag if tag else ""
-        sys_prompt = "." + sys_prompt if sys_prompt else ""
-        key = f"{prompt_file}.{prompt_id}{sys_prompt}{tag}"
         candidates.append((key, jsonl_file))
 
     def _load(item):

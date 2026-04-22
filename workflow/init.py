@@ -1,47 +1,37 @@
+# init.py
+
 from pathlib import Path
-from workflow import log, config
+from workflow import log, config, fs
+
 
 def help_summary(name):
     return "init    — initialize a workflow (stub)"
 
 
-def ensure_dir(parent: Path, child: str, opts: any) -> Path|None:
-    d = parent / child
+def ensure_dir(d: Path) -> Path:
     if not d.exists():
         d.mkdir()
-    if not d.is_dir():
-        log.warn(f"{d} exists and is not a directory")
-        return None
+    fs.raise_if_not_dir(d)
     return d
 
 
-def ensure_layout(parent: Path, child: str, layout: any, opts: any) -> Path|None:
-    p_dir = ensure_dir(parent, child, opts)
-    if not p_dir:
-        return None
-    
-    all_ok = True
+def ensure_layout(parent: Path, child: str, layout, opts) -> None:
+    d = ensure_dir(parent / child)
     if "parts" in layout:
         for name in layout["parts"]:
-            d = ensure_layout(p_dir, name, layout["parts"][name], opts)
-            all_ok &= (d is not None)
-        
-    return p_dir if all_ok else None
+            ensure_layout(d, name, layout["parts"][name], opts)
 
 
-def init(opts: any) -> bool:
-    return ensure_layout(opts.dir, config.ROOT, config.LAYOUT, opts)
+def init(opts) -> None:
+    ensure_layout(opts.dir, config.CONFIG_ROOT, config.CONFIG_LAYOUT, opts)
 
 
-def run(command: str, opts: any, argv: [str]) -> int:
-    if not init(opts):
-        log.error(f"Initialization failed for {opts.dir}")
-        return 1
-    
+def run(command: str, opts, argv: list[str]) -> int:
+    init(opts)
     log.success(f"Initialized {opts.dir}")
     return 0
 
 
-def help(command: str, opts: any, argv: [str]) -> int:
-    print(help_summary())
+def help(command: str, opts, argv: list[str]) -> int:
+    print(help_summary(command))
     return 0

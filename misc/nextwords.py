@@ -1,9 +1,10 @@
 import argparse
 
-from info import info
-from model import load_model, clear_cache
+from src.info import info
+from src.model import load_model, clear_cache
+
 from pathlib import Path
-from wpe import WordProbabilityExplorer
+#from wpe import WordProbabilityExplorer
 
 # Write tuples to file (already sorted by probability)
 def dump_probs(filename, word_probs, args):
@@ -86,7 +87,7 @@ def main():
 
     device, model, tokenizer = load_model(args.model)
 
-    explorer = WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
+    explorer = {} #WordProbabilityExplorer(model, tokenizer, device, typicality_sigma=args.sigma)
         
     if args.word:
         do(explorer, args.word, args)

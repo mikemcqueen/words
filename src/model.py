@@ -11,16 +11,18 @@ G4_2b_it =  "google/gemma-4-E2B-it"
 G4_4b_it =  "google/gemma-4-E4B-it"
 GLM47 =     "mlx-community/GLM-4.7-Flash-4bit"
 
-from info import info
+from src.info import info
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM, AutoProcessor
 from types import SimpleNamespace
 import sys
 import torch
 
 try:
-    from mlx_lm import load as mlx_load, generate as mlx_generate
+    from mlx_lm import load as mlx_load, generate as mlx_generate  # pyright: ignore[reportMissingImports]
     HAS_MLX = True
 except ImportError:
+    mlx_load = None
+    mlx_generate = None
     HAS_MLX = False
 
 """
@@ -140,6 +142,7 @@ def _load_model_mlx(name: str):
     if not HAS_MLX:
         print("MLX not available. Install with: pip install mlx-lm")
         exit()
+    assert mlx_load is not None
     model, tokenizer = mlx_load(name)
     model.is_mlx = True
     model.model_name = name
@@ -154,6 +157,7 @@ def _load_model(name: str):
         )
         return model, False
 
+    """
     if is_gemma_3(name):
         if needs_quantizing(name):
             quant_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
@@ -192,6 +196,7 @@ def _load_model(name: str):
             device_map={"": "cuda:0"}
         )
         return model, False
+    """
 
     print(f"_load_model(): unknown model name: '{name}'")
     exit()
@@ -262,6 +267,7 @@ def adjust_thinking(payload: dict, model_id: str, thinking: bool) -> None:
 def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> str:
     """Unified generation for torch and MLX models."""
     if getattr(model, 'is_mlx', False):
+        assert mlx_generate is not None
         return mlx_generate(model, tokenizer, prompt=prompt,
                            sampler=sampler, max_tokens=max_tokens)
     else:

@@ -5,9 +5,10 @@ from pathlib import Path
 
 import numpy as np
 
-import compare_native
-from compare import _prefetch
-from score import score_eval_results
+from src import compare_native
+
+from src.compare import _prefetch
+from src.score import score_eval_results
 
 
 class EvalResultsGeneratorsTests(unittest.TestCase):

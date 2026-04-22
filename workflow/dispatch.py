@@ -12,7 +12,7 @@ def _unknown(command, tok, registry):
     return 2
 
 
-def registry_key(registry, key: str) -> str:
+def registry_key(registry, key: str) -> str | None:
     if key in registry:
         return key
     # TODO: look up partial matches
@@ -39,7 +39,7 @@ def dispatch_help(command, registry, opts, argv):
         print(_listing(registry))
         return 0
     head = argv[0].lower()
-    key = registry_key(command, registry, head)
+    key = registry_key(registry, head)
     if key:
         child = f"{command} {key}" if command else key
         return registry[key].help(child, opts, argv[1:])

@@ -17,7 +17,7 @@ from pathlib import Path
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-from common import (load_expected_pairs, load_eval_results, parse_yesno_response,
+from src.common import (load_expected_pairs, load_eval_results, parse_yesno_response,
                     pair_has_yes, discover_files_all, compute_stats,
                     print_discovery_ranked, resolve_key,
                     add_print_keys_arg, print_displayed_keys)
@@ -57,7 +57,7 @@ def print_displayed_pids(rows) -> None:
 @method("top-token")
 def method_top_token(logprobs: dict) -> dict:
     """Return dict mapping each logprobs key to TokenLabel(token, label=None)."""
-    result = dict(logprobs=logprobs)
+    result: dict = dict(logprobs=logprobs)
     for key, value in logprobs.items():
         result[key] = TokenLabel(token=extract_top_token(value), label=None)
     return result
@@ -83,6 +83,7 @@ Examples:
                         help="Scoring methodology (default: top-token)")
     parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
                         help="sort field for directory mode: score (default), FP, FN")
+
     limit_group = parser.add_mutually_exclusive_group()
     limit_group.add_argument("--top", type=int, default=None, metavar="K",
                              help="limit display to top K results (directory mode only)")
@@ -90,6 +91,7 @@ Examples:
                              help="limit display to results with score >= M.N (directory mode only)")
     parser.add_argument("-k", "--keys", type=str, default=None, metavar="KEYS",
                         help="comma-separated discovery keys to score (directory mode only)")
+
     print_group = parser.add_mutually_exclusive_group()
     add_print_keys_arg(print_group, help_text="print displayed keys as a comma-separated list (directory mode only)")
     print_group.add_argument("--pp", "--print-pids", dest="print_pids", action="store_true",

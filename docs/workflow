@@ -1,10 +1,17 @@
+Q1_in   : 1st-pass in queue. For automated YES/NO classifier (evalpair.py)
 Q1_out  : 1st-pass output queue. From automated YES/NO classifier (evalpair.py)
 R1      : 1st-pass results. Results from 1st-pass output queue.
 R1_filt : 1st-pass results filtered. Results minus all results (C_all) that have already been reviewed.
 R1_yes  : 1st-pass results yes. Results auto-classified as YES from 1st-pass.
 R1_no   : 1st-pass results no. Results auto-classified as NO from 1st-pass.
-Q1_yes  : 1st-pass YES queue. Items from 1st-pass output queue awaiting manual YES classification
-D1      : 1st-pass done. Complete set of items that have completed 1st-pass classification
+Q1_yes  : 1st-pass YES queue. Items auto-classified YES awaiting manual YES classification.
+
+See NOTE below. Need logical/naming convention for these.
+
+D1_wf?  : 1st-pass (workflow)done. Cumulative items that have completed 1st-pass classification *workflow*
+P1_done? : alternate naming
+D1_?
+Q1_done?: 1st-pass queue done/history. Cumulative items that have completed 1st-pass classification *step*
 
 Q2_in   : 2nd-pass input queue. Items awaiting 2nd pass.
 
@@ -12,20 +19,38 @@ C_yes   : Classified YES. Manually classified YES
 C_no    : Classified NO. Manually classified NO
 C_all   : Classified all. C_yes ∪ C_no
 
-1.0) I have a list of pairs I'd like to sumbit to the 1st-pass YES/NO classifier.
+1.0) SUBMIT: I list of pairs to submit to the 1st-pass YES/NO classifier.
+  a) Copy sorted/unique pairs to input queue.
+     sort -u input_pairs > P1/queued/pairs
 
-1.1) There are results (R1) to process from the 1st-pass YES/NO classifier (Q1_out).
-  a) Add the results to the "1st-pass classification done" set.                D1 <- (D1 ∪ R1)
-     i. Might want to add to a "model specific" set also/instead.              Dm <- (Dm ∪ R1)
-  b) Filter any results that have already been manually classified.            R1_filt <- R1 - C_all
-  c) Split results into YES and NO (filter.py).                                R1_filt -> (R1_yes, R1_no)
+1.1) EVAL: There are pairs in the 1-pass YES/NO classifier input queue that I want to evaluate.
+  a) Copy unclassified pairs to running directory.
+        comm -23 P1/queued/pairs D1/pairs > /tmp/pairs
+        comm -23 C/all/pairs /tmp/pairs > P1/running/pairs
+  b) Move original pairs to running directory (for revert support).
+        mv P1/queued/pairs P1/running/pairs.orig
+
+1.2) COMPLETE: There are completed results to process from the 1st-pass YES/NO classifier.
+  a) Split results into YES and NO (filter.py).                                R1_filt -> (R1_yes, R1_no)
      i. YES go to "need manual review" queue.                                  Q1_yes <- Q1_yes ∪ R1_yes
-    ii. NO go to the "need 2nd pass" queue.                                    Q2_in <- Q2_in ∪ R1_no
+        filter.py -y P1/running/result-file > P2/queued/result-file
+    ii. NO go to the "need another automated pass" queue.                      Q2_in <- Q2_in ∪ R1_no
+        filter.py -n P1/running/result-file > P3/queued/result-file
+  c) Add pairs to the "1st-pass classification done" set.                      D1_pairs <- (D1_pairs ∪ R1_pairs)
+        mv D1/pairs D1/pairs.last
+        cat D1/pairs.last P1/running/pairs | sort -u > D1/pairs
+     i. Might want to add to a "model specific" set also/instead.              Dm_pairs <- (Dm_pairs ∪ R1_pairs)
+  d) Cleanup running files (delete or store in done)
+        rm P1/running/pairs
+        mv P1/running/pairs.orig P1/done/files/pairs
+        mv P1/running/result-file P1/done/files
 
-1.2) There are results (M1_yes) to process in the 1st-pass manual review YES queue (Q1_yes).
-  a) Manually classify YES results, leaving remainder as OTHER (tbd).          M1_yes -> (Y, M1_other)
-  b) Add YES results to YES-classified set.                                    C_yes = C_yes ∪ Y
-  c) Do something with OTHER results:
+1.3) There are results to process in the 2nd-pass manual review YES queue (Q1_yes).
+  a) Copy manually unclassified pairs to reviewing direcdtory.                 R1_filt <- R1 - C_all
+  b) Move original for revert?
+  c) Manually classify YES results, leaving remainder as OTHER (tbd).          M1_yes -> (Y, M1_other)
+  d) Add YES results to YES-classified set.                                    C_yes = C_yes ∪ Y
+  e) Do something with OTHER results:
      i. If OTHER have been manually classified NO, add to NO-classified set.   C_no = C_no ∪ M1_other
     ii. Else if OTHER remain unclassified, add to "need 2nd pass" queue.       Q2_in <- Q2_in ∪ M1_other
    iii. Maybe it's a mix of both. Split OTHER, execute i. or ii. depending.

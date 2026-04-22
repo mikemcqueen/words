@@ -30,7 +30,7 @@ def find_pairs(
     word_set: set[str],
     pair_map: dict[str, set[str]],
     args
-) -> None:
+) -> dict:
     """
     For each word in wordlist, load its word-prob file, extract potential pair words,
     and print valid pairs (with checkmark if not already in pair map).

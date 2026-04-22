@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from common import (compute_stats, expected_yesno_from_labeled_result, print_bad_pairs,
+from src.common import (compute_stats, expected_yesno_from_labeled_result, print_bad_pairs,
                     print_displayed_keys, print_stats)
-from score import TokenLabel, resolve_pair_label
+from src.score import TokenLabel, resolve_pair_label
 
 
 ENSEMBLE_RULES_2 = ["OR", "AND"]
@@ -49,7 +49,7 @@ def apply_ensemble_labeled(results_list, rule_name):
         if expected is None:
             continue
 
-        combined_result = {'logprobs': {}}
+        combined_result: dict = {'logprobs': {}}
         for dir_ in dirs:
             tokens = [r[dir_].token for r in results]
             yes_count = sum(1 for t in tokens if t == 'YES')
@@ -312,6 +312,8 @@ def _bitmask_combine_colwise(bits_per_dir, dirs, idx, rule):
             c = yb[idx[:, 0]]
             for j in range(1, idx.shape[1]):
                 c = c & yb[idx[:, j]]
+        else:
+            raise ValueError(f"unknown rule: {rule}")
         combined.append(c)
     return combined
 
@@ -462,11 +464,11 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
                     dir_maj = three['maj'][d]
                     any_yes = dir_maj.copy() if any_yes is None else any_yes | dir_maj
                 batch_results.append((' MAJORITY', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
-            for suffix, correct, fp, fn in batch_results:
-                key_fn = lambda ci, _idx=idx, _suffix=suffix: (
+            for suffix, combined, correct, fp, fn in batch_results:
+                key_fn_3way = lambda ci, _idx=idx, _suffix=suffix: (
                     ','.join(key_list[j] for j in _idx[ci]) + _suffix)
                 counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
-                                      key_fn, sort_key)
+                                      key_fn_3way, sort_key)
     elif r == 5:
         three_by_max = _build_three_by_max(bits_per_dir, dirs, n_keys, do_or, do_and, do_maj)
 
@@ -547,24 +549,24 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
                             any_yes |= dir_maj
                     batch_results.append((' MAJORITY', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
                 for suffix, any_yes, correct, fp, fn in batch_results:
-                    def key_fn(ci, _three=three, _two=two, _c_idx=c_idx,
-                               _row_start=row_start, _B=B, _suffix=suffix):
+                    def key_fn_5way(ci, _three=three, _two=two, _c_idx=c_idx,
+                                    _row_start=row_start, _B=B, _suffix=suffix):
                         row = ci // _B + _row_start
                         col = ci % _B
                         a_idx, b_idx = int(_three['ab'][row, 0]), int(_three['ab'][row, 1])
                         d_idx, e_idx = int(_two['de'][col, 0]), int(_two['de'][col, 1])
                         return ','.join(key_list[x] for x in (a_idx, b_idx, _c_idx, d_idx, e_idx)) + _suffix
                     counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
-                                           key_fn, sort_key)
+                                           key_fn_5way, sort_key)
     else:
         for idx in _combo_batches_np(n_keys, r, 1_000_000):
             batch_results = []
             run_rules(idx, batch_results)
             for suffix, combined, correct, fp, fn in batch_results:
-                key_fn = lambda ci, _idx=idx, _suffix=suffix: (
+                key_fn_nway = lambda ci, _idx=idx, _suffix=suffix: (
                     ','.join(key_list[j] for j in _idx[ci]) + _suffix)
                 counter = _heap_update(heap, counter, heap_max, correct, fp, fn,
-                                       key_fn, sort_key)
+                                       key_fn_nway, sort_key)
 
     rows = {}
     for _, _, label, stats in heap:

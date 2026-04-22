@@ -8,9 +8,11 @@ import math
 import sys
 import torch
 
-from common import file_pair_generator, single_pair_generator, parse_yesno_response
-from info import info
-from model import load_model, clear_cache
+from src.common import file_pair_generator, single_pair_generator, parse_yesno_response
+from src.info import info
+from src.model import load_model, clear_cache
+from src.client import resolve_host, query_model_id, send_openai_request
+
 from pathlib import Path
 
 # Write tuples to file (already sorted by probability)
@@ -81,7 +83,6 @@ def llm_prefill(mpd, prompt: str):
     return inputs
 
 async def _remote_logprobs(args, prompt: str):
-    from client import send_openai_request
     async with httpx.AsyncClient() as client:
         _, _, payload = await send_openai_request(
             client, args, prompt,
@@ -200,7 +201,6 @@ def main():
     pairs = single_pair_generator(args.pair) if args.pair else file_pair_generator(args.pair_file)
 
     if args.host:
-        from client import resolve_host, query_model_id
         args.host = resolve_host(args.host)
         args.model_id = query_model_id(args.host, args.port, args.key)
         for csv_pair in pairs:

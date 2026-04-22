@@ -64,7 +64,7 @@ def wipe_many(args, opts) -> bool:
     return success
 """
 
-def run(command: str, opts, argv: [str]) -> int:
+def run(command: str, opts, argv: list[str]) -> int:
     print(f"not implemented")
     return 1
 
@@ -85,6 +85,6 @@ def run(command: str, opts, argv: [str]) -> int:
     return 0
 
 
-def help(command: str, opts, argv: [str]) -> int:
+def help(command: str, opts, argv: list[str]) -> int:
     _parser(f"wf {command}").print_help()
     return 0

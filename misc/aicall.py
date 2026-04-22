@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+
+# mypy: disable-error-code="import-untyped"
+
 import requests
 import json
 import sys

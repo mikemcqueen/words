@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from client import query_model_id, resolve_host, send_openai_request
+from src.client import query_model_id, resolve_host, send_openai_request
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Send a single OpenAI-style prompt to the configured server"

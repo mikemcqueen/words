@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 from mlx_lm.sample_utils import make_sampler
-from model import load_model, specialize_prompt, get_yesno_answer, generate_text
+from src.model import load_model, specialize_prompt, get_yesno_answer, generate_text
 
 # Read env var at import time (cheap + safe)
 MODEL_NAME = os.environ.get("MODEL_NAME")

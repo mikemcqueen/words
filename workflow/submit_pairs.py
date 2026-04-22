@@ -1,27 +1,28 @@
+# submit_pairs.py
 
 from pathlib import Path
 from plumbum.cmd import sort
-from workflow import config, fs, log
+
+from . import fs, log, config
 
 
 def help_summary(name):
     return "pairs   — submit a pairs file into p1/queued (sorted, deduped)"
 
 
-# TODO: config.path
-def _queued_dir(opts) -> Path:
-    d = opts.dir / config.ROOT / "p1" / "queued"
-    fs.raise_if_not_dir(d)
-    return d
-
-
 def _resolve_input(argv) -> Path:
     if not argv:
-        log.error("submit pairs: missing <pair-file> argument")
-        return None
+        raise ValueError("Missing FILE parameter.")
+
     src = Path(argv[0]).resolve()
     fs.raise_if_not_file(src)
     return src
+
+
+def _make_pairs_filename(fn: str) -> str:
+    if not fn.endswith(".pairs"):
+        return fn + ".pairs"
+    return fn
 
 
 def _sort_unique(src: Path, dst: Path):
@@ -30,9 +31,9 @@ def _sort_unique(src: Path, dst: Path):
 
 def run(command, opts, argv):
     src = _resolve_input(argv)
-    dst = _queued_dir(opts) / src.name
+    dst = config.path(opts.dir, ["p1", "queued"]) / _make_pairs_filename(src.name)
     if dst.exists():
-        log.warn(f"Already queued: {dst}")
+        log.warn(f"File already in queue: {dst}")
         return 2
     _sort_unique(src, dst)
     log.success(f"Queued {dst}")

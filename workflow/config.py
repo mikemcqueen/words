@@ -1,7 +1,8 @@
 import argparse
 
 from pathlib import Path
-from workflow import fs
+
+from . import fs
 
 
 _PHASE1 = {
@@ -40,8 +41,18 @@ _PHASE2 = {
 }
 
 
+_PHASE3 = {
+    "description": "Third-pass: probably a 2nd automated pass of evalpair-classified NO results.",
+    "parts": {
+        "queued": {
+            "description": "Evalpair-classified NO result files queued for a 2nd automated pass."
+        }
+    }
+}
+
+
 _CLASSIFIED = {
-    "description": "classified pairs (and their results?)",
+    "description": "Classified pairs (and their results?)",
     "parts": {
         "yes": {
             "description": "yes"
@@ -56,37 +67,38 @@ _CLASSIFIED = {
 }
 
 
-ROOT = ".wf"
+CONFIG_ROOT = ".wf"
 
 
-LAYOUT = {
+CONFIG_LAYOUT = {
     "description": "workflow layout",
     "parts": {
         "p1":         _PHASE1,
         "p2":         _PHASE2,
+        "p3":         _PHASE3,
         "classified": _CLASSIFIED
     }
 }
 
 # not strictly necessary. but abstracts out some of the ["parts"] checking
 # from validate_parsed_args().
-def _build_parse_tree(parts: any) -> any:
-    tree = {}
-    for name in parts:
-        if "parts" in parts[name]:
-            tree[name] = _build_parse_tree(parts[name]["parts"])
+def _build_parse_tree(layout: dict) -> dict:
+    tree: dict[str, dict|None] = dict()
+    for key in layout:
+        if "parts" in layout[key]:
+            tree[key] = _build_parse_tree(layout[key]["parts"])
         else:
-            tree[name] = None
+            tree[key] = None
 
     return tree
 
 
 def validate_parsed_args(command: str, parser, args):
     command = ' '.join ([command, args.root])
-    tree =  _build_parse_tree(LAYOUT["parts"])
+    tree =  _build_parse_tree(CONFIG_LAYOUT["parts"])
     node = tree[args.root]
     #print(f"validate_path args.root {args.root}, args.path {args.path} parts {node.keys()}")
-    consumed = []
+    consumed: list[str] = []
     for name in args.path:
         if node is None:
             parser.error(f"{command} {' '.join(consumed)} does not take further arguments ({name})")
@@ -111,24 +123,25 @@ def arg_parser():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="root", required=True)
 
-    for name in LAYOUT["parts"]:
+    for name in CONFIG_LAYOUT["parts"]:
         p = sub.add_parser(name)
         p.add_argument("path", nargs="*")
 
     return parser
 
 
-def path(parts: [str], opts) -> Path:
-    path = opts.dir / config.ROOT
+def path(root_dir: Path, parts: list[str]) -> Path:
+    path = root_dir / CONFIG_ROOT
     fs.raise_if_not_dir(path)
 
-    all_parts = []
-    allowed_parts = LAYOUT["parts"]
-    for part in parts:
-        if not part in allowed_parts:
-            raise ValueError(f"{' '.join(all_parts)}/{part} is not part of the layout configuration")
-        all_parts.append(part)
-        cur_parts = cur_parts[part]["parts"] if "parts" in cur_parts[part] else {}
-        path = path / part
+    all_parts: list[str] = []
+    allowed_parts: dict = CONFIG_LAYOUT["parts"]
+    for name in parts:
+        if not name in allowed_parts:
+            raise ValueError(f"{' '.join(all_parts)}/{name} is not part of the layout configuration")
+        all_parts.append(name)
+        allowed_parts = allowed_parts[name]["parts"] if "parts" in allowed_parts[name] else {}
+        path = path / name
         fs.raise_if_not_dir(path)
+
     return path
