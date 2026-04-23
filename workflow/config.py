@@ -1,7 +1,7 @@
-import argparse
+# config.py
 
+from dataclasses import dataclass
 from pathlib import Path
-
 from workflow import fs
 
 
@@ -80,54 +80,50 @@ CONFIG_LAYOUT = {
     }
 }
 
-# not strictly necessary. but abstracts out some of the ["parts"] checking
-# from validate_parsed_args().
-def _build_parse_tree(layout: dict) -> dict:
-    tree: dict[str, dict|None] = dict()
-    for key in layout:
-        if "parts" in layout[key]:
-            tree[key] = _build_parse_tree(layout[key]["parts"])
-        else:
-            tree[key] = None
 
-    return tree
+@dataclass(frozen=True)
+class LayoutArgs:
+    _parts: tuple[str, ...]
+    _node: dict
+    _invalid: str | None = None
+
+    @property
+    def is_leaf(self) -> bool:
+        return "parts" not in self._node
+
+    # an invalid argument was encountered
+    @property
+    def has_invalid(self) -> bool:
+        return self._invalid is not None
+
+    # i don't undertand how this works. boolean magic.
+    @property
+    def has_missing(self) -> bool:
+        return not self._parts or not self.is_leaf
+
+    @property
+    def ok(self) -> bool:
+        return not (self.has_invalid or self.has_missing)
 
 
-def validate_parsed_args(command: str, parser, args):
-    command = ' '.join ([command, args.root])
-    tree =  _build_parse_tree(CONFIG_LAYOUT["parts"])
-    node = tree[args.root]
-    #print(f"validate_path args.root {args.root}, args.path {args.path} parts {node.keys()}")
+def layout_args(argv: list[str]) -> LayoutArgs:
+    node = CONFIG_LAYOUT
     consumed: list[str] = []
-    for name in args.path:
-        if node is None:
-            parser.error(f"{command} {' '.join(consumed)} does not take further arguments ({name})")
 
-        if name not in node:
-            parser.error(
-                f"invalid choice {name!r} after {command} {' '.join(consumed)}; "
-                f"choose from {', '.join(node.keys())}"
-            )
-
+    for name in argv:
+        allowed = node.get("parts", {})
+        if not allowed or name not in allowed:
+            return LayoutArgs(_parts=tuple(consumed), _node=node, _invalid=name)
+        #if name not in allowed:
+        #return LayoutArgs(parts=tuple(consumed), node=node, invalid=name), False
+        node = allowed[name]
         consumed.append(name)
-        node = node[name]
 
-    if isinstance(node, dict):
-        parser.error(
-            f"incomplete path {command} {' '.join(consumed)}; "
-            f"expected one of: {', '.join(node.keys())}"
-        )
+    return LayoutArgs(_parts=tuple(consumed), _node=node)
 
 
-def arg_parser():
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="root", required=True)
-
-    for name in CONFIG_LAYOUT["parts"]:
-        p = sub.add_parser(name)
-        p.add_argument("path", nargs="*")
-
-    return parser
+def _root_parts() -> dict:
+    return CONFIG_LAYOUT["parts"]
 
 
 def path(root_dir: Path, parts: list[str]) -> Path:
@@ -135,7 +131,7 @@ def path(root_dir: Path, parts: list[str]) -> Path:
     fs.raise_if_not_dir(path)
 
     all_parts: list[str] = []
-    allowed_parts: dict = CONFIG_LAYOUT["parts"]
+    allowed_parts: dict = _root_parts();
     for name in parts:
         if not name in allowed_parts:
             raise ValueError(f"{' '.join(all_parts)}/{name} is not part of the layout configuration")

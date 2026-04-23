@@ -7,6 +7,6 @@ def run(command, opts, argv):
     return 0
 
 
-def help(command, opts, argv):
+def show_help(command, opts, argv):
     print(help_summary(command))
     return 0

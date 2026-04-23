@@ -85,6 +85,6 @@ def run(command: str, opts, argv: list[str]) -> int:
     return 0
 
 
-def help(command: str, opts, argv: list[str]) -> int:
+def show_help(command: str, opts, argv: list[str]) -> int:
     _parser(f"wf {command}").print_help()
     return 0

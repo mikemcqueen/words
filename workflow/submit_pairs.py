@@ -3,7 +3,7 @@
 from pathlib import Path
 from plumbum.cmd import sort
 
-from workflow import fs, log, config
+from workflow import fs, log, config, usage
 
 
 def help_summary(name):
@@ -40,7 +40,5 @@ def run(command, opts, argv):
     return 0
 
 
-def help(command, opts, argv):
-    print(help_summary(command))
-    print("usage: wf submit pairs <pair-file>")
-    return 0
+def show_help(command, opts, argv):
+    return usage.default_help(help_summary(command), argv, "usage: wf submit pairs <pair-file>")

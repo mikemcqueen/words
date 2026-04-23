@@ -4,17 +4,15 @@ from pathlib import Path
 
 from src.filter import filter_results
 
-from workflow import log, fs, config
+from workflow import log, fs, config, usage
 
 
 def help_summary(name):
     return "pairs   — complete a running pairs file"
 
 
-def help(command, opts, argv):
-    print(help_summary(command))
-    print("usage: wf complete pairs [pair-file]")
-    return 0
+def show_help(command, opts, argv):
+    return usage.default_help(help_summary(command), argv, "usage: wf complete pairs [pair-file]")
 
 
 def _resolve_pair_file(src_dir: Path, argv) -> Path:

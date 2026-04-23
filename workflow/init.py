@@ -1,7 +1,7 @@
 # init.py
 
 from pathlib import Path
-from workflow import log, config, fs
+from workflow import log, config, fs, usage
 
 
 def help_summary(name):
@@ -27,11 +27,12 @@ def init(opts) -> None:
 
 
 def run(command: str, opts, argv: list[str]) -> int:
+    if argv:
+        return usage.invalid_argument(argv[0], usage.default_help_text(help_summary(command)))
     init(opts)
     log.success(f"Initialized {opts.dir}")
     return 0
 
 
-def help(command: str, opts, argv: list[str]) -> int:
-    print(help_summary(command))
-    return 0
+def show_help(command: str, opts, argv: list[str]) -> int:
+    return usage.default_help(help_summary(command), argv)
