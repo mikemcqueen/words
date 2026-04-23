@@ -39,7 +39,7 @@ async def async_request_and_classify(client, args, prompt, label=None):
 
     for attempt in range(3):
         t0 = time.monotonic()
-        response, _, payload = await send_openai_request(client, args, prompt, label=label, model="1454cffb1a21737e162f508e5bc70be9def89276")
+        response, _, payload = await send_openai_request(client, args, prompt, label=label)
         duration = time.monotonic() - t0
         if payload.get("finish_reason") != "stop":
             record_retry(payload, duration)

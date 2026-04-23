@@ -25,7 +25,7 @@ def raise_if_not_exists(path: Path):
 
 def raise_if_exists(path: Path):
     if path.exists():
-        file_already_exists_error(path)
+        raise file_already_exists_error(path)
 
 
 def raise_if_not_dir(path: Path):

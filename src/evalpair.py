@@ -416,7 +416,7 @@ def main():
         try:
             if not args.logprobs:
                 print(f"Thinking: {args.thinking}")
-                retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
+                retry_map = asyncio.run(classify_pairs_async(ctx, pairs, writer))
             else:
                 orders = ["fwd", "rvs"]
                 asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer))

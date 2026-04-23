@@ -17,13 +17,13 @@ def success(msg: str, file=sys.stdout):
     _msg("bright green", msg, file=file)
 
 
-def info(msg: str, file=sys.stdout):
+def info(msg: str, file=sys.stderr):
     _msg("white", msg, file=file)
 
 
-def warn(msg: str, file=sys.stdout):
+def warn(msg: str, file=sys.stderr):
     _msg("yellow", msg, file=file)
 
 
-def error(msg: str, file=sys.stdout):
+def error(msg: str, file=sys.stderr):
     _msg("red", msg, file=file)
