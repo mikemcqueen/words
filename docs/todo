@@ -1,10 +1,15 @@
+* I should think about a quantization pass specific to my use case. Or fine tuning.
+
 * eval should require destination folder and copy to it?
 * and copy again if called again, even if already running?
-
-* creating a subparser for SHOW and typing ./wf SHOW gives weird help message that doesn't
-  include the "wf show" part. and it says it expects "root". need to set a meta="something" maybe.
+* not sure about defaulting to the exactly-one file in queue either.
+* definitely should disable it for complete (if it exists)
 
 * evalpair: open output file with exclusive write flag
+
+* see about making evalpair discovery look for & skip completed result files & extend existing
+  result files. coz i could finish the sysprompt evaluation.. on.. whatever.. phi_q4? if that
+  were the case.
 
 * FOCUS: discovery/development/refinement of review/select/retire workflow and pipeline
   * workflow
@@ -15,7 +20,7 @@
     * redefine the workflows using those defined components
     * loop
 
-* qt35-27B should always be running on an s1/pairs/2 partial dataset.
+* qt5-27B should always be running on an s1/pairs/2 partial dataset.
   * manual review of top 10% results as they come in.
 
 * run an.test4 on qt5-9b for s&g
@@ -39,7 +44,7 @@
   / quality predictor.  even after normalizing distributions, the actual top prob pair data
   is just significantly better, Qwen35 26B vs. 35B-MoE.
 
-  Just not sure the quality of these results is meaningful overall.
+  Just not sure the quality of the moe results is meaningful overall.
 
 * idea:  have a @prepare for every @method.  then can standardize on a single comma-separated
   --ma --method-arg 1,2,3. that gets passed to the @prepare method to prepare the method (initializes
@@ -90,8 +95,6 @@
   filters on the remaining YES results.
   * I suppose I should review NO results as well and not just blindly accept them as bad (although aardvark
     might not be the best test set to do that with).
-
-* tool (disposable) to parse aardvark.yesno and create .yes and .no files.
 
 * i was going to supply a .probs output to claude to have it make a python script to output the top1k words.
   but got sidetracked by fir trees.

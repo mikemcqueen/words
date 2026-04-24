@@ -7,7 +7,8 @@ from pathlib import Path
 from src import compare_native
 
 
-def filter_results(path: str, yes: bool, out, pmin = 0.5, prng = 1.0):
+def filter_results(path: str, yes: bool, out_file, pmin = 0.5, prng = 1.0):
+    # [pmin, pmin+rng) unless pmin+rng == 1.0, then [pmin, 1.0] inclusive
     pmax = pmin + prng
     if pmax == 1.0:
         pmax += 0.1
@@ -29,11 +30,11 @@ def filter_results(path: str, yes: bool, out, pmin = 0.5, prng = 1.0):
             mask = (labels != yes_label).all(axis=1)
         #pairs = block.pairs()
         for idx in np.flatnonzero(mask):
-            out(block.pair_at(idx) + "\n")
+            out_file.write(block.pair_at(idx) + "\n")
 
 
 def _filter_args(args):
-    filter_results(args.file, args.yes, sys.stdout.write, args.prob_min, args.prob_range)
+    filter_results(args.file, args.yes, sys.stdout, args.prob_min, args.prob_range)
 
 
 def _parse_args():

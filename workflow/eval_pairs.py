@@ -31,19 +31,20 @@ def _resolve_pair_file(qdir: Path, argv) -> Path | None:
 
 def _eval_pairs(src_pairs: Path, opts) -> Path:
     dst_dir = config.path(opts.dir, ["p1", "running"]);
-    dst_pairs = dst_dir / src_path.name
-    fs.raise_if_exists(dst_path)
+    dst_pairs = dst_dir / src_pairs.name
+    fs.raise_if_exists(dst_pairs)
 
-    dst_orig = dst_dir / f"{src_path.name}.orig"
-    fs.raise_if_exists(dst_orig)
+    #dst_orig = dst_dir / f"{src_path.name}.orig"
+    #fs.raise_if_exists(dst_orig)
 
-    done_pairs = config.path(opts.dir, ["p1", "done"]) / "pairs"
-    if done_path.is_file():
+    done_pairs = config.path(opts.dir, ["p1", "done"]) / "p1_done"
+    if done_pairs.is_file():
         (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
-        src_pairs.rename(dst_orig)
+        #src_pairs.rename(dst_orig)
+        src_pairs.unlink()
     else:
-        src_pairs.rename(dst_orig)
-        dst_pairs.write_bytes(dst_orig.read_bytes())
+        src_pairs.rename(dst_pairs)
+        #dst_pairs.write_bytes(dst_orig.read_bytes())
 
     return dst_pairs
 
@@ -60,5 +61,5 @@ def run(command, opts, argv):
     
     # TODO: (optionally?) copy file to somewhere specified by user
 
-    log.success(f"Ready for evalpairs: {dst_pairs}")
+    log.success(f"Ready for evalpairs: {src_pairs.name}")
     return 0

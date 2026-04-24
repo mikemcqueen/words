@@ -1,17 +1,17 @@
 # usage.py
 
 import sys
-
+from workflow import config, log
 
 def invalid_argument(tok: str, details: str | None = None) -> int:
-    print(f"invalid argument: {tok!r}", file=sys.stderr)
+    log.error(f"invalid argument: {tok!r}")
     if details:
         print(details, file=sys.stderr)
     return 2
 
 
 def missing_argument(details: str | None = None) -> int:
-    print("missing required argument", file=sys.stderr)
+    log.error("missing required argument")
     if details:
         print(details, file=sys.stderr)
     return 2
@@ -32,14 +32,16 @@ def default_help(summary: str, argv: list[str], usage: str | None = None) -> int
     return 0
 
 
-def _usage_text(command: str, parts: list[str], node: dict) -> str:
+def _usage_text(command: str, args: config.LayoutArgs) -> str: #parts: list[str], node: dict) -> str:
     usage = f"wf {command}" if command else "wf"
-    if parts:
-        usage = f"{usage} {' '.join(parts)}"
+    if args.parts:
+        usage = f"{usage} {' '.join(args.parts)}"
 
-    children = node.get("parts", {})
+    children = args.node.get("parts", {})
     if children:
-        usage = f"{usage} " + "|".join(children.keys())
+        usage = f"{usage} "
+        options = "|".join(children.keys())
+        usage += f"[{options}]" if args.has_content else options
 
     return f"usage: {usage}"
 
@@ -57,16 +59,16 @@ def _format_targets(node: dict) -> list[str]:
     return lines
 
 
-def _layout_help_text(command: str, args, summary: str) -> str:
-    parts = list(args._parts)
-    node = args._node
+def _layout_help_text(command: str, args: config.LayoutArgs, summary: str) -> str:
+    #parts = args.parts
+    node = args.node
 
     lines: list[str] = []
     if summary:
         lines.append(summary)
-    lines.append(_usage_text(command, parts, node))
+    lines.append(_usage_text(command, args)) #parts, node))
 
-    description = node.get("description")
+    description = node.get("description", "")
     if description:
         lines.extend(["", description])
 
@@ -76,7 +78,7 @@ def _layout_help_text(command: str, args, summary: str) -> str:
     return "\n".join(lines)
 
 
-def show_layout_help(command: str, args, summary: str) -> int:
+def show_layout_help(command: str, args: config.LayoutArgs, summary: str) -> int:
     details = _layout_help_text(command, args, summary)
     if args.has_invalid:
         return invalid_argument(args._invalid, details)

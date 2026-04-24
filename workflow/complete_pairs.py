@@ -1,10 +1,15 @@
 # complete_pairs.py
 
-from pathlib import Path
+import shutil
 
+from pathlib import Path
+from plumbum.cmd import cat, sort
+from workflow import log, fs, config, usage
 from src.filter import filter_results
 
-from workflow import log, fs, config, usage
+
+def _usage_text():
+    return "usage: wf complete pairs PAIRS-FILE"
 
 
 def help_summary(name):
@@ -12,54 +17,89 @@ def help_summary(name):
 
 
 def show_help(command, opts, argv):
-    return usage.default_help(help_summary(command), argv, "usage: wf complete pairs [pair-file]")
+    return print(_usage_text())
 
 
-def _resolve_pair_file(src_dir: Path, argv) -> Path:
-    # if filename was supplied, use it
-    if argv:
-        name = argv[0]
-        src_path = src_dir / Path(name).name
-        fs.raise_if_not_file(src_path)
-        return src_path
+def _resolve_pairs_path(src_dir: Path, argv) -> Path:
+    pairs_fn = argv[0]
+    pairs_path = src_dir / Path(pairs_fn).name
+    fs.raise_if_not_file(pairs_path)
+    return pairs_path
 
-    # no filename was supplied. use pairs file in src_dir if there is exactly one.
-    paths: list[Path] = []
+
+def _resolve_results_path(src_dir: Path, pairs_path: Path) -> Path:
+    results_path = None
+    count = 0
     for p in src_dir.iterdir():
-        if p.is_file() and p.suffix == ".pairs":
-            if len(paths):
-                raise ValueError("Missing FILE parameter. Use `wf show pairs` to see files.")
-            paths.append(p)
+        if p.suffix == ".jsonl" and p.name.startswith(pairs_path.stem) and p.is_file():
+            results_path = p
+            count += 1
 
-    if not paths:
-        raise ValueError(f"No .pairs files found in {src_dir}")
-    return paths[0]
+    if count == 0:
+        raise ValueError("result file not found for pairs file: {pairs_path.name}")
+    if count > 1:
+        raise ValueError("multiple result files found for pairs file: {pairs_path.name}")
+    assert count == 1
+    return results_path
 
 
-def _complete(src_pairs: Path, opts) -> int:
-    log.info(src_pairs)
+def _merge_with_done_pairs(src_pairs: Path, done_pairs: Path):
+    done_pairs_old = done_pairs.parent / "p1_done.old"
+    done_pairs.rename(done_pairs_old)
+    # preserve done_pairs across unexpected failures
+    try:
+        # done_pairs <- old_done_pairs ∪ src_pairs
+        ((cat[str(done_pairs_old), str(src_pairs)] | sort["-u"]) > str(done_pairs))()
+    except Exception as e:
+        done_pairs_old.rename(done_pairs)
+        raise e
 
-    src_results = src_pairs.parent / (src_pairs.name + ".jsonl")
-    fs.raise_if_not_file(src_results)
+# Workflow 1.2
+def _complete(src_pairs: Path, src_results: Path, opts) -> int:
+    log.info(f"found: {src_pairs.name}, {src_results.name}")
 
+    # 1.2.a.i
     yes_dir = config.path(opts.dir, ["p2", "queued"])
     yes_results = yes_dir / (src_pairs.name + ".yes")
-    fs.raise_if_exists(yes_results)
+    if not opts.force:
+        fs.raise_if_exists(yes_results)
     with yes_results.open("w") as f:
-        filter_results(str(src_results), True, f.write)
+        filter_results(str(src_results), True, f)
 
+    # 1.2.a.ii.
     no_dir = config.path(opts.dir, ["p3", "queued"])
     no_results = no_dir / (src_pairs.name + ".no")
-    fs.raise_if_exists(no_results)
+    if not opts.force:
+        fs.raise_if_exists(no_results)
     with no_results.open("w") as f:
-        filter_results(str(src_results), False, f.write)
+        filter_results(str(src_results), False, f)
 
-    # TODO 
+    # 1.2.b
+    done_dir = config.path(opts.dir, ["p1", "done"])
+    done_pairs = done_dir / "p1_done"
+    if done_pairs.exists():
+        # done <- done ∪ src 
+        _merge_with_done_pairs(src_pairs, done_pairs)
+    else:
+        # done <- src
+        done_pairs.write_bytes(src_pairs.read_bytes())
 
+    # 1.2.c
+    dst_pairs = config.path(opts.dir, ["p1", "done", "pairs"]) / src_pairs.name
+    src_pairs.rename(dst_pairs)    
+    dst_results = config.path(opts.dir, ["p1", "done", "results"]) / src_results.name
+    src_results.rename(dst_results)
+
+    log.success(f"Completed pairs {src_pairs.name}")
     return 0
 
 
 def run(command, opts, argv):
+    if not argv:
+        details = _usage_text()
+        return usage.missing_argument(details)
+
     src_dir = config.path(opts.dir, ["p1", "running"])
-    src_path = _resolve_pair_file(src_dir, argv)
-    return _complete(src_path, opts)
+    pairs_path = _resolve_pairs_path(src_dir, argv)
+    results_path = _resolve_results_path(src_dir, pairs_path)
+    return _complete(pairs_path, results_path, opts)

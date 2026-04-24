@@ -18,6 +18,7 @@ COMMANDS = {
 def _make_parser():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("-d", "--dir", type=Path)
+    p.add_argument("-f", "--force", action="store_true")
     p.add_argument("-h", "--help", action="store_true")
     return p
 

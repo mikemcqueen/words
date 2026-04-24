@@ -19,7 +19,12 @@ _PHASE1 = {
         },
         "done": {
             "description": ("Pairs files and their associated result files that have "
-                            "completed automated classification by evalpair.")
+                            "completed automated classification by evalpair."),
+            "content": True,
+            "parts": {
+                "pairs": { "description": "done pairs archive" },
+                "results": { "description": "done results archive" }
+            }
         }
     }
 }
@@ -83,23 +88,27 @@ CONFIG_LAYOUT = {
 
 @dataclass(frozen=True)
 class LayoutArgs:
-    _parts: tuple[str, ...]
-    _node: dict
+    parts: tuple[str, ...]
+    node: dict
     _invalid: str | None = None
 
     @property
     def is_leaf(self) -> bool:
-        return "parts" not in self._node
+        return "parts" not in self.node
+
+    @property
+    def has_content(self) -> bool:
+        return self.node.get("content", False)
 
     # an invalid argument was encountered
     @property
     def has_invalid(self) -> bool:
         return self._invalid is not None
 
-    # i don't undertand how this works. boolean magic.
+    # boolean magic.
     @property
     def has_missing(self) -> bool:
-        return not self._parts or not self.is_leaf
+        return not (self.parts and (self.is_leaf or self.has_content))
 
     @property
     def ok(self) -> bool:
@@ -113,13 +122,13 @@ def layout_args(argv: list[str]) -> LayoutArgs:
     for name in argv:
         allowed = node.get("parts", {})
         if not allowed or name not in allowed:
-            return LayoutArgs(_parts=tuple(consumed), _node=node, _invalid=name)
+            return LayoutArgs(parts=tuple(consumed), node=node, _invalid=name)
         #if name not in allowed:
         #return LayoutArgs(parts=tuple(consumed), node=node, invalid=name), False
         node = allowed[name]
         consumed.append(name)
 
-    return LayoutArgs(_parts=tuple(consumed), _node=node)
+    return LayoutArgs(parts=tuple(consumed), node=node)
 
 
 def _root_parts() -> dict:

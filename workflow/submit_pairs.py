@@ -25,18 +25,13 @@ def _make_pairs_filename(fn: str) -> str:
     return fn
 
 
-def _sort_unique(src: Path, dst: Path):
-    (sort["-u", str(src)] > str(dst))()
-
-
 def run(command, opts, argv):
     src = _resolve_input(argv)
     dst = config.path(opts.dir, ["p1", "queued"]) / _make_pairs_filename(src.name)
-    if dst.exists():
-        log.warn(f"File already in queue: {dst}")
-        return 2
-    _sort_unique(src, dst)
-    log.success(f"Queued {dst}")
+    fs.raise_if_exists(dst)
+
+    (sort["-u", str(src)] > str(dst))()
+    log.success(f"Submitted pairs {src.name}")
     return 0
 
 

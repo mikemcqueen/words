@@ -3,19 +3,19 @@ import errno
 from pathlib import Path
 
 def not_a_directory_error(path: Path): 
-    return NotADirectoryError(errno.ENOTDIR, "Not a directory", path)
+    return NotADirectoryError(errno.ENOTDIR, "not a directory:", path)
 
 
 def not_a_file_error(path: Path): 
-    return ValueError(f"Expected a regular file: {path}")
+    return ValueError(f"not a regular file: {path}")
 
 
 def file_not_found_error(path: Path): 
-    return FileNotFoundError(errno.ENOENT, "File not found", path)
+    return FileNotFoundError(errno.ENOENT, "file not found:", path)
 
 
 def file_already_exists_error(path: Path): 
-    return ValueError(f"File already exists: {path}")
+    return ValueError(f"file already exists: {path}")
 
 
 def raise_if_not_exists(path: Path):
