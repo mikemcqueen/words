@@ -13,18 +13,11 @@ def _usage_text():
 
 
 def help_summary(name):
-    return "pairs   — complete a running pairs file"
+    return "pairs   — complete a pairs file evaluation"
 
 
 def show_help(command, opts, argv):
     return print(_usage_text())
-
-
-def _resolve_pairs_path(src_dir: Path, argv) -> Path:
-    pairs_fn = argv[0]
-    pairs_path = src_dir / Path(pairs_fn).name
-    fs.raise_if_not_file(pairs_path)
-    return pairs_path
 
 
 def _resolve_results_path(src_dir: Path, pairs_path: Path) -> Path:
@@ -36,9 +29,9 @@ def _resolve_results_path(src_dir: Path, pairs_path: Path) -> Path:
             count += 1
 
     if count == 0:
-        raise ValueError("result file not found for pairs file: {pairs_path.name}")
+        raise ValueError(f"result file not found for pairs file: {pairs_path.name}")
     if count > 1:
-        raise ValueError("multiple result files found for pairs file: {pairs_path.name}")
+        raise ValueError(f"multiple result files found for pairs file: {pairs_path.name}")
     assert count == 1
     return results_path
 
@@ -58,7 +51,7 @@ def _merge_with_done_pairs(src_pairs: Path, done_pairs: Path):
 def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     log.info(f"found: {src_pairs.name}, {src_results.name}")
 
-    # 1.2.a.i
+    # 1.2.a.i. YES go to "need manual review" queue.
     yes_dir = config.path(opts.dir, ["p2", "queued"])
     yes_results = yes_dir / (src_pairs.name + ".yes")
     if not opts.force:
@@ -66,7 +59,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     with yes_results.open("w") as f:
         filter_results(str(src_results), True, f)
 
-    # 1.2.a.ii.
+    # 1.2.a.ii. NO go to the "need another automated pass" queue.
     no_dir = config.path(opts.dir, ["p3", "queued"])
     no_results = no_dir / (src_pairs.name + ".no")
     if not opts.force:
@@ -74,7 +67,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     with no_results.open("w") as f:
         filter_results(str(src_results), False, f)
 
-    # 1.2.b
+    # 1.2.b. Add pairs to the "1st-pass classification done" set.
     done_dir = config.path(opts.dir, ["p1", "done"])
     done_pairs = done_dir / "p1_done"
     if done_pairs.exists():
@@ -83,8 +76,8 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     else:
         # done <- src
         done_pairs.write_bytes(src_pairs.read_bytes())
-
-    # 1.2.c
+        
+    # 1.2.c. Cleanup files
     dst_pairs = config.path(opts.dir, ["p1", "done", "pairs"]) / src_pairs.name
     src_pairs.rename(dst_pairs)    
     dst_results = config.path(opts.dir, ["p1", "done", "results"]) / src_results.name
@@ -99,7 +92,9 @@ def run(command, opts, argv):
         details = _usage_text()
         return usage.missing_argument(details)
 
-    src_dir = config.path(opts.dir, ["p1", "running"])
-    pairs_path = _resolve_pairs_path(src_dir, argv)
+    src_dir = config.path(opts.dir, ["p1", "eval"])
+    pairs_path = src_dir / argv[0]
+    fs.raise_if_not_file(pairs_path)
     results_path = _resolve_results_path(src_dir, pairs_path)
+
     return _complete(pairs_path, results_path, opts)

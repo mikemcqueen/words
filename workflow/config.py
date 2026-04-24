@@ -13,7 +13,7 @@ _PHASE1 = {
             "description": ("Pairs files queued for processing by evalpair. Use "
                             "`wf submit pairs` to enqueue.")
         },
-        "running": {
+        "eval": {
             "description": ("Pair files in active processing by evalpair, and result "
                             "files being actively updated.")
         },
@@ -36,7 +36,7 @@ _PHASE2 = {
         "queued": {
             "description": "Evalpair-classified YES result files queued for manual review."
         },
-        "reviewing": {
+        "eval": {
             "description": "Evalpair-classified YES result files being manually reviewed."
         },
         "done": {

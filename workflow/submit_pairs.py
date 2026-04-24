@@ -28,7 +28,8 @@ def _make_pairs_filename(fn: str) -> str:
 def run(command, opts, argv):
     src = _resolve_input(argv)
     dst = config.path(opts.dir, ["p1", "queued"]) / _make_pairs_filename(src.name)
-    fs.raise_if_exists(dst)
+    if not opts.force:
+        fs.raise_if_exists(dst)
 
     (sort["-u", str(src)] > str(dst))()
     log.success(f"Submitted pairs {src.name}")

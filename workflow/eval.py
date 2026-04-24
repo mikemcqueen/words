@@ -1,10 +1,17 @@
-from workflow import eval_pairs, usage, dispatch
+# eval.py
 
-SUBCOMMANDS = {"pairs": eval_pairs}
+from workflow import eval_pairs, eval_yes, eval_no, usage, dispatch
+
+
+SUBCOMMANDS = {
+    "pairs": eval_pairs,
+    "yes": eval_yes,
+    "no": eval_no
+}
 
 
 def help_summary(name):
-    return "eval    — run evaluators (pairs)"
+    return "eval    — run evaluators pairs|yes|no"
 
 
 def run(command, opts, argv):

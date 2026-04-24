@@ -38,9 +38,8 @@ C_all   : Classified all. C_yes ∪ C_no
         cat D1/pairs.last P1/running/pairs | sort -u > D1/pairs
      i. Might want to add to a "model specific" set also/instead.              Dm_pairs <- (Dm_pairs ∪ R1_pairs)
   c) Cleanup running files (delete or store in done)
-        rm P1/running/pairs
-        mv P1/running/pairs.orig P1/done/files/pairs
-        mv P1/running/result-file P1/done/files
+        mv P1/running/pairs P1/done/pairs
+        mv P1/running/result-file P1/done/results
 
 2.0) There are results to process in the 2nd-pass manual review YES queue (Q1_yes).
   a) Copy manually unclassified pairs to reviewing direcdtory.                 R1_filt <- R1 - C_all
