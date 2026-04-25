@@ -1,9 +1,9 @@
 # complete.py
 
-from workflow import complete_pairs, usage, dispatch
+from workflow import complete_pairs, complete_yes, usage, dispatch
 
 
-SUBCOMMANDS = {"pairs": complete_pairs}
+SUBCOMMANDS = {"pairs": complete_pairs, "yes": complete_yes}
 
 
 def help_summary(name):

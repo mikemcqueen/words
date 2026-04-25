@@ -10,7 +10,7 @@ _PHASE1 = {
     # TODO: "alias": "phase1",
     "parts" : {
         "queued": {
-            "description": ("Pairs files queued for processing by evalpair. Use "
+            "description": ("Pair files queued for processing by evalpair. Use "
                             "`wf submit pairs` to enqueue.")
         },
         "eval": {
@@ -18,12 +18,12 @@ _PHASE1 = {
                             "files being actively updated.")
         },
         "done": {
-            "description": ("Pairs files and their associated result files that have "
+            "description": ("Pair files and their associated result files that have "
                             "completed automated classification by evalpair."),
             "content": True,
             "parts": {
-                "pairs": { "description": "done pairs archive" },
-                "results": { "description": "done results archive" }
+                "in": { "description": "p1 eval input archive (raw pairs)" },
+                "out": { "description": "p1 eval output archive (evalpair results jsonl)" }
             }
         }
     }
@@ -34,13 +34,30 @@ _PHASE2 = {
     "description": "Second-pass: manual review of evalpair-classified YES results.",
     "parts": {
         "queued": {
-            "description": "Evalpair-classified YES result files queued for manual review."
+            "description": ("Evalpair-classified YES pair files queued for manual "
+                            "classification.")
         },
         "eval": {
-            "description": "Evalpair-classified YES result files being manually reviewed."
+            "description": "Evalpair-classified YES pair files being manually classified."
         },
         "done": {
-            "description": "Not sure what goes here. Might be unnecessary."
+            "description": ("Evailpair-classified YES pair files and their associated "
+                            "enex files, that have completed manual classification."),
+            "content": True,
+            "parts": {
+                "in": {
+                    "description": "p2 eval input (evalpair-classified YES pairs)"
+                },
+                "out": {
+                    "description": "p2 eval output (manually classified enex)",
+                    "content": True,
+                    "parts": {
+                        "enex": {
+                            "description": "p2 eval output parts in raw evernote format"
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -121,6 +138,7 @@ def layout_args(argv: list[str]) -> LayoutArgs:
 
     for name in argv:
         allowed = node.get("parts", {})
+        assert isinstance(allowed, dict)
         if not allowed or name not in allowed:
             return LayoutArgs(parts=tuple(consumed), node=node, _invalid=name)
         #if name not in allowed:
@@ -132,7 +150,9 @@ def layout_args(argv: list[str]) -> LayoutArgs:
 
 
 def _root_parts() -> dict:
-    return CONFIG_LAYOUT["parts"]
+    parts = CONFIG_LAYOUT["parts"]
+    assert isinstance(parts, dict)
+    return parts
 
 
 def path(root_dir: Path, parts: list[str]) -> Path:

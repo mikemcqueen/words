@@ -1,5 +1,6 @@
-import errno
+# fs.py
 
+import errno
 from pathlib import Path
 
 def not_a_directory_error(path: Path): 
@@ -39,3 +40,18 @@ def raise_if_not_file(path: Path):
     if not path.is_file():
         raise not_a_file_error(path)
     
+
+def raise_if_any_exist(paths: list[Path]):
+    for path in paths:
+        raise_if_exists(path)
+
+
+def raise_if_any_not_file(paths: list[Path]):
+    for path in paths:
+        raise_if_not_file(path)
+
+
+def line_count(path: Path) -> int:
+    with path.open("r", encoding="utf-8") as f:
+        n_lines = sum(1 for _ in f)
+    return n_lines

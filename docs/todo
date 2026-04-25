@@ -1,9 +1,10 @@
+* may want to save the entire enote to p2/done/out. and modify the note parser a tiny bit to
+  load a file? makes sense from both a) connectivity, and b) "archive" points of view
+
 * I should think about a quantization pass specific to my use case. Or fine tuning.
 
 * eval should require destination folder and copy to it?
-* and copy again if called again, even if already running?
-* not sure about defaulting to the exactly-one file in queue either.
-* definitely should disable it for complete (if it exists)
+  * and copy again if called again, even if already running?
 
 * evalpair: open output file with exclusive write flag
 
@@ -23,7 +24,9 @@
 * qt5-27B should always be running on an s1/pairs/2 partial dataset.
   * manual review of top 10% results as they come in.
 
-* run an.test4 on qt5-9b for s&g
+* run an.test4 on qt5-9b for s&g 
+  * i think the idea here is to somehow "compare results" to 35B MoE vs 27B dense, like specifically
+    overlap of top ~10% auto-classified results for YES pair or something.
 
 * need to work on the prompt improvement task.
 
@@ -53,7 +56,7 @@
   * might want to name this FILTER for filter.py. METHOD becomes SELECT
 
 * i should be able to specify one key and still do a 3-way ensemble. then it will always include
-  that key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
+ key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
   run with both of these keys, but only one is required a time"?  probably that just means run
   compare.py twice with different single keys
 
@@ -78,8 +81,8 @@
   countbits.
 
 * if there are two sort keys, ensemble.py's heap_update isn't taking that into account (probably doesn't
-  matter it would typically only matter around to results around the bound of heap_size). would be
-  an issue if the top 100+ results all had the same top two or three values for primary sorted field.
+  matter it would typically only matter to results around the bound of heap_size). would be an issue if
+  the top 100+ results all had the same top two or three values for primary sorted field.
 
 * test pairs with a two-word component, three ways?
   * multiple three-ways exist (interleave, flip_interleave, etc., see notebook)

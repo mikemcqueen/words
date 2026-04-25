@@ -81,8 +81,9 @@ def _layout_help_text(command: str, args: config.LayoutArgs, summary: str) -> st
 def show_layout_help(command: str, args: config.LayoutArgs, summary: str) -> int:
     details = _layout_help_text(command, args, summary)
     if args.has_invalid:
+        assert args._invalid
         return invalid_argument(args._invalid, details)
     if args.has_missing:
         return missing_argument(details)
-    print(details, file=file)
+    print(details)
     return 0

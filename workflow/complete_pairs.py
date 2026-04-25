@@ -30,22 +30,42 @@ def _resolve_results_path(src_dir: Path, pairs_path: Path) -> Path:
 
     if count == 0:
         raise ValueError(f"result file not found for pairs file: {pairs_path.name}")
+    assert results_path
     if count > 1:
         raise ValueError(f"multiple result files found for pairs file: {pairs_path.name}")
     assert count == 1
     return results_path
 
 
-def _merge_with_done_pairs(src_pairs: Path, done_pairs: Path):
-    done_pairs_old = done_pairs.parent / "p1_done.old"
-    done_pairs.rename(done_pairs_old)
-    # preserve done_pairs across unexpected failures
+def _cat_sort_uniq(src: Path, dst: Path):
+    dst_old = dst.parent / f"{dst.name}.old"
+    dst.rename(dst_old)
+    # preserve dst across unexpected failures
     try:
-        # done_pairs <- old_done_pairs ∪ src_pairs
-        ((cat[str(done_pairs_old), str(src_pairs)] | sort["-u"]) > str(done_pairs))()
+        ((cat[str(dst_old), str(src)] | sort["-u"]) > str(dst))()
     except Exception as e:
-        done_pairs_old.rename(done_pairs)
+        dst_old.rename(dst)
         raise e
+
+
+def merge_pairs(src_pairs: Path, dst_pairs) -> None:
+    if dst_pairs.exists():
+        _cat_sort_uniq(src_pairs, dst_pairs)
+    else:
+        dst_pairs.write_bytes(src_pairs.read_bytes())
+
+
+def merge_with_done_pairs(phase: str, src_pairs: Path, opts) -> None:
+    done_pairs = config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
+    merge_pairs(src_pairs, done_pairs)
+
+
+def move_to_done(phase: str, src_in: Path, src_out: Path, opts) -> None:
+    dst_in = config.path(opts.dir, [phase, "done", "in"]) / src_in.name
+    src_in.rename(dst_in)
+    dst_out = config.path(opts.dir, [phase, "done", "out"]) / src_out.name
+    src_out.rename(dst_out)
+
 
 # Workflow 1.2
 def _complete(src_pairs: Path, src_results: Path, opts) -> int:
@@ -67,21 +87,13 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     with no_results.open("w") as f:
         filter_results(str(src_results), False, f)
 
+    phase = "p1"
+
     # 1.2.b. Add pairs to the "1st-pass classification done" set.
-    done_dir = config.path(opts.dir, ["p1", "done"])
-    done_pairs = done_dir / "p1_done"
-    if done_pairs.exists():
-        # done <- done ∪ src 
-        _merge_with_done_pairs(src_pairs, done_pairs)
-    else:
-        # done <- src
-        done_pairs.write_bytes(src_pairs.read_bytes())
+    merge_with_done_pairs(phase, src_pairs, opts)
         
     # 1.2.c. Cleanup files
-    dst_pairs = config.path(opts.dir, ["p1", "done", "pairs"]) / src_pairs.name
-    src_pairs.rename(dst_pairs)    
-    dst_results = config.path(opts.dir, ["p1", "done", "results"]) / src_results.name
-    src_results.rename(dst_results)
+    move_to_done(phase, src_pairs, src_results, opts)
 
     log.success(f"Completed pairs {src_pairs.name}")
     return 0
