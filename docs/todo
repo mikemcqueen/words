@@ -1,5 +1,4 @@
-* may want to save the entire enote to p2/done/out. and modify the note parser a tiny bit to
-  load a file? makes sense from both a) connectivity, and b) "archive" points of view
+* wf show all [queued/eval]
 
 * I should think about a quantization pass specific to my use case. Or fine tuning.
 
@@ -25,7 +24,7 @@
   * manual review of top 10% results as they come in.
 
 * run an.test4 on qt5-9b for s&g 
-  * i think the idea here is to somehow "compare results" to 35B MoE vs 27B dense, like specifically
+  * i think the idea here is to somehow "compare results" to 27B dense, like specifically
     overlap of top ~10% auto-classified results for YES pair or something.
 
 * need to work on the prompt improvement task.

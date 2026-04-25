@@ -67,32 +67,30 @@ def move_to_done(phase: str, src_in: Path, src_out: Path, opts) -> None:
     src_out.rename(dst_out)
 
 
+def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) -> None:
+    if not opts.force:
+        fs.raise_if_exists(dst_results)
+    with dst_results.open("w") as f:
+        filter_results(str(src_results), yes, f)
+
+
 # Workflow 1.2
 def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     log.info(f"found: {src_pairs.name}, {src_results.name}")
-
-    # 1.2.a.i. YES go to "need manual review" queue.
-    yes_dir = config.path(opts.dir, ["p2", "queued"])
-    yes_results = yes_dir / (src_pairs.name + ".yes")
-    if not opts.force:
-        fs.raise_if_exists(yes_results)
-    with yes_results.open("w") as f:
-        filter_results(str(src_results), True, f)
-
-    # 1.2.a.ii. NO go to the "need another automated pass" queue.
-    no_dir = config.path(opts.dir, ["p3", "queued"])
-    no_results = no_dir / (src_pairs.name + ".no")
-    if not opts.force:
-        fs.raise_if_exists(no_results)
-    with no_results.open("w") as f:
-        filter_results(str(src_results), False, f)
-
     phase = "p1"
 
-    # 1.2.b. Add pairs to the "1st-pass classification done" set.
+    # 1.2.a.i. YES go to p2's "need manual review" queue
+    yes_results = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + ".p1.yes")
+    _filter_results_to(src_results, True, yes_results, opts)
+
+    # 1.2.a.ii. NO go to p3's "need another automated pass" queue
+    no_results = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
+    _filter_results_to(src_results, False, no_results, opts)
+
+    # 1.2.b. Merge input pairs with "1st-pass classification done" pairs
     merge_with_done_pairs(phase, src_pairs, opts)
         
-    # 1.2.c. Cleanup files
+    # 1.2.c. Move src_pairs → p1/done/in, src_results → p2/done/out
     move_to_done(phase, src_pairs, src_results, opts)
 
     log.success(f"Completed pairs {src_pairs.name}")
