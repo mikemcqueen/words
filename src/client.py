@@ -13,16 +13,7 @@ from pathlib import Path
 import httpx
 
 from src.common import add_inference_args, parse_on_off
-from src.model import adjust_thinking
-
-SERVERS = {
-    "localhost": "127.0.0.1",
-    "juniper": "192.168.0.111",
-    "mini": "192.168.0.114",
-}
-SERVER_IPS = {ip: name for name, ip in SERVERS.items()}
-
-
+from src.model import is_gpt
 
 def parse_nginx_upstream(config_path=None):
     """Parse nginx upstream block to extract server topology.
@@ -99,21 +90,39 @@ def parse_nginx_upstream(config_path=None):
     }
 
 
-def resolve_host(host: str) -> str:
-    """If host is a known server name, return http://{ip}. Otherwise return as-is.
-    Raises SystemExit if it looks like a bare name but isn't recognized."""
-    if host in SERVERS:
-        return f"http://{SERVERS[host]}"
-    if "." not in host and "://" not in host:
-        print(f"Error: unknown server name '{host}'")
-        sys.exit(1)
-    return host
+#https://dashscope-us.aliyuncs.com/compatible-mode/v1
+def host_path_prefix(host: str) -> str:
+    if "dashscope-us" in host.lower() or "dashscope-intl" in host.lower():
+        return "/compatible-mode"
+    return ""
 
 
-def get_server_name(host: str) -> str | None:
-    """Return a friendly server name for a host URL, or None if unknown."""
-    bare = host.split("://", 1)[-1]
-    return SERVER_IPS.get(bare)
+def build_url(host: str, port: int, path: str) -> str:
+    path = host_path_prefix(host) + path
+    if host.startswith("http://") or host.startswith("https://"):
+        # append port only if host doesn't already specify one
+        bare = host.split("://", 1)[1]
+        if ":" not in bare:
+            return f"{host}:{port}{path}"
+        return f"{host}{path}"
+    return f"{host}:{port}{path}"
+
+
+def ssl_verify(host: str) -> bool:
+    bare = host.split("://", 1)[-1].split(":")[0]
+    return bare.split(".")[-1] != "local"
+
+
+_URL_PREFIXES = {"api", "www", "dashscope-us"}
+
+
+def get_compact_server_name(host: str) -> str:
+    bare = host.split("://", 1)[-1].split(":")[0]
+    labels = bare.split(".")
+    if labels[0] in _URL_PREFIXES:
+        assert len(labels) > 1
+        return labels[1]
+    return labels[0]
 
 
 def get_max_concurrent(host: str, port: int, nginx_config=None):
@@ -139,7 +148,6 @@ def get_max_concurrent(host: str, port: int, nginx_config=None):
             return s['max_conns'], upstream
 
     return None
-
 
 
 def auto_detect_max_concurrent(args):
@@ -176,7 +184,7 @@ async def run_concurrent(items, process_fn, args):
     """
     max_concurrent = args.max_concurrent
     quiet = getattr(args, 'quiet', False)
-    async with httpx.AsyncClient(timeout=args.timeout) as client:
+    async with httpx.AsyncClient(timeout=args.timeout, verify=ssl_verify(args.host)) as client:
         pending = set()
         items_iter = iter(items)
         in_flight = 0
@@ -250,94 +258,164 @@ async def _post_with_retry(client, *args, label=None, quiet=False, **kwargs) -> 
     raise RuntimeError("unreachable: retry loop exited without return or raise")
 
 
+def adjust_thinking(payload: dict, args) -> None:
+    thinking = getattr(args, "thinking", None)
+    if thinking in (None, True):
+        return
+
+    #print(f"thinking: {thinking}")
+    
+    name = getattr(args, "model_id", None).lower()
+    if args.llamacpp:
+        if name.startswith("glm") or name.startswith("qwen"):
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+    else:
+        if name.startswith("deepseek"):
+            payload["thinking"] = {"type": "disabled"}
+        elif is_gpt(name):
+            payload["reasoning"] = { "effort": "none" }
+        elif name.startswith("qwen"):
+            payload["enable_thinking"] = False
+
+
 def add_inference_options(payload: dict, args) -> dict:
     """Populate a request payload with shared inference options (skips any not present in args)."""
-    for attr, key in [
-        ("temp",            "temperature"),
-        ("top_p",           "top_p"),
-        ("top_k",           "top_k"),
-        ("min_p",           "min_p"),
-        ("repeat_penalty",  "repeat_penalty"),
-        ("repeat_last_n",   "repeat_last_n"),
-        ("presence_penalty","presence_penalty"),
-    ]:
-        val = getattr(args, attr, None)
-        if val is not None:
-            payload[key] = val
-    thinking = getattr(args, "thinking", None)
-    model_id = getattr(args, "model_id", None)
-    if thinking is not None and model_id is not None:
-        adjust_thinking(payload, model_id, thinking)
+    # TODO: not all of these are restricted to llamacpp, e.g. temp, top_p are widely supported
+    if args.llamacpp:
+        for attr, key in [
+            ("temp",            "temperature"),
+            ("top_p",           "top_p"),
+            ("top_k",           "top_k"),
+            ("min_p",           "min_p"),
+            ("repeat_penalty",  "repeat_penalty"),
+            ("repeat_last_n",   "repeat_last_n"),
+            ("presence_penalty","presence_penalty"),
+        ]:
+            val = getattr(args, attr, None)
+            if val is not None:
+                payload[key] = val
+
+    adjust_thinking(payload, args)
     return payload
 
 
-def get_inference_params(args) -> dict:
-    """Extract inference parameters from args into a canonical dict."""
-    return add_inference_options({}, args)
-
-
+"""
+# for nginix upstream
 def _extract_upstream(response) -> str | None:
-    """Extract friendly server name from X-Upstream-Addr header."""
     addr = response.headers.get("x-upstream-addr")
     if not addr:
         return None
     ip = addr.split(":")[0]
     return SERVER_IPS.get(ip, addr)
+"""
 
 
-async def send_yesno_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
-    """POST {base_url}/yesno with {"text": prompt}"""
-    url = f"{args.host}:{args.port}/yesno"
-    response = await _post_with_retry(client, url, json={"text": prompt}, label=label, quiet=getattr(args, "quiet", False))
-    js = response.json()
-    upstream = _extract_upstream(response)
-    if upstream:
-        js['upstream'] = upstream
-    return js["response"], js, js
-
-
-def query_model_id(host: str, port: int, key: str = "") -> str:
-    """GET /v1/models and return the first model's ID."""
-    url = f"{host}:{port}/v1/models"
+def query_models(host: str, port: int, key: str | None) -> list[dict]:
+    url = build_url(host, port, "/v1/models")
     headers = {}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    response = httpx.get(url, headers=headers, timeout=10)
+    response = httpx.get(url, headers=headers, timeout=10, verify=ssl_verify(host))
     response.raise_for_status()
     data = response.json().get("data", [])
     if not data:
         raise RuntimeError(f"No models returned from {url}")
-    return data[0]["id"]
+    return data
 
 
-async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, model: str = "haiku", label=None) -> tuple[str, dict, dict]:
-    """POST {base_url}/v1/chat/completions with OpenAI chat format"""
-    url = f"{args.host}:{args.port}/v1/chat/completions"
+def is_llamacpp_backend(host: str, port: int, key: str | None) -> bool:
+    """Return True if the backend is llamacpp (any model has owner='llamacpp')."""
+    data = query_models(host, port, key)
+    return any(m.get("owned_by") == "llamacpp" for m in data)
+
+
+def resolve_model_id(args) -> str:
+    """Query server for available models and resolve to a single model ID.
+
+    If --model is specified, it must match one of the available models.
+    If not specified, the server must offer exactly one model.
+    """
+    data = query_models(args.host, args.port, args.key)
+    models = [m["id"] for m in data]
+    if args.model:
+        if args.model in models:
+            return args.model
+        print(f"Error: model '{args.model}' not available.")
+    elif len(models) == 1:
+        print(f"Using model: {models[0]}")
+        return models[0]
+
+    print("Available models:")
+    for m in models:
+        print(f"  {m}")
+    sys.exit(1)
+
+
+def get_max_logprobs_tokens(args) -> int:
+    if not args.llamacpp:
+        if is_gpt(args.model_id):
+            return 16
+    return 1
+
+
+def use_responses(model_id: str):
+    return model_id.lower().startswith("gpt")
+
+
+async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
+    v1resp = use_responses(args.model_id)
+    shape = "/v1/responses" if v1resp else "/v1/chat/completions"
+
+    url = build_url(args.host, args.port, shape)
 
     headers = { "Content-Type": "application/json" }
     if args.key:
         headers["Authorization"] = f"Bearer {args.key}"
 
-    messages = []
-    system_prompt = getattr(args, "system_prompt", None)
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-    payload = add_inference_options({
-        "model": model,
-        "messages": messages,
-    }, args)
+    if v1resp:
+        payload = add_inference_options({
+            "model": args.model_id,
+            "input": prompt
+        }, args)
+    else:
+        messages = []
+        system_prompt = getattr(args, "system_prompt", None)
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        payload = add_inference_options({
+            "model": args.model_id,
+            "messages": messages,
+        }, args)
+
     if getattr(args, "logprobs", False):
-        payload.update({"max_tokens": 1, "logprobs": True, "top_logprobs": args.top_logprobs})
+        max_tokens = "max_output_tokens" if v1resp else "max_tokens"
+        payload.update({max_tokens: get_max_logprobs_tokens(args), "top_logprobs": args.top_logprobs})
+        if is_gpt(args.model_id):
+            payload["include"] = ["message.output_text.logprobs"]
+        else:
+            payload["logprobs"] = True
+
     if getattr(args, "verbose", False):
         print(json.dumps(payload, indent=2))
+
     response = await _post_with_retry(client, url, headers=headers, json=payload, label=label, quiet=getattr(args, "quiet", False))
-    upstream = _extract_upstream(response)
-    payload = response.json()["choices"][0]
-    message = payload["message"]
-    del payload["message"]
-    response = message["content"]
-    del message["content"]
-    if upstream:
-        payload['upstream'] = upstream
+
+    #upstream = _extract_upstream(response)
+    if args.verbose:
+        print(json.dumps(response.json(), indent=2))
+
+    if v1resp:
+        # super over simplified
+        payload = response.json()["output"]
+        message = payload[0]["content"][0]
+        response = message["text"]
+    else:
+        payload = response.json()["choices"][0]
+        message = payload["message"]
+        del payload["message"]
+        response = message["content"]
+        del message["content"]
+        #if upstream:
+        #payload['upstream'] = upstream
     return response, message, payload

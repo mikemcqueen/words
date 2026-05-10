@@ -46,20 +46,22 @@ def _retrieve_notes(paths: list[Path], opts) -> list[Path]:
     return enex_paths
                            
                            
-def _replace_suffix(name: str, old_suffix: str, new_suffix: str) -> Path:
+def _replace_suffix(name: str, old_suffix: str, new_suffix: str) -> str:
     assert name.endswith(old_suffix), f"{name} doesn't end with {old_suffix}"
     return name[:-len(old_suffix)] + new_suffix
 
 
 def _extract_pairs_to(enex_paths: list[Path], yesno: YesNo, dst_pairs: Path, opts):
     # Parse .enex files into separate pairs files
-    pair_paths = _parse_note_files(enex_paths, "no")
+    pair_paths = _parse_note_files(enex_paths, yesno)
+    if not opts.force:
+        fs.raise_if_exists(dst_pairs)
     # Concat all pairs files into a single file of all pairs
     ((cat[pair_paths] | sort["-u"]) > str(dst_pairs))()
 
 
 def _process_yes_pairs(yes_pairs, opts) -> None:
-    # Merge yes_pairs with global "classified yes" pairs
+    # Merge YES pairs with global "classified yes" pairs
     cls_yes_pairs = config.path(opts.dir, ["classified", "yes"]) / "yes.pairs"
     complete_pairs.merge_pairs(yes_pairs, cls_yes_pairs)
     # TODO: should classified/yes have an /in?
@@ -77,12 +79,12 @@ def _complete(src_pairs: Path, opts) -> int:
     # Download notes into .enex files
     enex_paths = _retrieve_notes(split_paths, opts)
     
-    # Extract yes pairs from .enex files → p2/eval and process
+    # Extract YES pairs from .enex files → p2/eval and process
     yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
     _extract_pairs_to(enex_paths, "yes", yes_pairs, opts)
     _process_yes_pairs(yes_pairs, opts)
 
-    # Extract no pairs from .enex files → p3/queued
+    # Extract NO pairs from .enex files → p3/queued
     no_pairs_dir = config.path(opts.dir, ["p3", "queued"])
     no_pairs = no_pairs_dir / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.no")
     _extract_pairs_to(enex_paths, "no", no_pairs, opts)

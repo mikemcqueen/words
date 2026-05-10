@@ -17,13 +17,13 @@ def show_help(command, opts, argv):
     return usage.default_help(help_summary(command), argv, _usage_text())
 
 
-def move_pairs_done(src_pairs: Path, target: str, opts) -> Path:
-    dst_dir = config.path(opts.dir, [target, "eval"])
+def move_pairs_done(src_pairs: Path, phase: str, opts) -> Path:
+    dst_dir = config.path(opts.dir, [phase, "eval"])
     dst_pairs = dst_dir / src_pairs.name
     if not opts.force:
         fs.raise_if_exists(dst_pairs)
 
-    done_pairs = config.path(opts.dir, [target, "done"]) / f"{target}_done"
+    done_pairs = config.path(opts.dir, [phase, "done"]) / f"{phase}_done"
     if done_pairs.is_file():
         (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
         src_pairs.unlink()

@@ -71,7 +71,8 @@ def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) ->
     if not opts.force:
         fs.raise_if_exists(dst_results)
     with dst_results.open("w") as f:
-        filter_results(str(src_results), yes, f)
+        # NOTE: qwen35 27B default
+        filter_results(str(src_results), yes, f, pmin=0.9)
 
 
 # Workflow 1.2
@@ -79,18 +80,21 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     log.info(f"found: {src_pairs.name}, {src_results.name}")
     phase = "p1"
 
-    # 1.2.a.i. YES go to p2's "need manual review" queue
-    yes_results = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + ".p1.yes")
-    _filter_results_to(src_results, True, yes_results, opts)
+    # 1.2.a.i. YES pairs go to p2's "need manual review" queue
+    yes_pairs = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + ".p1.yes")
+    _filter_results_to(src_results, True, yes_pairs, opts)
 
-    # 1.2.a.ii. NO go to p3's "need another automated pass" queue
-    no_results = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
-    _filter_results_to(src_results, False, no_results, opts)
+    # 1.2.a.ii. NO pairs go to p3's "need another automated pass" queue
+    # TODO: not sure this is technically correct.  also we're only filtering the
+    #       top 10% of YES for Qwen35 27B. so there are a lot more "maybe NO" pairs
+    #       to be passing along to p3 here.
+    no_pairs = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
+    _filter_results_to(src_results, False, no_pairs, opts)
 
     # 1.2.b. Merge input pairs with "1st-pass classification done" pairs
     merge_with_done_pairs(phase, src_pairs, opts)
         
-    # 1.2.c. Move src_pairs → p1/done/in, src_results → p2/done/out
+    # 1.2.c. Move src_pairs → p1/done/in, src_results → p1/done/out
     move_to_done(phase, src_pairs, src_results, opts)
 
     log.success(f"Completed pairs {src_pairs.name}")

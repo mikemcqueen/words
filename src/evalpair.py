@@ -12,6 +12,7 @@ import re
 import signal
 import sys
 import time
+import traceback
 from datetime import timedelta
 from pathlib import Path
 
@@ -20,7 +21,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from src.classify import classify_pairs_async
-from src.client import run_concurrent, get_inference_params, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from src.client import run_concurrent, send_openai_request, resolve_model_id, get_compact_server_name, is_llamacpp_backend, build_url, ssl_verify
 from src.common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
 from src.info import info
 from src.model import is_gemma
@@ -112,7 +113,7 @@ def send_anchor_prefix(args, ctx: str) -> None:
     if args.system_prompt:
         prefix = get_system_prompt_templated(args)
     prefix += get_completion_prefix(args) + m.group(1)
-    url = f"{args.host}:{args.port}/v1/completions"
+    url = build_url(args.host, args.port, "/v1/completions")
     headers = {"Content-Type": "application/json"}
     if args.key:
         headers["Authorization"] = f"Bearer {args.key}"
@@ -121,7 +122,7 @@ def send_anchor_prefix(args, ctx: str) -> None:
         payload["reasoning_budget_tokens"] = 0
         payload["reasoning_budget_start_tag"] = "<think>"
         payload["reasoning_budget_end_tag"] = "</think>"
-    response = httpx.post(url, headers=headers, json=payload, timeout=args.timeout)
+    response = httpx.post(url, headers=headers, json=payload, timeout=args.timeout, verify=ssl_verify(args.host))
     response.raise_for_status()
 
 
@@ -144,10 +145,6 @@ def parse_args():
     pid_group.add_argument('--all', action='store_true',
                            help='Run all prompts in prompt file; with --save, creates one result file per prompt')
 
-    # Model: omit for server (default), provide for local model
-    parser.add_argument('-m', '--model', metavar='MODEL', type=str, default=None,
-                        help='Local model to load (omit to use server)')
-
     # Server/client options
     parser.add_argument('-s', '--system-prompt', type=str,
                         help='System prompt file (optional)')
@@ -165,8 +162,7 @@ def parse_args():
                         help="Directory for result files (default: results/)")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
                         help="Max concurrent requests (default: 1)")
-    parser.add_argument('--nginx-config', type=str,
-                        help='Path to nginx upstream config (auto-detected if omitted)')
+    #parser.add_argument('--nginx-config', type=str, help='Path to nginx upstream config (auto-detected if omitted)')
     parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
                         help='Process at most N pairs from pair-file')
     parser.add_argument('--tag', type=str,
@@ -183,7 +179,10 @@ def parse_args():
 
     args = parser.parse_args()
 
+    # TODO: share between here and ask_openai
     if args.logprobs:
+        if args.thinking:
+            print("logprobs specified - forcing thinking off")
         args.thinking = False
 
     if args.system_prompt:
@@ -237,10 +236,6 @@ class JsonlWriter:
         self.file.close()
 
 
-def parse_top_logprobs(top_logprobs):
-    return [{entry["token"]: math.exp(entry["logprob"])} for entry in top_logprobs]
-
-
 def apply_pair_order(orig_pair: str, order: str) -> str:
     words = orig_pair.split(",")
     if order == "rvs":
@@ -250,10 +245,16 @@ def apply_pair_order(orig_pair: str, order: str) -> str:
     return " ".join(words)
 
 
+def parse_top_logprobs(top_logprobs):
+    return [{entry["token"]: math.exp(entry["logprob"])} for entry in top_logprobs]
+
+
 async def logprob_request_async(client: httpx.AsyncClient, prompt: str, order: str, args) -> tuple:
-    _, _, payload = await send_openai_request(client, args, prompt)
-    #print(f"response:\n{response}\nmessage:\n{message}\npayload:\n{payload}")
-    return order, parse_top_logprobs(payload["logprobs"]["content"][0]["top_logprobs"])
+    _, message, payload = await send_openai_request(client, args, prompt)
+    if args.verbose:
+        print(f"response:\n{response}\nmessage:\n{message}\npayload:\n{payload}")
+    #return order, parse_top_logprobs(payload["logprobs"]["content"][0]["top_logprobs"])
+    return order, parse_top_logprobs(message["logprobs"]["content"][0]["top_logprobs"])
 
 
 async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str, orders, args) -> tuple:
@@ -266,6 +267,15 @@ async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str
         results[order_key] = logprobs
     return orig_pair, results
 
+
+"""
+PARSE_ERRORS = (
+    TypeError,      # None["x"], list["x"], etc.
+    KeyError,       # dict missing expected key
+    IndexError,     # list missing expected index
+    AttributeError, # None.foo, list.foo, etc.
+)
+"""
 
 async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
     """Process all pairs with max_concurrent in flight at once."""
@@ -287,6 +297,8 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
             print(f"\n{type(e).__name__}: {e}")
+        if isinstance(e, TypeError):
+            traceback.print_exc()
         msg = f"Interrupted."
         if args.save:
             msg += " Re-run to continue."
@@ -307,7 +319,7 @@ def make_result_prefix(args, prompt_id=None):
         prompt_source = "manual"
         pid = ""
     base_name = f"{basename}_{prompt_source}_{pid}"
-    server_name = get_server_name(args.host)
+    server_name = get_compact_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
@@ -375,11 +387,10 @@ def handle_results(args, retry_map=None, writer=None):
 
 def main():
     args = parse_args()
-    args.host = resolve_host(args.host)
-
-    auto_detect_max_concurrent(args)
-    args.model_id = query_model_id(args.host, args.port, args.key)
-    print(f"Model: {args.model_id} Gemma={is_gemma(args.model_id)}")
+    #auto_detect_max_concurrent(args)
+    args.model_id = resolve_model_id(args)
+    args.llamacpp = is_llamacpp_backend(args.host, args.port, args.key)
+    print(f"Model: {args.model_id} Gemma={is_gemma(args.model_id)} llamacpp={args.llamacpp}")
 
     if args.prompt_file:
         all_prompts = load_prompts_from_file(args.prompt_file)
@@ -396,7 +407,8 @@ def main():
         if args.all:
             print(f"\n=== Prompt: {current_pid} ===")
 
-        send_anchor_prefix(args, ctx)
+        if args.llamacpp:
+            send_anchor_prefix(args, ctx)
 
         # When --save, count existing results and resume from where we left off
         skip = 0

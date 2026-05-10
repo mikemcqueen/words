@@ -3,7 +3,7 @@ import time
 
 import httpx
 
-from src.client import get_server_name, run_concurrent, send_openai_request
+from src.client import get_compact_server_name, run_concurrent, send_openai_request
 from src.common import eval_with_flipped_retry, flip_pair
 
 
@@ -32,7 +32,7 @@ def is_yes_response(model, response: str):
 async def async_request_and_classify(client, args, prompt, label=None):
     retries = {}
     def record_retry(payload, duration):
-        host = payload.get('upstream') or get_server_name(args.host) or args.host
+        host = payload.get('upstream') or get_compact_server_name(args.host)
         reason = payload.get('finish_reason')
         retries.setdefault(host, {})
         retries[host].setdefault(reason, []).append(duration)

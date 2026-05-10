@@ -451,19 +451,19 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
             batch_results = []
             if do_or:
                 any_yes = three['any_or']
-                batch_results.append((' OR', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+                batch_results.append((' OR', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
             if do_and:
                 any_yes = None
                 for d in dirs:
                     dir_and = three['and'][d]
                     any_yes = dir_and.copy() if any_yes is None else any_yes | dir_and
-                batch_results.append((' AND', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+                batch_results.append((' AND', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
             if do_maj:
                 any_yes = None
                 for d in dirs:
                     dir_maj = three['maj'][d]
                     any_yes = dir_maj.copy() if any_yes is None else any_yes | dir_maj
-                batch_results.append((' MAJORITY', *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
+                batch_results.append((' MAJORITY', any_yes, *_score_any_yes(any_yes, exp_bits, not_exp, n_mask, n_pairs)))
             for suffix, combined, correct, fp, fn in batch_results:
                 key_fn_3way = lambda ci, _idx=idx, _suffix=suffix: (
                     ','.join(key_list[j] for j in _idx[ci]) + _suffix)

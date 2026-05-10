@@ -93,7 +93,6 @@ async def eval_with_flipped_retry(
 
 
 def parse_on_off(value: str) -> bool:
-    """Parse an on/off CLI value into a boolean."""
     normalized = value.lower()
     if normalized == "on":
         return True
@@ -103,7 +102,8 @@ def parse_on_off(value: str) -> bool:
 
 
 def add_inference_args(parser: argparse.ArgumentParser) -> None:
-    """Add shared inference-related CLI arguments to a parser."""
+    parser.add_argument("-m", "--model", metavar="MODEL", type=str, default=None,
+                        help="Model ID to use (required if server has multiple models)")
     parser.add_argument("--temp", type=float, default=1.0,
                         help="Sampling temperature (default: 1.0)")
     parser.add_argument("--top-p", "--top_p", dest="top_p", type=float, default=0.95,

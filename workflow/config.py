@@ -103,6 +103,21 @@ CONFIG_LAYOUT = {
 }
 
 
+_EXTENSIONS = {
+    "p1/queued": {
+        "append": ".pairs"
+    },
+    "p1/eval": {
+        "expect": "#p1/queued/append",
+        "append": ".p1.#key"
+    },
+    "p2/eval": {
+        "expect":  ".p1.yes",
+        "replace": ".p2.#key"
+    }
+}
+
+
 @dataclass(frozen=True)
 class LayoutArgs:
     parts: tuple[str, ...]
@@ -141,8 +156,6 @@ def layout_args(argv: list[str]) -> LayoutArgs:
         assert isinstance(allowed, dict)
         if not allowed or name not in allowed:
             return LayoutArgs(parts=tuple(consumed), node=node, _invalid=name)
-        #if name not in allowed:
-        #return LayoutArgs(parts=tuple(consumed), node=node, invalid=name), False
         node = allowed[name]
         consumed.append(name)
 

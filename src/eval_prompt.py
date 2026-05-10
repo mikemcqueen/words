@@ -18,12 +18,11 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from src.client import run_concurrent, get_inference_params, send_yesno_request, send_openai_request, query_model_id, resolve_host, get_server_name, auto_detect_max_concurrent
+from src.client import run_concurrent, send_yesno_request, send_openai_request, resolve_model_id, get_compact_server_name
 from src.common import add_inference_args, load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
 # Configuration
 PAIRS_FILE = "pairs.json"
 RESULTS_DIR = Path("results")
-MODEL = "haiku"  # Model for testing
 
 def load_pairs(filepath: str) -> List[Dict]:
     """Load test words with expected YES/NO answers"""
@@ -67,7 +66,7 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
                 response, message, _ = await send_yesno_request(client, args, prompt)
                 elapsed = time.time() - start_time
             else:
-                response, message, payload = await send_openai_request(client, args, prompt, MODEL)
+                response, message, payload = await send_openai_request(client, args, prompt)
                 elapsed = time.time() - start_time
                 reasoning = message.get("reasoning_content")
                 message.pop("reasoning_content", None)
@@ -203,7 +202,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
     else:
         base_name = f"{Path(args.pairs).stem}"
     base_name += f"_{source_file}_{prompt_id}"
-    server_name = get_server_name(args.host)
+    server_name = get_compact_server_name(args.host)
     if server_name:
         base_name += f"_{server_name}"
     if args.system_prompt_filename:
@@ -224,7 +223,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "model": args.model_id,
         "max_concurrent": args.max_concurrent,
         "seconds_elapsed": wall_elapsed,
-        "inference_params": get_inference_params(args),
+        "inference_params": # TODO client.add_inference_params? get_inference_params(args),
         "results": details
     }
 
@@ -332,10 +331,9 @@ Examples:
     else:
         args.system_prompt_filename = None
 
-    args.host = resolve_host(args.host)
-    auto_detect_max_concurrent(args)
+    #auto_detect_max_concurrent(args)
 
-    args.model_id = query_model_id(args.host, args.port, args.key)
+    args.model_id = resolve_model_id(args)
 
     pairs = load_pairs_from_args(args)
     if not pairs:

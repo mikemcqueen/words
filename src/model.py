@@ -54,25 +54,35 @@ def get_model_name(abbrev_name: str) -> str:
     print(f"get_model_name(): unknown model name: '{name}'")
     exit()
 
+def is_gpt(name: str):
+    return name.lower().startswith("gpt")
+
+
 def is_gemma_2(name: str):
     return "gemma-2" in name
+
 
 def is_gemma_3(name: str):
     return "gemma-3" in name
 
+
 def is_gemma_4(name: str):
     return "gemma-4" in name
+
 
 def is_gemma(name: str):
     return "gemma" in name.lower()
 
+
 def is_mlx_model(name: str) -> bool:
     return name.startswith("mlx-community/")
+
 
 def is_gemma_model(model):
     if getattr(model, 'is_mlx', False):
         return False
     return is_gemma(model.name_or_path.lower())
+
 
 def is_glm_model(model):
     if getattr(model, 'is_mlx', False):
@@ -80,9 +90,11 @@ def is_glm_model(model):
         return 'glm' in name.lower()
     return 'glm' in model.name_or_path.lower()
 
+
 def is_instruct(name: str):
     name = name.lower()
     return "-it" in name or "-instruct" in name
+
 
 def is_instruct_model(model):
     # hack for now
@@ -93,18 +105,22 @@ def is_instruct_model(model):
     return is_instruct(model.name_or_path.lower())
     """
 
+
 def is_quantized(name: str):
     name = name.lower()
     return "-qat" in name
+
 
 def is_quantized_model(model):
     if getattr(model, 'is_mlx', False):
         return False
     return is_quantized(model.name_or_path)
 
+
 def needs_quantizing(name: str):
     name = name.lower()
     return "-12b" in name
+
 
 def gemmify_prompt(prompt: str) -> str:
     p = ""
@@ -114,12 +130,14 @@ def gemmify_prompt(prompt: str) -> str:
     p += "<start_of_turn>model\n"
     return p
 
+
 def specialize_prompt(model, tokenizer, prompt: str) -> str:
     if getattr(model, 'is_mlx', False) and hasattr(tokenizer, 'apply_chat_template'):
         messages = [{"role": "user", "content": prompt}]
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     gi = is_gemma_model(model) and is_instruct_model(model)
     return gemmify_prompt(prompt) if gi else prompt
+
 
 def get_yesno_answer(model, response: str) -> str:
     lines = response.split('\n')
@@ -138,6 +156,7 @@ def get_yesno_answer(model, response: str) -> str:
 
     return "OTHER"
 
+
 def _load_model_mlx(name: str):
     if not HAS_MLX:
         print("MLX not available. Install with: pip install mlx-lm")
@@ -147,6 +166,7 @@ def _load_model_mlx(name: str):
     model.is_mlx = True
     model.model_name = name
     return model, tokenizer
+
 
 def _load_model(name: str):
     if name == Q3 or is_gemma_2(name) or is_gemma_4(name):
@@ -201,6 +221,7 @@ def _load_model(name: str):
     print(f"_load_model(): unknown model name: '{name}'")
     exit()
 
+
 def load_model(name):
     model_name = get_model_name(name)
     info(f"Loading {model_name}...")
@@ -244,6 +265,7 @@ def load_model(name):
 
     return SimpleNamespace(model=model, tokenizer=tokenizer)
 
+
 def clear_cache(device):
     if device is None:
         return
@@ -252,16 +274,17 @@ def clear_cache(device):
     elif device.type == "cuda":
         torch.cuda.empty_cache()
 
+
 def supports_thinking(model_id: str) -> bool:
-    """Return True if the remote model supports thinking output."""
-    return model_id.upper().startswith("GLM") or model_id.upper().startswith("QWEN")
+    name = model_id.lower()
+    if (name.startswith("glm") or name.startswith("qwen") or name.startswith("deepseek")):
+        return True
 
+    if name.startswith("gpt"):
+        # may need to refine this to specific models at some point
+        return True
 
-def adjust_thinking(payload: dict, model_id: str, thinking: bool) -> None:
-    """Modify thinking-related request fields for the given model."""
-    if model_id.upper().startswith("GLM") or model_id.upper().startswith("QWEN"):
-        if not thinking:
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+    return False
 
 
 def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> str:

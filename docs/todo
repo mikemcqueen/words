@@ -1,4 +1,12 @@
-* wf show all [queued/eval]
+* top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining 90% YES?
+  just a reminder to do something, at some point. OK to punt until i get there though.
+
+* so i could imagine having a couple high level operations like "write_to", "move_to", "copy_to"
+  which take a list of pre-approved (and checked) path names to write/move/copy to.  and we
+  could *actually check* those filenames for (non) existance prior to starting a particullar
+  command.
+
+* require --force to complete yes with empty .p2.yes file
 
 * I should think about a quantization pass specific to my use case. Or fine tuning.
 
