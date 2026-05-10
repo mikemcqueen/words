@@ -64,15 +64,19 @@ def parse_args(argv=None):
     """
     Usage:
 
-    compare.py <dir>                                         — discovery 2-way diff pairwise across all .jsonl files
-    compare.py <file>                                        — discovery 2-way diff anchor-based across all .jsonl files in same direcotry
-    compare.py <file_a> <file_b>                             — explicit 2-way diff 
-    compare.py <file_a> -k key1                              — explicit 2-way diff; alternate syntax
-    compare.py <dir> -k key1,key2                            — explicit 2-way diff; alternate syntax
-    compare.py <file_a> <file_b> -e RULE                     — explicit 2-way ensemble (OR, AND); -2 implied
-    compare.py <file_a> -k key1 -e RULE                      — explicit 2-way ensemble (OR, AND); -2 implied, alternate syntax
-    compare.py <dir|file> -2|-3|-5 [-e RULE]                 — n-way ensemble across all .jsonl files in same directory
-    compare.py <dir> -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all key combinations; -N >= len(keys); -2 implied if two keys
+    compare.py DIR                                         — discovery 2-way pairwise diff across all .jsonl files in DIR
+    compare.py FILE                                        — discovery 2-way FILE-anchored diff across all .jsonl files in DIR
+    compare.py FILE_A FILE_B                               — explicit 2-way diff 
+    compare.py FILE_A -k key1                              — explicit 2-way diff; alternate syntax
+    compare.py DIR -k key1,key2                            — explicit 2-way diff; alternate syntax
+    compare.py FILE_A FILE_B -e RULE                       — explicit 2-way ensemble (OR, AND); -2 implied
+    compare.py FILE_A -k key1 -e RULE                      — explicit 2-way ensemble (OR, AND); -2 implied, alternate syntax
+    compare.py DIR|FILE -2|-3|-5 [-e RULE]                 — n-way ensemble across all .jsonl files in DIR
+    compare.py DIR -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all key combinations; -N >= len(keys); -2 implied if two keys
+    TODO:
+    compare.py FILE -2|-3|-5 shouldn't *file* always be inclued?
+    simillary,
+    compare.py DIR -k key1 -2|-3|-5 shouldn't *key* always be included?
     """
 
     # Resolve n_way from the mutually exclusive -2/-3/-5 flags.
@@ -108,10 +112,10 @@ def parse_args(argv=None):
     # fixup args.n_way for implied -2 cases
     if not args.n_way:
         if len(args.files) == 2 and args.ensemble:
-            # compare.py <file_a> <file_b> -e RULE                        - 2-way ensemble (OR, AND)
+            # compare.py FILE_A FILE_B -e RULE                        - 2-way ensemble (OR, AND)
             args.n_way = 2
         elif len(args.files) == 1 and len(args.keys) == 2:
-            # compare.py <dir> -k key1,key2[,...] [-2|]-3|-5 [-e RULE] — n-way ensemble across all keys
+            # compare.py DIR -k key1,key2[,...] [-2|]-3|-5 [-e RULE]  — n-way ensemble across all keys
             args.n_way = 2
 
     # fixup args.ensemble for implied ALL cases
@@ -259,7 +263,9 @@ def load_result_files(expected, args):
 # --- top-level runners ---
 
 def run_explicit_2way(files, expected, args):
-    rule = args.ensemble if args.ensemble else 'OR'
+    assert len(args.files) == 2
+
+    rule = args.ensemble if args.ensemble else 'ALL'
     return diff.print_explicit_2way_diff(files, args, ensemble_rule=rule)
 
 
@@ -268,6 +274,8 @@ def run_explicit_nway(files, expected, args):
 
 
 def run_discovery(files, expected, args):
+    assert len(args.files) == 1
+
     p = Path(args.files[0])
     print(f"\nDirectory: {p if p.is_dir() else p.parent}")
     print(f"Found: {len(files)} file(s)\n")
@@ -287,7 +295,7 @@ def main():
     if args.pairs is None:
         compare_native.require_native()
         block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
-        rule = args.ensemble if args.ensemble else 'OR'
+        rule = args.ensemble if args.ensemble else 'ALL'
         diff.run_2way_nopairs_projected(block_iter, args.files, rule, args.method)
         return
 

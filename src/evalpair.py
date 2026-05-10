@@ -253,8 +253,9 @@ async def logprob_request_async(client: httpx.AsyncClient, prompt: str, order: s
     _, message, payload = await send_openai_request(client, args, prompt)
     if args.verbose:
         print(f"response:\n{response}\nmessage:\n{message}\npayload:\n{payload}")
-    #return order, parse_top_logprobs(payload["logprobs"]["content"][0]["top_logprobs"])
-    return order, parse_top_logprobs(message["logprobs"]["content"][0]["top_logprobs"])
+    return order, parse_top_logprobs(payload["logprobs"]["content"][0]["top_logprobs"])
+    # TODO: for alibaba's qwen (at least) (NOTE: also in ask_openai.py)
+    #return order, parse_top_logprobs(message["logprobs"]["content"][0]["top_logprobs"])
 
 
 async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str, orders, args) -> tuple:
@@ -268,14 +269,13 @@ async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str
     return orig_pair, results
 
 
-"""
-PARSE_ERRORS = (
+_PARSE_ERRORS = (
     TypeError,      # None["x"], list["x"], etc.
     KeyError,       # dict missing expected key
     IndexError,     # list missing expected index
     AttributeError, # None.foo, list.foo, etc.
 )
-"""
+
 
 async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
     """Process all pairs with max_concurrent in flight at once."""
@@ -297,7 +297,7 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):
             print(f"\n{type(e).__name__}: {e}")
-        if isinstance(e, TypeError):
+        if isinstance(e, _PARSE_ERRORS):
             traceback.print_exc()
         msg = f"Interrupted."
         if args.save:

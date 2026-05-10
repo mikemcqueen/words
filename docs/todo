@@ -1,10 +1,33 @@
+* categorize these issues into two buckets:  workflow focused, and distraction
+
+* check if file has already been submitted in p1, by looking in p1/done/...
+
+* compare.py file -2|-3|-5 shouldn't *file* always be inclued?
+  simillary,
+  compare.py dir -k key1 -2|-3|-5 shouldn't *key* always be included?
+  
+* BUG: explict 2-way diff needs explicit rule supplied or it barfs.
+
+* qt5-27B should always be running on an s1/pairs/2 partial dataset.
+  * manual review of top 10% results as they come in.
+
+* alibaba has logprobs in message not in payload (ask_openai, evalpair)
+
+* commmon thinking off, logprob parsing, system-prompt handling code between ask_openai and evalpair
+
+* http/https requirement(?), local LAN hosts (args.local?), auto-port determination
+
+* openai-specific max_tokens stuff (low pri)
+
 * top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining 90% YES?
   just a reminder to do something, at some point. OK to punt until i get there though.
+  * this is a big deal. don't remove this. think about it.
 
 * so i could imagine having a couple high level operations like "write_to", "move_to", "copy_to"
   which take a list of pre-approved (and checked) path names to write/move/copy to.  and we
   could *actually check* those filenames for (non) existance prior to starting a particullar
   command.
+  * this is a sort of poor-man's multiple-operations-as-transaction safety-net.
 
 * require --force to complete yes with empty .p2.yes file
 
@@ -14,6 +37,9 @@
   * and copy again if called again, even if already running?
 
 * evalpair: open output file with exclusive write flag
+
+* evalpair: auto-execution/resumption of P1 filtering
+  * how about send a text message when it's complete?
 
 * see about making evalpair discovery look for & skip completed result files & extend existing
   result files. coz i could finish the sysprompt evaluation.. on.. whatever.. phi_q4? if that
@@ -28,13 +54,6 @@
     * redefine the workflows using those defined components
     * loop
 
-* qt5-27B should always be running on an s1/pairs/2 partial dataset.
-  * manual review of top 10% results as they come in.
-
-* run an.test4 on qt5-9b for s&g 
-  * i think the idea here is to somehow "compare results" to 27B dense, like specifically
-    overlap of top ~10% auto-classified results for YES pair or something.
-
 * need to work on the prompt improvement task.
 
 * does eval_prompt work with logprobs yet?
@@ -48,13 +67,15 @@
   that not true? Maybe it's really only true that an *anchored* two-way diff has those special
   metrics, and I went on a bender and tried to apply that approach to all 2-way "ensembles"?
 
-* BUG: explict 2-way diff needs explicit rule supplied or it barfs.
-
 * so it appears dense model next-token logprobs data is just way more reliable as a certainty
   / quality predictor.  even after normalizing distributions, the actual top prob pair data
   is just significantly better, Qwen35 26B vs. 35B-MoE.
 
   Just not sure the quality of the moe results is meaningful overall.
+
+  * HAVING SAID THAT, crosswd2.p81.qwen35_moe plays is a top 3-ensemble component
+  * NOTE that if i do go with _moe results to, for example, help with p3 filtering in the
+    future, I'M GOING TO NEED A SEPARATE P1_MOE stage.  P1 is really "qwen35 27b".
 
 * idea:  have a @prepare for every @method.  then can standardize on a single comma-separated
   --ma --method-arg 1,2,3. that gets passed to the @prepare method to prepare the method (initializes
@@ -63,7 +84,7 @@
   * might want to name this FILTER for filter.py. METHOD becomes SELECT
 
 * i should be able to specify one key and still do a 3-way ensemble. then it will always include
- key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
+  key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
   run with both of these keys, but only one is required a time"?  probably that just means run
   compare.py twice with different single keys
 
@@ -81,6 +102,9 @@
   for majority decisions. but probably worth trying out just OR to see how it changes results.
 
 * really need to take the time to drill into low probability YES/NOs and see what I can do with that.
+
+* compare.py: compute_pair_diff (explicit 2-way) i think the "new" calculations are based on an
+  "anchored" bias but this isn't an anchored diff, so the new_* results look wrong.
 
 --less important--
 

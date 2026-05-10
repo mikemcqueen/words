@@ -1,5 +1,9 @@
+# diff.py
+
 import heapq
 import numpy as np
+
+from src import compare_native
 
 from src.common import (compute_stats, expected_yesno_from_labeled_result,
                     key_from_path, pair_has_yes, print_displayed_keys)
@@ -39,7 +43,7 @@ def _common_pair_entries(results_1, results_2):
             yield pair, other_data, data
 
 
-def _pair_ensemble_label(d1, d2, rule):
+def _pair_ensemble_label(d1, d2, rule: str):
     """Return the 2-way ensemble pair label using the given rule (OR or AND)."""
     result_1 = d1.get('result')
     result_2 = d2.get('result')
@@ -104,6 +108,9 @@ def compute_pair_diff(results_1, results_2, *, rule, include_ens_results=False, 
         if ens_label is None:
             continue
 
+        # TODO: i think these "new" calculations are based on an "anchored" bias but this isn't
+        # an anchored diff, so the new_* results look wrong.
+        #
         if old_label == 'fp' and ens_label != 'fp':
             fixed_fp += 1
         elif old_label == 'fn' and ens_label != 'fn':
@@ -283,8 +290,6 @@ def print_2way_diff_table(rows):
 
 def run_2way_nopairs_projected(block_iter, filenames, rule, method='top-token'):
     """Process projected native blocks without materializing pair-keyed dicts."""
-    import compare_native
-
     if method != 'top-token':
         raise RuntimeError(f"projected native loader does not support method {method!r}")
 
@@ -385,7 +390,7 @@ def _sort_diff_rows(rows, sort):
 
 def _diff_bad_rows(rows):
     """Convert displayed diff rows into the labeled form expected by print_bad_pairs."""
-    return [(f"{anchor},{complement} {diff['rule']}", diff) for anchor, complement, diff in rows]
+    return [(f"{anchor},{complement} {diff.get('rule', 'OR')}", diff) for anchor, complement, diff in rows]
 
 
 def print_2way_diff_anchored(anchor_key, files, args):

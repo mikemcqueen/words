@@ -95,7 +95,9 @@ def main():
         top_logprobs = []
         if isinstance(payload, dict):
             print(f"payload: {json.dumps(payload, indent=2)}")
-            lp_data = message.get("logprobs")
+            lp_data = payload.get("logprobs")
+            # TODO: for alibaba's qwen (at least) (NOTE: also in evalpair.py)
+            #lp_data = message.get("logprobs")
             top_logprobs = lp_data.get("content", [{}])[0].get("top_logprobs", [])
         elif isinstance(message, dict):
             lp_data = message.get("logprobs")
