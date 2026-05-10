@@ -388,7 +388,22 @@ def _build_three_by_max(bits_per_dir, dirs, n_keys, do_or, do_and, do_maj):
     return three_by_max
 
 
-def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
+def _anchor_filter_3(c_idx, anchor_indices):
+    """For an (a,b,c) triple at this c_idx, return (skip, ab_required).
+    Supports up to 3 anchors. ab_required lists anchors that must appear in {a, b}."""
+    ab_required = []
+    for ai in anchor_indices:
+        if ai == c_idx:
+            continue
+        if ai > c_idx:
+            return True, None
+        ab_required.append(ai)
+    if len(ab_required) > 2:
+        return True, None
+    return False, ab_required
+
+
+def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args, anchor_indices=frozenset()):
     n_mask = np.full(exp_bits.shape, np.uint64(0xFFFFFFFFFFFFFFFF), dtype=np.uint64)
     tail = n_pairs % 64
     if tail:
@@ -425,6 +440,13 @@ def nway_ensemble_bitmask(keys, exp_bits, yes_bits, dirs, n_pairs, args):
     if r == 3:
         for c_idx in range(2, n_keys):
             a_idx, b_idx = np.triu_indices(c_idx, k=1)
+            if anchor_indices:
+                skip, ab_required = _anchor_filter_3(c_idx, anchor_indices)
+                if skip:
+                    continue
+                for ai in ab_required:
+                    m = (a_idx == ai) | (b_idx == ai)
+                    a_idx, b_idx = a_idx[m], b_idx[m]
             A = len(a_idx)
             if A == 0:
                 continue
@@ -612,8 +634,13 @@ def print_2way_ensemble(two_results, args):
         print_bad_pairs(combined, sources=two_results)
 
 
-def print_discovery_ensemble(args, files):
+def print_discovery_ensemble(args, files, anchor_keys=frozenset()):
     keys = list(files.keys())
+    for k in anchor_keys:
+        assert k in keys, f"anchor key {k!r} not in discovered files"
+    if anchor_keys and args.n_way is not None:
+        assert len(anchor_keys) <= args.n_way, \
+            f"can't anchor on {len(anchor_keys)} keys with n_way={args.n_way}"
     exp_vec, yes_vecs, dirs, n_pairs = _build_vecs(files)
     rows = {}
 
@@ -622,16 +649,19 @@ def print_discovery_ensemble(args, files):
         d['ensemble'] = ensemble
         return SimpleNamespace(**d)
 
-    def run_nway(ensemble):
+    def run_nway(ensemble, anchor_indices=frozenset()):
         run_args = with_ensemble(ensemble)
         exp_bits, yes_bits_bm, _, _, _ = _build_bitmasks(files)
-        return nway_ensemble_bitmask(keys, exp_bits, yes_bits_bm, dirs, n_pairs, run_args)
+        return nway_ensemble_bitmask(keys, exp_bits, yes_bits_bm, dirs, n_pairs,
+                                     run_args, anchor_indices=anchor_indices)
 
     if args.ensemble == 'ALL':
         for key in keys:
             rows[key] = _stats_from_dirs([yes_vecs[key][d] for d in dirs], exp_vec, n_pairs)
 
     for key_a, key_b in combinations(keys, 2):
+        if anchor_keys and not anchor_keys.issubset({key_a, key_b}):
+            continue
         ya, yb = yes_vecs[key_a], yes_vecs[key_b]
         pair_key = f"{key_a},{key_b}"
         if args.ensemble in ('ALL', 'OR'):
@@ -640,12 +670,14 @@ def print_discovery_ensemble(args, files):
             rows[f"{pair_key} AND"] = _stats_from_dirs([ya[d] & yb[d] for d in dirs], exp_vec, n_pairs)
 
     if args.n_way >= 3:
+        # NOTE: anchor filtering is implemented for r==3 only; r==5 ignores anchor_indices.
+        anchor_indices = frozenset(keys.index(k) for k in anchor_keys)
         if args.ensemble == 'ALL':
-            rows.update(run_nway('OR'))
-            rows.update(run_nway('AND'))
-            rows.update(run_nway('MAJORITY'))
+            rows.update(run_nway('OR', anchor_indices))
+            rows.update(run_nway('AND', anchor_indices))
+            rows.update(run_nway('MAJORITY', anchor_indices))
         else:
-            rows.update(run_nway(args.ensemble))
+            rows.update(run_nway(args.ensemble, anchor_indices))
 
     sort_key, sort_rev = SORT_ENSEMBLE_KEYS[args.sort.lower()]
     sorted_rows = sorted(rows.items(), key=lambda x: _row_rank(x[1], sort_key), reverse=True)
