@@ -258,7 +258,7 @@ def _screen_counts(combined_per_dir, exp_bits, not_exp, n_mask, n_pairs):
 def _screen_candidates(heap, heap_max, sort_key, correct, fp, fn):
     bs = len(correct)
     if len(heap) < heap_max:
-        return np.arange(min(bs, heap_max - len(heap)))
+        return np.arange(bs)
 
     min_rank = heap[0][0]
     if sort_key == 'correct':
