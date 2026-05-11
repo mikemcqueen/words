@@ -1,16 +1,27 @@
 * categorize these issues into two buckets:  workflow focused, and distraction
 
-* check if file has already been submitted in p1, by looking in p1/done/...
+* workflow: check if file has already been submitted in p1, by looking in p1/done/...
 
-* compare.py file -2|-3|-5 shouldn't *file* always be inclued?
-  simillary,
-  compare.py dir -k key1 -2|-3|-5 shouldn't *key* always be included?
-  
-* BUG: explict 2-way diff needs explicit rule supplied or it barfs.
+* workflow: move "done" files to //dump? (or just do it manually, or have manul command
+  (e.g. archive p1)
 
-* qt5-27B should always be running on an s1/pairs/2 partial dataset.
+* workflow: top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining
+  90% YES? just a reminder to do something, at some point. OK to punt until i get there though.
+  * this is a big deal. don't remove this. think about it.
+
+* workflow: qt5-27B should always be running on an s1/pairs/2 partial dataset.
   * manual review of top 10% results as they come in.
 
+* workflow: I like 4th.91 for qt5-moe.
+
+
+
+* DONE - compare.py file -2|-3|-5 shouldn't *file* always be inclued?
+  simillary,
+  compare.py dir -k key1 -2|-3|-5 : shouldn't *key* always be included?
+  cmopare.py dir -k key1,key2 -3  : how about this
+  cmopare.py file1 file2 -3       : how about this
+  
 * alibaba has logprobs in message not in payload (ask_openai, evalpair)
 
 * commmon thinking off, logprob parsing, system-prompt handling code between ask_openai and evalpair
@@ -18,10 +29,6 @@
 * http/https requirement(?), local LAN hosts (args.local?), auto-port determination
 
 * openai-specific max_tokens stuff (low pri)
-
-* top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining 90% YES?
-  just a reminder to do something, at some point. OK to punt until i get there though.
-  * this is a big deal. don't remove this. think about it.
 
 * so i could imagine having a couple high level operations like "write_to", "move_to", "copy_to"
   which take a list of pre-approved (and checked) path names to write/move/copy to.  and we

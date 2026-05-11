@@ -62,7 +62,7 @@ def parse_args(argv=None):
 
 
     """
-    Usage:
+    Usage: (likely a bit out of date)
 
     compare.py DIR                                         — discovery 2-way pairwise diff across all .jsonl files in DIR
     compare.py FILE                                        — discovery 2-way FILE-anchored diff across all .jsonl files in DIR
@@ -77,21 +77,21 @@ def parse_args(argv=None):
     compare.py DIR -k key1 -2|-3|-5 shouldn't *key* always be included?
     """
 
-    # 1. Resolve n_way (always 2, 3, or 5; default 2). Track whether the user
-    #    explicitly chose an n-way mode to distinguish `-2` (ensemble) from the
-    #    implicit 2-way default (diff).
-    args.nway_explicit = bool(args.two_way or args.three_way or args.five_way)
+    # Resolve n_way (always 2, 3, or 5; default 2). Track whether the user
+    # explicitly chose an n-way mode to distinguish `-2` (ensemble) from the
+    # implicit 2-way default (diff).
+    nway_explicit = bool(args.two_way or args.three_way or args.five_way)
     if args.five_way:    args.n_way = 5
     elif args.three_way: args.n_way = 3
     else:                args.n_way = 2   # covers -2 and the unset default
 
     args.keys = [k.strip() for k in args.keys.split(',')] if args.keys else []
 
-    # 2. --keys requires exactly one positional path (the dir or the seed file)
+    # --keys requires exactly one positional path (the dir or the seed file)
     if args.keys and len(args.files) != 1:
         parser.error('--keys requires exactly one path argument')
 
-    # 3. Determine discovery_dir candidate and seed anchor list
+    # Determine discovery_dir candidate and seed anchor list
     first = Path(args.files[0])
     if len(args.files) == 1 and first.is_dir():
         discovery_dir = first
@@ -100,33 +100,33 @@ def parse_args(argv=None):
         anchor_files = [Path(f) for f in args.files]
         discovery_dir = anchor_files[0].parent
 
-    # 4. Resolve --keys against discovery_dir
+    # Resolve --keys against discovery_dir
     for key in args.keys:
         anchor_files.append(Path(resolve_key(str(discovery_dir), key, enforce_unique=True)))
     args.keys = []
 
-    # 5. All anchor files must share the same parent directory
+    # All anchor files must share the same parent directory
     for f in anchor_files:
         if f.parent != discovery_dir:
             parser.error(f'anchor {f} must live in {discovery_dir}')
 
-    # 6. Validate anchor count vs n_way
+    # Validate anchor count vs n_way
     if len(anchor_files) > args.n_way:
         parser.error(f'-{args.n_way} accepts at most {args.n_way} anchor files; got {len(anchor_files)}')
 
-    # 7. Finalize args.files and args.discovery_dir
+    # Finalize args.files and args.discovery_dir
     args.files = [str(f) for f in anchor_files]
     args.discovery_dir = discovery_dir if len(anchor_files) < args.n_way else None
 
-    # 8. Implied ensemble rule. Any explicit -N flag or n_way > 2 implies
-    #    ensemble='ALL' when -e is absent. Plain `DIR` (no -N) stays as diff.
-    if (args.nway_explicit or args.n_way > 2) and not args.ensemble:
+    # Implied ensemble rule. Any explicit -N flag or n_way > 2 implies
+    # ensemble='ALL' when -e is absent. Plain `DIR` (no -N) stays as diff.
+    if (nway_explicit or args.n_way > 2) and not args.ensemble:
         args.ensemble = 'ALL'
 
     # no-pairs mode: require exactly 2 files after fixups
     if args.pairs is None:
         if len(args.files) != 2:
-            parser.error('without --pairs, exactly 2 files are required (after key/fixup resolution)')
+            parser.error('without --pairs, exactly 2 files are required (after key resolution)')
         return args, parser
 
     # validate --ensemble
@@ -160,6 +160,7 @@ def parse_args(argv=None):
         parser.error('--heap-size must be > 0')
 
     # --top vs --heap-size: only the no-anchor 2-way diff path uses the heap
+    # TODO: warning message, clamp to heap_size
     if (args.discovery_dir is not None
             and not args.files                # no anchors => all-pairs path
             and args.ensemble is None         # 2-way diff
@@ -238,6 +239,7 @@ def run_discovery(files, expected, args):
 
 def run_explicit(files, expected, args):
     if args.n_way == 2:
+        # TODO: probably not needed
         rule = args.ensemble or 'ALL'
         return diff.print_explicit_2way_diff(files, args, ensemble_rule=rule)
     anchor_keys = frozenset(files.keys())
@@ -250,6 +252,7 @@ def main():
     if args.pairs is None:
         compare_native.require_native()
         block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
+        # TODO: probably not needed
         rule = args.ensemble if args.ensemble else 'ALL'
         diff.run_2way_nopairs_projected(block_iter, args.files, rule, args.method)
         return
@@ -260,7 +263,8 @@ def main():
 
     if len(args.files) < args.n_way:
         rows = run_discovery(files, expected, args)
-    else:  # len(args.files) == args.n_way (validation guarantees no >)
+    else:  
+        assert len(args.files) == args.n_way # arg validation guarantees this at time of writing
         rows = run_explicit(files, expected, args)
 
     if args.bad and rows:
