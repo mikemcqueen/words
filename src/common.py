@@ -151,7 +151,11 @@ def print_displayed_keys(rows) -> None:
 def load_expected_pairs(filepath: str) -> dict:
     """Load a pairs JSON file and return a {pair: expected} dict (space-separated keys)."""
     with open(filepath) as f:
-        data = json.load(f)
+        try:
+            data = json.load(f)
+        except json.decoder.JSONDecodeError as e:
+            print(f"Error decoding JSON: {filepath}")
+            raise
     return {entry["pair"].replace(",", " "): entry["expected"].upper() for entry in data}
 
 
