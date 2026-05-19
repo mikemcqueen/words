@@ -1,5 +1,6 @@
 # eval_yes.py
 
+import argparse
 import subprocess
 from pathlib import Path
 from workflow import config, eval_pairs, fs, usage, log
@@ -18,6 +19,18 @@ def help_summary(name) -> str:
 
 def show_help(command, opts, argv) -> int:
     return usage.default_help(help_summary(command), argv, _usage_text())
+
+
+def _make_parser():
+    p = argparse.ArgumentParser(add_help=False)
+    eval_pairs.add_no_filter_flag(p)
+    return p
+
+
+def _parse_args(argv, opts):
+    local_opts, rest = _make_parser().parse_known_args(argv)
+    vars(opts).update(vars(local_opts))
+    return rest, opts
 
 
 def get_split_paths(prefix: str, n_files: int, suffix: str = '') -> list[Path]:
@@ -49,7 +62,12 @@ def _make_notes(paths: list[Path]) -> None:
 
 
 def _eval_yes(src_pairs: Path, opts) -> Path:
-    dst_pairs = eval_pairs.move_pairs_done(src_pairs, "p2", opts)
+    dst_pairs = eval_pairs.make_dst_pairs_path(src_pairs, "p2", opts)
+    if not opts.no_filter:
+        eval_pairs.filter_done_pairs(src_pairs, dst_pairs, "p2", opts)
+    else:
+        src_pairs.rename(dst_pairs)
+        log.info("Skipped done pair filtering")
     split_prefix = f"/tmp/{dst_pairs.name}"
     split_paths = _split_pairs(dst_pairs, split_prefix)
     _make_notes(split_paths)
@@ -58,6 +76,7 @@ def _eval_yes(src_pairs: Path, opts) -> Path:
 
 
 def run(command, opts, argv) -> int:
+    argv, opts = _parse_args(argv, opts)
     if not argv:
         details = _usage_text()
         return usage.missing_argument(details)
@@ -72,5 +91,5 @@ def run(command, opts, argv) -> int:
     
     # TODO: (optionally?) copy file to somewhere specified by user
 
-    log.success(f"Ready for round 2: {src_pairs.name}")
+    log.success(f"{fs.line_count(dst_pairs)} pairs ready for manual filtering: {src_pairs.name}")
     return 0

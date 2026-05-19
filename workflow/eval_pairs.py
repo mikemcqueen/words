@@ -1,5 +1,6 @@
 # eval_pairs.py
 
+import argparse
 from pathlib import Path
 from plumbum.cmd import comm
 
@@ -17,27 +18,52 @@ def show_help(command, opts, argv):
     return usage.default_help(help_summary(command), argv, _usage_text())
 
 
-def move_pairs_done(src_pairs: Path, phase: str, opts) -> Path:
+def add_no_filter_flag(parser):
+    parser.add_argument("--no-filter", action="store_true")
+
+
+def _make_parser():
+    p = argparse.ArgumentParser(add_help=False)
+    add_no_filter_flag(p)
+    return p
+
+
+def _parse_args(argv, opts):
+    local_opts, rest = _make_parser().parse_known_args(argv)
+    vars(opts).update(vars(local_opts))
+    return rest, opts
+
+
+def make_dst_pairs_path(src_pairs: Path, phase: str, opts) -> Path:
     dst_dir = config.path(opts.dir, [phase, "eval"])
     dst_pairs = dst_dir / src_pairs.name
     if not opts.force:
         fs.raise_if_exists(dst_pairs)
+    return dst_pairs
 
+
+def filter_done_pairs(src_pairs: Path, dst_pairs: Path, phase: str, opts) -> None:
     done_pairs = config.path(opts.dir, [phase, "done"]) / f"{phase}_done"
     if done_pairs.is_file():
         (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
         src_pairs.unlink()
     else:
         src_pairs.rename(dst_pairs)
-
-    return dst_pairs
+    # TODO: return # of pairs
 
 
 def _eval_pairs(src_pairs: Path, opts) -> Path:
-    return move_pairs_done(src_pairs, "p1", opts)
+    dst_pairs = make_dst_pairs_path(src_pairs, "p1", opts)
+    if not opts.no_filter:
+        filter_done_pairs(src_pairs, dst_pairs, "p1", opts)
+    else:
+        src_pairs.rename(dst_pairs)
+        log.info("Skipped done pair filtering")
+    return dst_pairs
 
 
 def run(command, opts, argv):
+    argv, opts = _parse_args(argv, opts)
     if not argv:
         details = _usage_text()
         return usage.missing_argument(details)
@@ -52,5 +78,5 @@ def run(command, opts, argv):
     
     # TODO: (optionally?) copy file to somewhere specified by user
 
-    log.success(f"Ready for evalpairs: {src_pairs.name}")
+    log.success(f"{fs.line_count(dst_pairs)} pairs ready for evalpairs: {src_pairs.name}")
     return 0
