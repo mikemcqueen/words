@@ -18,7 +18,11 @@ def help_summary(name) -> str:
 
 
 def show_help(command, opts, argv) -> int:
-    return usage.default_help(help_summary(command), argv, _usage_text())
+    text = usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0
 
 
 def _make_parser():

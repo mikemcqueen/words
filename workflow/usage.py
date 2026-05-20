@@ -1,7 +1,43 @@
 # usage.py
 
+import argparse
 import sys
+from pathlib import Path
 from workflow import config, log
+
+
+def make_global_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("-d", "--dir", type=Path, metavar="DIR",
+                   help="workflow root directory (default: cwd)")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="force overwrite existing files")
+    p.add_argument("-h", "--help", action="store_true",
+                   help="show this help message")
+    return p
+
+
+def _global_opts_section() -> str:
+    text = make_global_parser().format_help()
+    _, _, rest = text.partition("\n\n")
+    return rest.rstrip()
+
+
+def format_help(command: str | None = None,
+                description: str | None = None,
+                local_parser: argparse.ArgumentParser | None = None,
+                positional: str | None = None) -> str:
+    prog = f"wf {command}" if command else "wf"
+    parents = [make_global_parser()]
+    if local_parser is not None:
+        parents.append(local_parser)
+    p = argparse.ArgumentParser(prog=prog, description=description,
+                                parents=parents, add_help=False)
+    usage = p.format_usage().rstrip()
+    if positional is not None:
+        usage += f" {positional}"
+    _, _, after_usage = p.format_help().partition("\n\n")
+    return usage + "\n\n" + after_usage
 
 def invalid_argument(tok: str, details: str | None = None) -> int:
     log.error(f"invalid argument: {tok!r}")
@@ -75,6 +111,7 @@ def _layout_help_text(command: str, args: config.LayoutArgs, summary: str) -> st
     targets = _format_targets(node)
     if targets:
         lines.extend(["", *targets])
+    lines.extend(["", _global_opts_section()])
     return "\n".join(lines)
 
 

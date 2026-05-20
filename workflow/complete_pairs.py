@@ -17,7 +17,11 @@ def help_summary(name):
 
 
 def show_help(command, opts, argv):
-    return print(_usage_text())
+    text = usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0
 
 
 def _resolve_results_path(src_dir: Path, pairs_path: Path) -> Path:

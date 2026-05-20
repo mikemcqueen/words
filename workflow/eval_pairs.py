@@ -15,11 +15,16 @@ def help_summary(name):
 
 
 def show_help(command, opts, argv):
-    return usage.default_help(help_summary(command), argv, _usage_text())
+    text = usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0
 
 
 def add_no_filter_flag(parser):
-    parser.add_argument("--no-filter", action="store_true")
+    parser.add_argument("--no-filter", action="store_true",
+                        help="skip filtering already-evaluated pairs")
 
 
 def _make_parser():

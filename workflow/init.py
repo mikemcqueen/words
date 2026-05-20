@@ -35,4 +35,8 @@ def run(command: str, opts, argv: list[str]) -> int:
 
 
 def show_help(command: str, opts, argv: list[str]) -> int:
-    return usage.default_help(help_summary(command), argv)
+    text = usage.format_help(command, help_summary(command))
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0

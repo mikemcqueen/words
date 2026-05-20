@@ -37,4 +37,8 @@ def run(command, opts, argv):
 
 
 def show_help(command, opts, argv):
-    return usage.default_help(help_summary(command), argv, "usage: wf submit pairs <pair-file>")
+    text = usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0

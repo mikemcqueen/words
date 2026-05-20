@@ -4,7 +4,9 @@ from workflow import config, usage
 
 
 def _help_text(registry):
-    return "\n".join(registry[k].help_summary(k) for k in registry)
+    lines = ["targets:"]
+    lines += [f"  {registry[k].help_summary(k)}" for k in registry]
+    return "\n".join(lines)
 
 
 def registry_key(registry, key: str) -> str | None:
@@ -16,6 +18,9 @@ def registry_key(registry, key: str) -> str | None:
 
 def show_help(command, registry, opts, argv):
     if not argv:
+        positional = "COMMAND" if command is None else "TARGET"
+        print(usage.format_help(command, positional=positional), end="")
+        print()
         print(_help_text(registry))
         return 0
     head = argv[0].lower()

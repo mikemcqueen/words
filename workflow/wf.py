@@ -1,8 +1,7 @@
-import argparse
 import sys
 from pathlib import Path
 
-from workflow import init, show, submit, wipe, eval as evaluate, complete, log, dispatch
+from workflow import init, show, submit, wipe, eval as evaluate, complete, log, dispatch, usage
 
 
 COMMANDS = {
@@ -13,14 +12,6 @@ COMMANDS = {
     "complete": complete
 #  ,"wipe":    wipe
 }
-
-
-def _make_parser():
-    p = argparse.ArgumentParser(add_help=False)
-    p.add_argument("-d", "--dir", type=Path)
-    p.add_argument("-f", "--force", action="store_true")
-    p.add_argument("-h", "--help", action="store_true")
-    return p
 
 
 def _normalize_help_argv(argv: list[str]) -> list[str]:
@@ -39,7 +30,7 @@ def _normalize_help_argv(argv: list[str]) -> list[str]:
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     argv = _normalize_help_argv(argv)
-    opts, rest = _make_parser().parse_known_args(argv)
+    opts, rest = usage.make_global_parser().parse_known_args(argv)
     if opts.dir is not None and not opts.dir.is_dir():
         print(f"-d/--dir: not a directory: {opts.dir}")
         return 2

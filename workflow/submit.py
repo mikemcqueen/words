@@ -15,4 +15,6 @@ def run(command, opts, argv):
 
 
 def show_help(command, opts, argv):
+    if not argv:
+        print(help_summary(command))
     return dispatch.show_help(command, SUBCOMMANDS, opts, argv)
