@@ -9,16 +9,16 @@ from workflow import config, eval_pairs, fs, usage, log
 CHUNK_SIZE = 750
 
 
-def _usage_text():
-    return "usage: wf eval yes PAIRS-FILE"
-
-
 def help_summary(name) -> str:
     return "yes     — evaluate yes pairs"
 
 
+def _format_help(command, opts, argv) -> str:
+    return usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+
+
 def show_help(command, opts, argv) -> int:
-    text = usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+    text = _format_help(command, opts, argv)
     if argv:
         return usage.invalid_argument(argv[0], text)
     print(text, end="")
@@ -82,8 +82,7 @@ def _eval_yes(src_pairs: Path, opts) -> Path:
 def run(command, opts, argv) -> int:
     argv, opts = _parse_args(argv, opts)
     if not argv:
-        details = _usage_text()
-        return usage.missing_argument(details)
+        return usage.missing_argument(_format_help(command, opts, argv))
 
     src_dir = config.path(opts.dir, ["p2", "queued"]);
     src_pairs = src_dir / argv[0]

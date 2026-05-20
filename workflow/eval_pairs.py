@@ -6,16 +6,16 @@ from plumbum.cmd import comm
 
 from workflow import log, fs, config, usage
 
-def _usage_text():
-    return "usage: wf eval pairs PAIRS-FILE"
-
-
 def help_summary(name):
     return "pairs   — evaluate pairs"
 
 
+def _format_help(command, opts, argv):
+    return usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+
+
 def show_help(command, opts, argv):
-    text = usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+    text = _format_help(command, opts, argv)
     if argv:
         return usage.invalid_argument(argv[0], text)
     print(text, end="")
@@ -54,7 +54,6 @@ def filter_done_pairs(src_pairs: Path, dst_pairs: Path, phase: str, opts) -> Non
         src_pairs.unlink()
     else:
         src_pairs.rename(dst_pairs)
-    # TODO: return # of pairs
 
 
 def _eval_pairs(src_pairs: Path, opts) -> Path:
@@ -70,8 +69,7 @@ def _eval_pairs(src_pairs: Path, opts) -> Path:
 def run(command, opts, argv):
     argv, opts = _parse_args(argv, opts)
     if not argv:
-        details = _usage_text()
-        return usage.missing_argument(details)
+        return usage.missing_argument(_format_help(command, opts, argv))
 
     src_dir = config.path(opts.dir, ["p1", "queued"]);
     src_pairs = src_dir / argv[0]

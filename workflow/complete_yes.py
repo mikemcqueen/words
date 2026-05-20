@@ -10,16 +10,16 @@ from workflow import log, fs, config, usage, eval_yes, complete_pairs
 YesNo = Literal["yes", "no"]
 
 
-def _usage_text():
-    return "usage: wf complete yes PAIRS-FILE"
-
-
 def help_summary(name):
     return "yes     — complete a yes file manual review"
 
 
+def _format_help(command, opts, argv):
+    return usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+
+
 def show_help(command, opts, argv):
-    text = usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+    text = _format_help(command, opts, argv)
     if argv:
         return usage.invalid_argument(argv[0], text)
     print(text, end="")
@@ -105,7 +105,7 @@ def _complete(src_pairs: Path, opts) -> int:
 
 def run(command, opts, argv) -> int:
     if not argv:
-        return usage.missing_argument(_usage_text())
+        return usage.missing_argument(_format_help(command, opts, argv))
 
     src_dir = config.path(opts.dir, ["p2", "eval"])
     src_pairs = src_dir / argv[0]

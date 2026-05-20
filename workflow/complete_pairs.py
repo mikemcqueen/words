@@ -8,16 +8,16 @@ from workflow import log, fs, config, usage
 from src.filter import filter_results
 
 
-def _usage_text():
-    return "usage: wf complete pairs PAIRS-FILE"
-
-
 def help_summary(name):
     return "pairs   — complete a pairs file evaluation"
 
 
+def _format_help(command, opts, argv):
+    return usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+
+
 def show_help(command, opts, argv):
-    text = usage.format_help(command, help_summary(command), positional="PAIRS-FILE")
+    text = _format_help(command, opts, argv)
     if argv:
         return usage.invalid_argument(argv[0], text)
     print(text, end="")
@@ -107,8 +107,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
 
 def run(command, opts, argv):
     if not argv:
-        details = _usage_text()
-        return usage.missing_argument(details)
+        return usage.missing_argument(_format_help(command, opts, argv))
 
     src_dir = config.path(opts.dir, ["p1", "eval"])
     pairs_path = src_dir / argv[0]
