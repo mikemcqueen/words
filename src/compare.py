@@ -3,10 +3,8 @@
 """
 
 import argparse
-import queue
 import signal
 import sys
-import threading
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from pathlib import Path
@@ -14,7 +12,8 @@ from pathlib import Path
 from src.common import (load_expected_pairs, load_eval_results,
                     key_from_path, discover_files_all,
                     resolve_key, print_bad_pairs,
-                    add_print_keys_arg, print_displayed_keys)
+                    add_print_keys_arg, print_displayed_keys,
+                    prefetch)
 from src.score import label_eval_results, resolve_all_pair_labels
 from src.diff import SORT_DIFF_KEYS
 from src.ensemble import SORT_ENSEMBLE_KEYS
@@ -170,32 +169,6 @@ def parse_args(argv=None):
     return args, parser
 
 
-def _prefetch(iterable):
-    """Wrap an iterable so the next item is produced in a background thread."""
-    q = queue.Queue(maxsize=1)
-    sentinel = object()
-
-    def producer():
-        try:
-            for item in iterable:
-                q.put(item)
-        except Exception as e:
-            q.put(e)
-        finally:
-            q.put(sentinel)
-
-    t = threading.Thread(target=producer, daemon=True)
-    t.start()
-    while True:
-        item = q.get()
-        if item is sentinel:
-            break
-        if isinstance(item, Exception):
-            raise item
-        yield item
-    t.join()
-
-
 def load_result_files(expected, args):
     if args.discovery_dir is not None:
         files = discover_files_all(str(args.discovery_dir))
@@ -250,8 +223,7 @@ def main():
     args, _ = parse_args()
 
     if args.pairs is None:
-        compare_native.require_native()
-        block_iter = _prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
+        block_iter = prefetch(compare_native.iter_projected_blocks(args.files, chunk_size=1000))
         # TODO: probably not needed
         rule = args.ensemble if args.ensemble else 'ALL'
         diff.run_2way_nopairs_projected(block_iter, args.files, rule, args.method)

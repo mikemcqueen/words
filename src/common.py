@@ -1,10 +1,38 @@
 import argparse
 import json
+import queue
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List
+
+
+def prefetch(iterable):
+    """Wrap an iterable so the next item is produced in a background thread."""
+    q = queue.Queue(maxsize=1)
+    sentinel = object()
+
+    def producer():
+        try:
+            for item in iterable:
+                q.put(item)
+        except Exception as e:
+            q.put(e)
+        finally:
+            q.put(sentinel)
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    while True:
+        item = q.get()
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+    t.join()
 
 
 def single_pair_generator(pair_string):
