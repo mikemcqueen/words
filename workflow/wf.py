@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from workflow import init, show, submit, wipe, eval as evaluate, complete, log, dispatch, usage
+from workflow import init, show, submit, wipe, eval as evaluate, complete, filter, log, dispatch, usage
 
 
 COMMANDS = {
@@ -9,7 +9,8 @@ COMMANDS = {
     "show":     show,
     "submit":   submit,
     "eval":     evaluate,
-    "complete": complete
+    "complete": complete,
+    "filter":   filter,
 #  ,"wipe":    wipe
 }
 

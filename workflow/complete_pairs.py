@@ -4,7 +4,8 @@ import shutil
 
 from pathlib import Path
 from plumbum.cmd import cat, sort
-from workflow import log, fs, config, usage
+from workflow import log, fs, config, usage, eval_pairs
+from workflow.filter_pairs import yes_suffix
 from src.filter import filter_results
 
 
@@ -60,15 +61,19 @@ def merge_pairs(src_pairs: Path, dst_pairs) -> None:
 
 
 def merge_with_done_pairs(phase: str, src_pairs: Path, opts) -> None:
-    done_pairs = config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
+    done_pairs = eval_pairs.make_done_pairs_path(phase, opts)
     merge_pairs(src_pairs, done_pairs)
 
 
 def move_to_done(phase: str, src_in: Path, src_out: Path, opts) -> None:
     dst_in = config.path(opts.dir, [phase, "done", "in"]) / src_in.name
-    src_in.rename(dst_in)
     dst_out = config.path(opts.dir, [phase, "done", "out"]) / src_out.name
+    if not opts.force:
+        fs.raise_if_exists(dst_in)
+        fs.raise_if_exists(dst_out)
+    src_in.rename(dst_in)
     src_out.rename(dst_out)
+    return dst_in, dst_out
 
 
 def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) -> None:
@@ -76,7 +81,7 @@ def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) ->
         fs.raise_if_exists(dst_results)
     with dst_results.open("w") as f:
         # NOTE: qwen35 27B default
-        filter_results(str(src_results), yes, f, pmin=0.9)
+        filter_results(str(src_results), yes, f, pmin=0.9, prng=0.1)
 
 
 # Workflow 1.2
@@ -85,7 +90,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     phase = "p1"
 
     # 1.2.a.i. YES pairs go to p2's "need manual review" queue
-    yes_pairs = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + ".p1.yes")
+    yes_pairs = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + yes_suffix(0.9, 0.1))
     _filter_results_to(src_results, True, yes_pairs, opts)
 
     # 1.2.a.ii. NO pairs go to p3's "need another automated pass" queue

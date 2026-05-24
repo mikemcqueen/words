@@ -14,12 +14,12 @@ except ImportError as exc:  # pragma: no cover - exercised when extension is abs
     _IMPORT_ERROR = exc
 
 
-def native_available() -> bool:
+def _native_available() -> bool:
     return ProjectedAlignedJsonlReader is not None
 
 
-def require_native() -> None:
-    if native_available():
+def _require_native() -> None:
+    if _native_available():
         return
     detail = f": {_IMPORT_ERROR}" if _IMPORT_ERROR is not None else ""
     raise RuntimeError(f"native compare loader unavailable{detail}")
@@ -27,6 +27,5 @@ def require_native() -> None:
 
 def iter_projected_blocks(files_list, chunk_size=100):
     """Return a native iterator over compact projected blocks."""
-    require_native()
-    assert ProjectedAlignedJsonlReader is not None
+    _require_native()
     return ProjectedAlignedJsonlReader(files_list, chunk_size)

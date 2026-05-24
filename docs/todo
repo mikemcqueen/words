@@ -1,27 +1,59 @@
-* categorize these issues into two buckets:  workflow focused, and distraction
+HIGH PRIORITY >>
+----------------
 
-* workflow: check if file has already been submitted in p1, by looking in p1/done/...
+* BUG: Complete_yes:
+  * _complete() BROKEN
+  * yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
+  * actual suffix is e.g. p1.90.100.yes
+  * maybe we just need to replace the rfind("p1", "p2")
+  * or regex, so it works with p1.xx.yy.yes -> p2.xx.yy.no 
 
-* workflow: move "done" files to //dump? (or just do it manually, or have manul command
-  (e.g. archive p1)
+* evalpair: auto-execution/resumption of P1 filtering
+  * how about send a text message when it's complete?
+  * this is a big deal, long term.  any time when results are not being generated is wasted
+    and it adds up.
 
 * workflow: top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining
   90% YES? just a reminder to do something, at some point. OK to punt until i get there though.
   * this is a big deal. don't remove this. think about it.
+
+* so i should take a refresher look at how src/filter works. i think it's probably just working
+  on one .jsonl file at a time and doing yes/no/prob filtering. and that's it. and if that's
+  true, then what i want is to be able to supply a pairs file, and a directory of .jsonl results,
+  and filter for each pair, regardless of which .jsonl result file contains the results. so,
+  obviously this is *possible* but the goal is to try to do it most efficiently. I think loading
+  ~5M pairs into memory (a set) is probably workable. just hard choke if > 5M for now, probably
+  won't (shouldn't) need more.
+
+
+-----------------
+<< HIGH PRIORITY
+
+
+* categorize these issues into two buckets:  workflow focused, and distraction
+
+* workflow: check if file has already been submitted in p1, by looking in p1/done/...
+
+* workflow: move "done" files to //dump? (or just do it manually, or have "manual" command
+  to execute (e.g. archive p1)
 
 * workflow: qt5-27B should always be running on an s1/pairs/2 partial dataset.
   * manual review of top 10% results as they come in.
 
 * workflow: I like 4th.91 for qt5-moe.
 
-
-
 * DONE - compare.py file -2|-3|-5 shouldn't *file* always be inclued?
+  NOTE: I did some of these as well.
   simillary,
   compare.py dir -k key1 -2|-3|-5 : shouldn't *key* always be included?
   cmopare.py dir -k key1,key2 -3  : how about this
   cmopare.py file1 file2 -3       : how about this
-  
+* RELATED:
+  i should be able to specify one key and still do a 3-way ensemble. then it will always include
+  key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
+  run with both of these keys, but only one is required a time"?  probably that just means run
+  compare.py twice with different single keys
+
 * alibaba has logprobs in message not in payload (ask_openai, evalpair)
 
 * commmon thinking off, logprob parsing, system-prompt handling code between ask_openai and evalpair
@@ -44,9 +76,6 @@
   * and copy again if called again, even if already running?
 
 * evalpair: open output file with exclusive write flag
-
-* evalpair: auto-execution/resumption of P1 filtering
-  * how about send a text message when it's complete?
 
 * see about making evalpair discovery look for & skip completed result files & extend existing
   result files. coz i could finish the sysprompt evaluation.. on.. whatever.. phi_q4? if that
@@ -89,11 +118,6 @@
   a global variable with values, like METHOD_PROB_MINMAX would take 50.0,60.0 to show all results
   that were determined by a probability between [50,60). 100 special case for max could be inclusive.
   * might want to name this FILTER for filter.py. METHOD becomes SELECT
-
-* i should be able to specify one key and still do a 3-way ensemble. then it will always include
-  key in the ensemble, and discover the rest.  same with two keys?  how about, "i want it to
-  run with both of these keys, but only one is required a time"?  probably that just means run
-  compare.py twice with different single keys
 
 * auto param detection:
   * evalpair.py auto results dir, find sibling dir of pairs dir

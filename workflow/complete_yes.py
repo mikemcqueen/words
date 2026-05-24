@@ -58,6 +58,8 @@ def _replace_suffix(name: str, old_suffix: str, new_suffix: str) -> str:
 def _extract_pairs_to(enex_paths: list[Path], yesno: YesNo, dst_pairs: Path, opts):
     # Parse .enex files into separate pairs files
     pair_paths = _parse_note_files(enex_paths, yesno)
+    if yesno == "yes":
+        log.info(f"parsed {sum(fs.line_count(p) for p in pair_paths)} YES pairs")
     if not opts.force:
         fs.raise_if_exists(dst_pairs)
     # Concat all pairs files into a single file of all pairs
@@ -82,24 +84,32 @@ def _complete(src_pairs: Path, opts) -> int:
 
     # Download notes into .enex files
     enex_paths = _retrieve_notes(split_paths, opts)
+    log.info(f"downloaded {len(enex_paths)} notes")
     
-    # Extract YES pairs from .enex files → p2/eval and process
+    # Extract all YES pairs from .enex files to a single file in p2/eval and process
+
+    # TODO BORKEN - e.g. p1.90.100.yes - maybe we just need to replace the rfind("p1", "p2")
+    #               or regex, so it works with p1.xx.yy.yes -> p2.xx.yy.no below
     yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
     _extract_pairs_to(enex_paths, "yes", yes_pairs, opts)
+    log.info(f"extracted {fs.line_count(yes_pairs)} unique YES pairs")
+
     _process_yes_pairs(yes_pairs, opts)
 
-    # Extract NO pairs from .enex files → p3/queued
+    # Extract all NO pairs from .enex files to a single file in p3/queued
+
+    # TODO BORKEN - e.g. p1.90.100.yes
     no_pairs_dir = config.path(opts.dir, ["p3", "queued"])
     no_pairs = no_pairs_dir / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.no")
     _extract_pairs_to(enex_paths, "no", no_pairs, opts)
 
-    # Merge src_pairs with "2nd-pass classification done" pairs
+    # Merge src_pairs with "phase-2 classification done" pairs
     complete_pairs.merge_with_done_pairs(phase, src_pairs, opts)
         
     # Move src_pairs → p2/done/in, yes_pairs → p2/done/out
-    complete_pairs.move_to_done(phase, src_pairs, yes_pairs, opts)
+    _, done_yes_pairs = complete_pairs.move_to_done(phase, src_pairs, yes_pairs, opts)
 
-    log.success(f"Completed yes pairs {src_pairs.name}")
+    log.success(f"{fs.line_count(done_yes_pairs)} YES pairs, saved to: {done_yes_pairs}")
     return 0
 
 

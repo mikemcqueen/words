@@ -13,7 +13,6 @@ def filter_results(path: str, yes: bool, out_file, pmin = 0.5, prng = 1.0, use_m
     if pmax == 1.0:
         pmax += 0.1
 
-    compare_native.require_native()
     blocks = compare_native.iter_projected_blocks([path], chunk_size=8192)
 
     yes_label = compare_native.LABEL_YES

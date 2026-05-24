@@ -47,8 +47,12 @@ def make_dst_pairs_path(src_pairs: Path, phase: str, opts) -> Path:
     return dst_pairs
 
 
+def make_done_pairs_path(phase: str, opts) -> Path:
+    return config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
+
+
 def filter_done_pairs(src_pairs: Path, dst_pairs: Path, phase: str, opts) -> None:
-    done_pairs = config.path(opts.dir, [phase, "done"]) / f"{phase}_done"
+    done_pairs = make_done_pairs_path("p1", opts)
     if done_pairs.is_file():
         (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
         src_pairs.unlink()
