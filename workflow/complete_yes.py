@@ -106,8 +106,9 @@ def _complete(src_pairs: Path, opts) -> int:
     # Merge src_pairs with "phase-2 classification done" pairs
     complete_pairs.merge_with_done_pairs(phase, src_pairs, opts)
         
-    # Move src_pairs → p2/done/in, yes_pairs → p2/done/out
-    _, done_yes_pairs = complete_pairs.move_to_done(phase, src_pairs, yes_pairs, opts)
+    # Move yes_pairs → p2/done/out, src_pairs → p2/done/in
+    done_yes_pairs = complete_pairs.move_to_done(phase, yes_pairs, "out", opts)
+    complete_pairs.move_to_done(phase, src_pairs, "in", opts)
 
     log.success(f"{fs.line_count(done_yes_pairs)} YES pairs, saved to: {done_yes_pairs}")
     return 0

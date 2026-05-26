@@ -51,22 +51,24 @@ def make_done_pairs_path(phase: str, opts) -> Path:
     return config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
 
 
-def filter_done_pairs(src_pairs: Path, dst_pairs: Path, phase: str, opts) -> None:
+def filter_done_pairs(src_pairs: Path, phase: str, opts) -> None:
     done_pairs = make_done_pairs_path("p1", opts)
     if done_pairs.is_file():
-        (comm["-23", str(src_pairs), str(done_pairs)] > str(dst_pairs))()
-        src_pairs.unlink()
-    else:
-        src_pairs.rename(dst_pairs)
+        filtered_pairs = src_pairs.with_suffix('.filtered')
+        if not opts.force:
+            fs.raise_if_exists(filtered_pairs)
+        (comm["-23", str(src_pairs), str(done_pairs)] > str(filtered_pairs))()
+        log.info(f"{fs.line_count(filtered_pairs)} filtered pairs")
+        return filtered_pairs
+    return src_pairs
 
 
 def _eval_pairs(src_pairs: Path, opts) -> Path:
+    log.info(f"{fs.line_count(src_pairs)} source pairs")
     dst_pairs = make_dst_pairs_path(src_pairs, "p1", opts)
+    src_pairs.rename(dst_pairs)
     if not opts.no_filter:
-        filter_done_pairs(src_pairs, dst_pairs, "p1", opts)
-    else:
-        src_pairs.rename(dst_pairs)
-        log.info("Skipped done pair filtering")
+        dst_pairs = filter_done_pairs(dst_pairs, "p1", opts)
     return dst_pairs
 
 
@@ -85,5 +87,5 @@ def run(command, opts, argv):
     
     # TODO: (optionally?) copy file to somewhere specified by user
 
-    log.success(f"{fs.line_count(dst_pairs)} pairs ready for evalpairs: {src_pairs.name}")
+    log.success(f"{fs.line_count(dst_pairs)} pairs ready for evalpairs: {dst_pairs.name}")
     return 0

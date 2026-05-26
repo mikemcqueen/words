@@ -4,9 +4,12 @@ import shutil
 
 from pathlib import Path
 from plumbum.cmd import cat, sort
+from typing import Literal
 from workflow import log, fs, config, usage, eval_pairs
 from workflow.filter_pairs import yes_suffix
-from src.filter import filter_results
+from src.filter import filter_results, filter_pairs
+
+InOut = Literal["in", "out"]
 
 
 def help_summary(name):
@@ -65,15 +68,12 @@ def merge_with_done_pairs(phase: str, src_pairs: Path, opts) -> None:
     merge_pairs(src_pairs, done_pairs)
 
 
-def move_to_done(phase: str, src_in: Path, src_out: Path, opts) -> None:
-    dst_in = config.path(opts.dir, [phase, "done", "in"]) / src_in.name
-    dst_out = config.path(opts.dir, [phase, "done", "out"]) / src_out.name
+def move_to_done(phase: str, src: Path, inout: InOut, opts) -> Path:
+    dst = config.path(opts.dir, [phase, "done", inout]) / src.name
     if not opts.force:
-        fs.raise_if_exists(dst_in)
-        fs.raise_if_exists(dst_out)
-    src_in.rename(dst_in)
-    src_out.rename(dst_out)
-    return dst_in, dst_out
+        fs.raise_if_exists(dst)
+    src.rename(dst)
+    return dst
 
 
 def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) -> None:
@@ -84,29 +84,49 @@ def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) ->
         filter_results(str(src_results), yes, f, pmin=0.9, prng=0.1)
 
 
+def _filter_pairs_to(src_pairs: Path, results_dir: Path, yes: bool, dst_pairs: Path, opts) -> None:
+    if not opts.force:
+        fs.raise_if_exists(dst_pairs)
+    with dst_pairs.open("w") as f:
+        # NOTE: qwen35 27B default
+        filter_pairs(str(src_pairs), str(results_dir), yes, f, pmin=0.9, prng=0.1)
+
+
 # Workflow 1.2
 def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     log.info(f"found: {src_pairs.name}, {src_results.name}")
     phase = "p1"
 
+    # 1.2.c (out). Move src_results → p1/done/out
+    # this must be done here as filter_pairs relies on *all* results files in out directory
+    dst_results = move_to_done(phase, src_results, "out", opts)
+
     # 1.2.a.i. YES pairs go to p2's "need manual review" queue
     yes_pairs = config.path(opts.dir, ["p2", "queued"]) / (src_pairs.name + yes_suffix(0.9, 0.1))
-    _filter_results_to(src_results, True, yes_pairs, opts)
+    _filter_pairs_to(src_pairs, dst_results.parent, True, yes_pairs, opts)
+    log.info(f"Filtered {fs.line_count(yes_pairs)} YES pairs: {yes_pairs}")
 
     # 1.2.a.ii. NO pairs go to p3's "need another automated pass" queue
     # TODO: not sure this is technically correct.  also we're only filtering the
     #       top 10% of YES for Qwen35 27B. so there are a lot more "maybe NO" pairs
     #       to be passing along to p3 here.
     no_pairs = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
-    _filter_results_to(src_results, False, no_pairs, opts)
+    _filter_pairs_to(src_pairs, dst_results.parent, False, no_pairs, opts)
 
-    # 1.2.b. Merge input pairs with "1st-pass classification done" pairs
-    merge_with_done_pairs(phase, src_pairs, opts)
-        
-    # 1.2.c. Move src_pairs → p1/done/in, src_results → p1/done/out
-    move_to_done(phase, src_pairs, src_results, opts)
+    filtered_pairs = src_pairs.with_suffix('.filtered')
+    if not filtered_pairs.exists():
+        filtered_pairs = None
 
-    log.success(f"Completed pairs {src_pairs.name}")
+    # 1.2.b. Merge newly-evaluated pairs into p1_done.pairs
+    merge_with_done_pairs(phase, filtered_pairs or src_pairs, opts)
+
+    # 1.2.c (in). Move src_pairs → p1/done/in.
+    dst_pairs = move_to_done(phase, src_pairs, "in", opts)
+
+    if filtered_pairs:
+        filtered_pairs.unlink()
+
+    log.success(f"Completed {fs.line_count(dst_pairs)} pairs: {dst_pairs.name}")
     return 0
 
 

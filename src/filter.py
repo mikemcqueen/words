@@ -60,7 +60,7 @@ def _load_pair_set(path: str) -> set:
     return pairs
 
 
-def filter_results_dir(pairs_path: str, results_dir: str, yes: bool, out_file,
+def filter_pairs(pairs_path: str, results_dir: str, yes: bool, out_file,
                        pmin = 0.5, prng = 1.0, use_max = False):
     pmax = _pmax(pmin, prng)
     pair_set = _load_pair_set(pairs_path)
