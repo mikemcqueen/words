@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from plumbum.cmd import cat, sort
 from typing import Literal
-from workflow import log, fs, config, usage, eval_yes, complete_pairs
+from workflow import log, fs, config, usage, complete_pairs
 
 
 YesNo = Literal["yes", "no"]
@@ -37,16 +37,29 @@ def _parse_note_files(paths: list[Path], yesno: YesNo) -> list[Path]:
     return parsed
 
 
-def _retrieve_notes(paths: list[Path], opts) -> list[Path]:
+MAX_NOTE_PARTS = 26
+
+
+def _retrieve_notes(src_pairs: Path, enex_dir: Path, opts) -> list[Path]:
+    # Download note parts .aa, .ab, .ac, ... until a part isn't found (max 26).
+    # The part count is no longer derived from CHUNK_SIZE; we probe until the
+    # note store reports "note not found".
     enex_paths: list[Path] = []
-    for path in paths:
-        enex_path = path.parent / (path.name + ".enex")
+    for i in range(MAX_NOTE_PARTS):
+        title = f"{src_pairs.name}.a{chr(ord('a') + i)}"
+        enex_path = enex_dir / (title + ".enex")
         if not opts.force:
             fs.raise_if_exists(enex_path)
-        with enex_path.open("w") as f:
-            subprocess.run(["note", "-pf.72", "--get", path.name, "--production"],
-                            stdout=f, check=True)
+        result = subprocess.run(["note", "-pf.72", "--get", title, "--production"],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            if "note not found" in result.stderr:
+                break  # no more parts
+            raise RuntimeError(f"failed to retrieve note {title}:\n{result.stderr}")
+        enex_path.write_text(result.stdout)
         enex_paths.append(enex_path)
+    if not enex_paths:
+        raise RuntimeError(f"no note parts found for {src_pairs.name} (expected at least .aa)")
     return enex_paths
                            
                            
@@ -81,13 +94,10 @@ def _complete(src_pairs: Path, opts) -> int:
     log.info(f"found: {src_pairs.name}")
     phase = "p2"
 
-    # Generate split_paths with filenames representing note names
-    n_files = eval_yes.get_split_file_count(src_pairs)
-    split_prefix = str(config.path(opts.dir, [phase, "done", "out", "enex"]) / src_pairs.name)
-    split_paths = eval_yes.get_split_paths(split_prefix, n_files)
-
-    # Download notes into .enex files
-    enex_paths = _retrieve_notes(split_paths, opts)
+    # Download note parts (.aa, .ab, ...) into .enex files, stopping at the
+    # first part that doesn't exist (decoupled from CHUNK_SIZE).
+    enex_dir = config.path(opts.dir, [phase, "done", "out", "enex"])
+    enex_paths = _retrieve_notes(src_pairs, enex_dir, opts)
     log.info(f"downloaded {len(enex_paths)} notes")
     
     # Extract all YES pairs from .enex files to a single file in p2/eval and process
