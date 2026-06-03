@@ -6,7 +6,7 @@ from pathlib import Path
 from workflow import config, eval_pairs, fs, usage, log
 
 
-CHUNK_SIZE = 750
+CHUNK_SIZE = 400
 
 
 def help_summary(name) -> str:
@@ -66,16 +66,14 @@ def _make_notes(paths: list[Path]) -> None:
 
 
 def _eval_yes(src_pairs: Path, opts) -> Path:
+    log.info(f"{fs.line_count(src_pairs)} source YES pairs")
     dst_pairs = eval_pairs.make_dst_pairs_path(src_pairs, "p2", opts)
+    src_pairs.rename(dst_pairs)
     if not opts.no_filter:
-        eval_pairs.filter_done_pairs(src_pairs, dst_pairs, "p2", opts)
-    else:
-        src_pairs.rename(dst_pairs)
-        log.info("Skipped done pair filtering")
+        dst_pairs = eval_pairs.filter_done_pairs(dst_pairs, "p2", opts)
     split_prefix = f"/tmp/{dst_pairs.name}"
     split_paths = _split_pairs(dst_pairs, split_prefix)
     _make_notes(split_paths)
-
     return dst_pairs
 
 
@@ -94,5 +92,5 @@ def run(command, opts, argv) -> int:
     
     # TODO: (optionally?) copy file to somewhere specified by user
 
-    log.success(f"{fs.line_count(dst_pairs)} pairs ready for manual filtering: {src_pairs.name}")
+    log.success(f"{fs.line_count(dst_pairs)} pairs ready for manual filtering: {dst_pairs.name}")
     return 0

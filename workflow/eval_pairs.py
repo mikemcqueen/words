@@ -52,15 +52,17 @@ def make_done_pairs_path(phase: str, opts) -> Path:
 
 
 def filter_done_pairs(src_pairs: Path, phase: str, opts) -> None:
-    done_pairs = make_done_pairs_path("p1", opts)
-    if done_pairs.is_file():
-        filtered_pairs = src_pairs.with_suffix('.filtered')
-        if not opts.force:
-            fs.raise_if_exists(filtered_pairs)
-        (comm["-23", str(src_pairs), str(done_pairs)] > str(filtered_pairs))()
-        log.info(f"{fs.line_count(filtered_pairs)} filtered pairs")
-        return filtered_pairs
-    return src_pairs
+    done_pairs = make_done_pairs_path(phase, opts)
+    if not done_pairs.is_file():
+        return src_pairs
+
+    filtered_pairs = src_pairs.with_name(src_pairs.name + ".filtered")
+    if not opts.force:
+        fs.raise_if_exists(filtered_pairs)
+
+    (comm["-23", str(src_pairs), str(done_pairs)] > str(filtered_pairs))()
+    log.info(f"{fs.line_count(filtered_pairs)} filtered pairs")
+    return filtered_pairs
 
 
 def _eval_pairs(src_pairs: Path, opts) -> Path:

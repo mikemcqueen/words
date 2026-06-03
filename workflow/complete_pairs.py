@@ -76,20 +76,24 @@ def move_to_done(phase: str, src: Path, inout: InOut, opts) -> Path:
     return dst
 
 
+""" Maybe usable in filter_pairs.py
 def _filter_results_to(src_results: Path, yes: bool, dst_results: Path, opts) -> None:
     if not opts.force:
         fs.raise_if_exists(dst_results)
     with dst_results.open("w") as f:
         # NOTE: qwen35 27B default
         filter_results(str(src_results), yes, f, pmin=0.9, prng=0.1)
+"""
 
 
 def _filter_pairs_to(src_pairs: Path, results_dir: Path, yes: bool, dst_pairs: Path, opts) -> None:
     if not opts.force:
         fs.raise_if_exists(dst_pairs)
-    with dst_pairs.open("w") as f:
+    tmp = Path("/tmp") / dst_pairs.name
+    with tmp.open("w") as f:
         # NOTE: qwen35 27B default
         filter_pairs(str(src_pairs), str(results_dir), yes, f, pmin=0.9, prng=0.1)
+    (sort["-u", str(tmp)] > str(dst_pairs))()
 
 
 # Workflow 1.2
@@ -107,9 +111,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     log.info(f"Filtered {fs.line_count(yes_pairs)} YES pairs: {yes_pairs}")
 
     # 1.2.a.ii. NO pairs go to p3's "need another automated pass" queue
-    # TODO: not sure this is technically correct.  also we're only filtering the
-    #       top 10% of YES for Qwen35 27B. so there are a lot more "maybe NO" pairs
-    #       to be passing along to p3 here.
+    # TODO: not sure this is technically correct.  (what about it? the pathname?)
     no_pairs = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
     _filter_pairs_to(src_pairs, dst_results.parent, False, no_pairs, opts)
 

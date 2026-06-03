@@ -45,7 +45,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, ValueError) as e:
-        if isinstance(e, OSError):
+        if isinstance(e, OSError) and e.strerror is not None:
             log.error(f"{e.strerror}: {e.filename}")
         else:
             log.error(str(e))

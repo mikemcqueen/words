@@ -1,6 +1,12 @@
 HIGH PRIORITY >>
 ----------------
 
+* complete_yes needs to keep trying notes until it can't find one, don't
+  rely on split/CHUNK size.
+
+* complete_yes move notes to backup/processed notebook once command successfully
+  completes?
+
 * BUG: Complete_yes:
   * _complete() BROKEN
   * yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
@@ -16,14 +22,6 @@ HIGH PRIORITY >>
 * workflow: top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining
   90% YES? just a reminder to do something, at some point. OK to punt until i get there though.
   * this is a big deal. don't remove this. think about it.
-
-* so i should take a refresher look at how src/filter works. i think it's probably just working
-  on one .jsonl file at a time and doing yes/no/prob filtering. and that's it. and if that's
-  true, then what i want is to be able to supply a pairs file, and a directory of .jsonl results,
-  and filter for each pair, regardless of which .jsonl result file contains the results. so,
-  obviously this is *possible* but the goal is to try to do it most efficiently. I think loading
-  ~5M pairs into memory (a set) is probably workable. just hard choke if > 5M for now, probably
-  won't (shouldn't) need more.
 
 
 -----------------
