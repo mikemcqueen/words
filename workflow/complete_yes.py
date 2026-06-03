@@ -50,9 +50,13 @@ def _retrieve_notes(paths: list[Path], opts) -> list[Path]:
     return enex_paths
                            
                            
-def _replace_suffix(name: str, old_suffix: str, new_suffix: str) -> str:
-    assert name.endswith(old_suffix), f"{name} doesn't end with {old_suffix}"
-    return name[:-len(old_suffix)] + new_suffix
+def _phase2_name(name: str, yesno: YesNo) -> str:
+    # <base>.p1.<pmin>.<prange>.yes -> <base>.p2.<pmin>.<prange>.<yesno>
+    # The <pmin>.<prange> band (from filter_pairs.yes_suffix) is variable; preserve it.
+    assert name.endswith(".yes"), f"{name} doesn't end with .yes"
+    base, sep, middle = name[:-len(".yes")].rpartition(".p1.")
+    assert sep, f"{name} doesn't contain .p1."
+    return f"{base}.p2.{middle}.{yesno}"
 
 
 def _extract_pairs_to(enex_paths: list[Path], yesno: YesNo, dst_pairs: Path, opts):
@@ -87,20 +91,15 @@ def _complete(src_pairs: Path, opts) -> int:
     log.info(f"downloaded {len(enex_paths)} notes")
     
     # Extract all YES pairs from .enex files to a single file in p2/eval and process
-
-    # TODO BORKEN - e.g. p1.90.100.yes - maybe we just need to replace the rfind("p1", "p2")
-    #               or regex, so it works with p1.xx.yy.yes -> p2.xx.yy.no below
-    yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
+    yes_pairs = src_pairs.parent / _phase2_name(src_pairs.name, "yes")
     _extract_pairs_to(enex_paths, "yes", yes_pairs, opts)
     log.info(f"extracted {fs.line_count(yes_pairs)} unique YES pairs")
 
     _process_yes_pairs(yes_pairs, opts)
 
     # Extract all NO pairs from .enex files to a single file in p3/queued
-
-    # TODO BORKEN - e.g. p1.90.100.yes
     no_pairs_dir = config.path(opts.dir, ["p3", "queued"])
-    no_pairs = no_pairs_dir / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.no")
+    no_pairs = no_pairs_dir / _phase2_name(src_pairs.name, "no")
     _extract_pairs_to(enex_paths, "no", no_pairs, opts)
 
     # Merge src_pairs with "phase-2 classification done" pairs
