@@ -115,7 +115,7 @@ def _complete(src_pairs: Path, src_results: Path, opts) -> int:
     no_pairs = config.path(opts.dir, ["p3", "queued"]) / (src_pairs.name + ".p1.no")
     _filter_pairs_to(src_pairs, dst_results.parent, False, no_pairs, opts)
 
-    filtered_pairs = src_pairs.with_suffix('.filtered')
+    filtered_pairs = eval_pairs.make_filtered_pairs_path(src_pairs)
     if not filtered_pairs.exists():
         filtered_pairs = None
 

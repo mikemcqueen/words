@@ -250,7 +250,7 @@ def parse_top_logprobs(top_logprobs):
 
 
 async def logprob_request_async(client: httpx.AsyncClient, prompt: str, order: str, args) -> tuple:
-    _, message, payload = await send_openai_request(client, args, prompt)
+    response, message, payload = await send_openai_request(client, args, prompt)
     if args.verbose:
         print(f"response:\n{response}\nmessage:\n{message}\npayload:\n{payload}")
     return order, parse_top_logprobs(payload["logprobs"]["content"][0]["top_logprobs"])
@@ -292,7 +292,7 @@ async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
             if writer:
                 writer.submit_logprob(seq, pair, results)
             else:
-                print(f"{pair}")
+                print(f"{pair} {results}")
                 
     except BaseException as e:
         if not isinstance(e, (KeyboardInterrupt, asyncio.CancelledError, SystemExit)):

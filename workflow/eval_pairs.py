@@ -51,12 +51,16 @@ def make_done_pairs_path(phase: str, opts) -> Path:
     return config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
 
 
+def make_filtered_pairs_path(src_pairs: Path) -> Path:
+    return src_pairs.with_name(src_pairs.name + ".filtered")
+
+
 def filter_done_pairs(src_pairs: Path, phase: str, opts) -> None:
     done_pairs = make_done_pairs_path(phase, opts)
     if not done_pairs.is_file():
         return src_pairs
 
-    filtered_pairs = src_pairs.with_name(src_pairs.name + ".filtered")
+    filtered_pairs = make_filtered_pairs_path(src_pairs)
     if not opts.force:
         fs.raise_if_exists(filtered_pairs)
 
