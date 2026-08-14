@@ -29,7 +29,8 @@ def _make_local_parser():
 
 def _format_help(command):
     return usage.format_help(command, help_summary(command),
-                             local_parser=_make_local_parser())
+                             local_parser=_make_local_parser(),
+                             positional="all|JSONL-FILE")
 
 
 def show_help(command, opts, argv):
@@ -40,9 +41,15 @@ def show_help(command, opts, argv):
     return 0
 
 
-def _result_paths(opts) -> list[Path]:
+def _result_paths(opts, source: str) -> list[Path]:
     results_dir = config.path(opts.dir, ["p1", "done", "out"])
     fs.raise_if_not_dir(results_dir)
+
+    if source != "all":
+        path = results_dir / source
+        fs.raise_if_not_file(path)
+        return [path]
+
     paths = [p for p in results_dir.glob("*.jsonl") if p.is_file()]
     if not paths:
         raise ValueError(f"no .jsonl files in {results_dir}")
@@ -72,9 +79,11 @@ def _extract(paths: list[Path], pmin: float, prange: float,
 
 def run(command, opts, argv):
     local_opts, rest = _make_local_parser().parse_known_args(argv)
-    if rest:
-        return usage.invalid_argument(rest[0], _format_help(command))
+    if not rest:
+        return usage.missing_argument(_format_help(command))
+    if len(rest) > 1:
+        return usage.invalid_argument(rest[1], _format_help(command))
 
-    paths = _result_paths(opts)
+    paths = _result_paths(opts, rest[0])
     return _extract(paths, local_opts.prob_min, local_opts.prob_range,
                     local_opts.output, opts.force)
