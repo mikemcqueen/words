@@ -9,21 +9,21 @@ CODES = {
     "off":          "\x1b[0m"
 }
 
-def _msg(color: str, msg: str, file=sys.stdout):
+def _msg(color: str, msg: str, file):
     print(f'{CODES[color]}{msg}{CODES["off"]}', file=file)
 
 
-def success(msg: str, file=sys.stdout):
-    _msg("bright green", msg, file=file)
+def success(msg: str, file=None):
+    _msg("bright green", msg, file=sys.stdout if file is None else file)
 
 
-def info(msg: str, file=sys.stderr):
-    _msg("white", msg, file=file)
+def info(msg: str, file=None):
+    _msg("white", msg, file=sys.stderr if file is None else file)
 
 
-def warn(msg: str, file=sys.stderr):
-    _msg("yellow", msg, file=file)
+def warn(msg: str, file=None):
+    _msg("yellow", msg, file=sys.stderr if file is None else file)
 
 
-def error(msg: str, file=sys.stderr):
-    _msg("red", msg, file=file)
+def error(msg: str, file=None):
+    _msg("red", msg, file=sys.stderr if file is None else file)
