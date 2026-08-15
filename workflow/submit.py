@@ -1,13 +1,16 @@
 # submit.py
 
-from workflow import submit_pairs, usage, dispatch
+from workflow import submit_pairs, submit_yes, usage, dispatch
 
 
-SUBCOMMANDS = {"pairs": submit_pairs}
+SUBCOMMANDS = {
+    "pairs": submit_pairs,
+    "yes": submit_yes,
+}
 
 
 def help_summary(name):
-    return "submit  — submit items (pairs)"
+    return "submit  — submit items (pairs|yes)"
 
 
 def run(command, opts, argv):

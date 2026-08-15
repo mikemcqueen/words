@@ -64,12 +64,15 @@ def _retrieve_notes(src_pairs: Path, enex_dir: Path, opts) -> list[Path]:
                            
                            
 def _phase2_name(name: str, yesno: YesNo) -> str:
-    # <base>.p1.<pmin>.<prange>.yes -> <base>.p2.<pmin>.<prange>.<yesno>
-    # The <pmin>.<prange> band (from filter_pairs.yes_suffix) is variable; preserve it.
+    # <base>[.p1[.<middle>]].yes -> <base>.p2[.<middle>].<yesno>
     assert name.endswith(".yes"), f"{name} doesn't end with .yes"
-    base, sep, middle = name[:-len(".yes")].rpartition(".p1.")
-    assert sep, f"{name} doesn't contain .p1."
-    return f"{base}.p2.{middle}.{yesno}"
+    stem = name[:-len(".yes")]
+    base, sep, middle = stem.rpartition(".p1.")
+    if sep:
+        return f"{base}.p2.{middle}.{yesno}"
+    if stem.endswith(".p1"):
+        stem = stem[:-len(".p1")]
+    return f"{stem}.p2.{yesno}"
 
 
 def _extract_pairs_to(enex_paths: list[Path], yesno: YesNo, dst_pairs: Path, opts):
