@@ -91,8 +91,8 @@ def filter_pairs(pairs_path: str, results_dir: str, yes: bool, out_file,
 def _filter_args(args):
     use_max = not args.any
     if args.dir is not None:
-        filter_results_dir(args.file, args.dir, args.yes, sys.stdout,
-                           args.prob_min, args.prob_range, use_max)
+        filter_pairs(args.file, args.dir, args.yes, sys.stdout,
+                     args.prob_min, args.prob_range, use_max)
     else:
         filter_results(args.file, args.yes, sys.stdout,
                        args.prob_min, args.prob_range, use_max)
