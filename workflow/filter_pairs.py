@@ -1,0 +1,85 @@
+# filter_pairs.py
+
+import argparse
+from pathlib import Path
+from workflow import log, fs, config, usage
+from src.filter import filter_results
+
+
+def help_summary(name):
+    return "pairs   — filter a p1 results file into p2/queued"
+
+
+def _make_local_parser():
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--pm", "--prob-min", dest="prob_min", type=float, default=0.9,
+                   metavar="PMIN", help="minimum YES probability (default: 0.9)")
+    p.add_argument("--pr", "--prob-range", dest="prob_range", type=float, default=0.1,
+                   metavar="PRANGE", help="probability range width (default: 0.1)")
+    return p
+
+
+def _format_help(command, opts, argv):
+    return usage.format_help(command, help_summary(command),
+                             local_parser=_make_local_parser(), positional="JSONL-FILE")
+
+
+def show_help(command, opts, argv):
+    text = _format_help(command, opts, argv)
+    if argv:
+        return usage.invalid_argument(argv[0], text)
+    print(text, end="")
+    return 0
+
+
+def yes_suffix(pmin: float, prange: float) -> str:
+    return f".p1.{round(pmin * 100)}.{round(prange * 100)}.yes"
+
+
+def _check_already_submitted(p2_dirs: list[Path], name: str) -> Path | None:
+    for d in p2_dirs:
+        candidate = d / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def run(command, opts, argv):
+    local = _make_local_parser()
+    local_opts, rest = local.parse_known_args(argv)
+
+    if not rest:
+        return usage.missing_argument(_format_help(command, opts, argv))
+
+    pmin = local_opts.prob_min
+    prange = local_opts.prob_range
+
+    jsonl_arg = Path(rest[0])
+    if jsonl_arg.is_absolute():
+        jsonl_path = jsonl_arg
+    else:
+        jsonl_path = config.path(opts.dir, ["p1", "done", "out"]) / rest[0]
+    fs.raise_if_not_file(jsonl_path)
+
+    out_name = jsonl_path.stem + yes_suffix(pmin, prange)
+
+    p2_dirs = [
+        config.path(opts.dir, ["p2", "queued"]),
+        config.path(opts.dir, ["p2", "eval"]),
+        config.path(opts.dir, ["p2", "done", "in"]),
+    ]
+    existing = _check_already_submitted(p2_dirs, out_name)
+    if existing and not opts.force:
+        raise ValueError(f"already submitted: {existing.relative_to(opts.dir / config.CONFIG_ROOT)}")
+
+    out_path = p2_dirs[0] / out_name
+    if not opts.force:
+        fs.raise_if_exists(out_path)
+
+    # TODO: move complete_pairs.filter_results_to here. call here from complete_pairs/yes.
+    with out_path.open("w") as f:
+        filter_results(str(jsonl_path), True, f, pmin=pmin, prng=prange)
+
+    n = sum(1 for _ in out_path.open())
+    log.success(f"Filtered {n} pairs [{pmin:.2f}, {pmin + prange:.2f}) → {out_path.name}")
+    return 0
