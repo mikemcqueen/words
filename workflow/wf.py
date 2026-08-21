@@ -15,7 +15,10 @@ COMMANDS = {
     "eval":     evaluate,
     "complete": command.Dispatcher("complete — complete evaluation (p1|p2)",
                                    {"p1": complete.P1, "p2": complete.P2}),
-    "extract":  extract,
+    "extract":  command.Dispatcher("extract — extract archived results (p1)",
+                                   {"p1": command.Dispatcher(
+                                       "p1      — extract archived p1 results (yes)",
+                                       {"yes": extract.P1_YES})}),
     "filter":   filter_pairs,
 #  ,"wipe":    wipe
 }
