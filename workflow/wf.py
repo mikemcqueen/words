@@ -8,7 +8,7 @@ from workflow import (
 
 
 COMMANDS = {
-    "init":     init,
+    "init":     init.COMMAND,
     "show":     show,
     "submit":   command.Dispatcher("submit  — submit items (p1|p2)",
                                    {"p1": submit.P1, "p2": submit.P2}),
@@ -21,7 +21,7 @@ COMMANDS = {
                                    {"p1": command.Dispatcher(
                                        "p1      — extract archived p1 results (yes)",
                                        {"yes": extract.P1_YES})}),
-    "filter":   filter_pairs,
+    "filter":   filter_pairs.COMMAND,
 #  ,"wipe":    wipe
 }
 

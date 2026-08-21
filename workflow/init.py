@@ -1,11 +1,8 @@
 # init.py
 
 from pathlib import Path
-from workflow import log, config, fs, usage
 
-
-def help_summary(name):
-    return "init    — initialize a workflow (stub)"
+from workflow import command, config, fs, log, usage
 
 
 def ensure_dir(d: Path) -> Path:
@@ -26,17 +23,17 @@ def init(opts) -> None:
     ensure_layout(opts.dir, config.CONFIG_ROOT, config.CONFIG_LAYOUT, opts)
 
 
-def run(command: str, opts, argv: list[str]) -> int:
-    if argv:
-        return usage.invalid_argument(argv[0], usage.default_help_text(help_summary(command)))
-    init(opts)
-    log.success(f"Initialized {opts.dir}")
-    return 0
+class Init(command.Action):
+    def __init__(self):
+        super().__init__(summary="init    — initialize a workflow (stub)")
+
+    def run(self, command, opts, argv: list[str]) -> int:
+        if argv:
+            return usage.invalid_argument(argv[0],
+                                          usage.default_help_text(self.summary))
+        init(opts)
+        log.success(f"Initialized {opts.dir}")
+        return 0
 
 
-def show_help(command: str, opts, argv: list[str]) -> int:
-    text = usage.format_help(command, help_summary(command))
-    if argv:
-        return usage.invalid_argument(argv[0], text)
-    print(text, end="")
-    return 0
+COMMAND = Init()
