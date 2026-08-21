@@ -146,9 +146,9 @@ class P2RecipeTests(unittest.TestCase):
         self.assertFalse(self.batch_dir.exists())
 
     def test_rerunning_after_merge_skips_forward_and_completes(self):
-        from workflow import complete_yes, steps as step_runner
+        from workflow import complete, steps as step_runner
         with mock.patch.object(p2_retrieve.subprocess, "run", self.notes.route):
-            step_runner.run_steps(complete_yes.STEPS[:5], self.ctx)
+            step_runner.run_steps(complete.P2.steps[:5], self.ctx)
 
         self.assertTrue(self.batch_dir.exists())
         code, _, stderr = self._complete()

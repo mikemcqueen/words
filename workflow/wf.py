@@ -13,7 +13,8 @@ COMMANDS = {
     "submit":   command.Dispatcher("submit  — submit items (p1|p2)",
                                    {"p1": submit.P1, "p2": submit.P2}),
     "eval":     evaluate,
-    "complete": complete,
+    "complete": command.Dispatcher("complete — complete evaluation (p1|p2)",
+                                   {"p1": complete.P1, "p2": complete.P2}),
     "extract":  extract,
     "filter":   filter_pairs,
 #  ,"wipe":    wipe
