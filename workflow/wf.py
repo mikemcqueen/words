@@ -2,15 +2,16 @@ import sys
 from pathlib import Path
 
 from workflow import (
-    complete, dispatch, extract, filter_pairs, init, log, show, submit, usage,
-    wipe, eval as evaluate,
+    command, complete, dispatch, extract, filter_pairs, init, log, show, submit,
+    usage, wipe, eval as evaluate,
 )
 
 
 COMMANDS = {
     "init":     init,
     "show":     show,
-    "submit":   submit,
+    "submit":   command.Dispatcher("submit  — submit items (p1|p2)",
+                                   {"p1": submit.P1, "p2": submit.P2}),
     "eval":     evaluate,
     "complete": complete,
     "extract":  extract,

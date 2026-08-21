@@ -1,23 +1,47 @@
 # submit.py
+#
+# Place a file into a phase's queue, sorted and deduped.
+#
+# p1 and p2 differ in four things -- the phase, the artifact kind, the word
+# used in help and log lines, and the name of the positional. They are one
+# class and a two-row table, not two files.
 
-from workflow import submit_pairs, submit_yes, usage, dispatch
+from pathlib import Path
 
-
-SUBCOMMANDS = {
-    "p1": submit_pairs,
-    "p2": submit_yes,
-}
-
-
-def help_summary(name):
-    return "submit  — submit items (p1|p2)"
+from workflow import command, config, fs, log, names, setops
 
 
-def run(command, opts, argv):
-    return dispatch.run(command, SUBCOMMANDS, opts, argv)
-
-
-def show_help(command, opts, argv):
+def _resolve_input(argv) -> Path:
     if not argv:
-        print(help_summary(command))
-    return dispatch.show_help(command, SUBCOMMANDS, opts, argv)
+        raise ValueError("Missing FILE parameter.")
+
+    src = Path(argv[0]).resolve()
+    fs.raise_if_not_file(src)
+    return src
+
+
+class Submit(command.Action):
+    def __init__(self, phase: str, kind: str, label: str, positional: str):
+        super().__init__(
+            summary=f"{phase}      — submit a {label} file into {phase}/queued "
+                    f"(sorted, deduped)",
+            positional=positional,
+        )
+        self.phase = phase
+        self.kind = kind
+        self.label = label
+
+    def run(self, command, opts, argv) -> int:
+        src = _resolve_input(argv)
+        dst = (config.path(opts.dir, [self.phase, "queued"])
+               / names.ensure_kind(src.name, self.kind))
+        if not opts.force:
+            fs.raise_if_exists(dst)
+
+        setops.merge([src], dst)
+        log.success(f"Submitted {self.label} {src.name}")
+        return 0
+
+
+P1 = Submit(phase="p1", kind="pairs", label="pairs",     positional="PAIRS-FILE")
+P2 = Submit(phase="p2", kind="yes",   label="YES pairs", positional="YES-PAIRS-FILE")
