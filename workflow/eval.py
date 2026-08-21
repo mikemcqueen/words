@@ -4,14 +4,14 @@ from workflow import eval_pairs, eval_yes, eval_no, usage, dispatch
 
 
 _TARGETS = {
-    "pairs": eval_pairs,
-    "yes": eval_yes,
-    "no": eval_no
+    "p1": eval_pairs,
+    "p2": eval_yes,
+    "p3": eval_no
 }
 
 
 def help_summary(name):
-    return "eval     — run evaluators (pairs|yes|no)"
+    return "eval     — run evaluators (p1|p2|p3)"
 
 
 def run(command, opts, argv):

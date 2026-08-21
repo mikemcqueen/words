@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 from workflow import (
-    complete, dispatch, extract, filter, init, log, show, submit, usage, wipe,
-    eval as evaluate,
+    complete, dispatch, extract, filter_pairs, init, log, show, submit, usage,
+    wipe, eval as evaluate,
 )
 
 
@@ -14,7 +14,7 @@ COMMANDS = {
     "eval":     evaluate,
     "complete": complete,
     "extract":  extract,
-    "filter":   filter,
+    "filter":   filter_pairs,
 #  ,"wipe":    wipe
 }
 

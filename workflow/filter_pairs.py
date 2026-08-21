@@ -2,12 +2,12 @@
 
 import argparse
 from pathlib import Path
-from workflow import log, fs, config, usage
+from workflow import log, fs, batch, config, names, setops, usage
 from src.filter import filter_results
 
 
 def help_summary(name):
-    return "pairs   — filter a p1 results file into p2/queued"
+    return "filter  — filter a p1 results file into p2/queued"
 
 
 def _make_local_parser():
@@ -32,18 +32,6 @@ def show_help(command, opts, argv):
     return 0
 
 
-def yes_suffix(pmin: float, prange: float) -> str:
-    return f".p1.{round(pmin * 100)}.{round(prange * 100)}.yes"
-
-
-def _check_already_submitted(p2_dirs: list[Path], name: str) -> Path | None:
-    for d in p2_dirs:
-        candidate = d / name
-        if candidate.exists():
-            return candidate
-    return None
-
-
 def run(command, opts, argv):
     local = _make_local_parser()
     local_opts, rest = local.parse_known_args(argv)
@@ -61,24 +49,34 @@ def run(command, opts, argv):
         jsonl_path = config.path(opts.dir, ["p1", "done", "out"]) / rest[0]
     fs.raise_if_not_file(jsonl_path)
 
-    out_name = jsonl_path.stem + yes_suffix(pmin, prange)
+    slug = names.slug(jsonl_path.stem, pmin, prange)
+    out_name = names.artifact(slug, "p1", "yes")
 
-    p2_dirs = [
-        config.path(opts.dir, ["p2", "queued"]),
-        config.path(opts.dir, ["p2", "eval"]),
-        config.path(opts.dir, ["p2", "done", "in"]),
-    ]
-    existing = _check_already_submitted(p2_dirs, out_name)
-    if existing and not opts.force:
-        raise ValueError(f"already submitted: {existing.relative_to(opts.dir / config.CONFIG_ROOT)}")
+    queued_dir = config.path(opts.dir, ["p2", "queued"])
+    # "Has this batch already been through p2?" -- three stats against known
+    # paths, rather than scanning three slots for a matching name. The batch
+    # directory exists iff the work is in flight; done/in answers the rest.
+    for candidate in (queued_dir / out_name,
+                      batch.path(opts, "p2", slug),
+                      config.path(opts.dir, ["p2", "done", "in"]) / out_name):
+        if candidate.exists() and not opts.force:
+            raise ValueError(
+                f"already submitted: {candidate.relative_to(opts.dir / config.CONFIG_ROOT)}")
 
-    out_path = p2_dirs[0] / out_name
+    out_path = queued_dir / out_name
     if not opts.force:
         fs.raise_if_exists(out_path)
 
     # TODO: move complete_pairs.filter_results_to here. call here from complete_pairs/yes.
-    with out_path.open("w") as f:
-        filter_results(str(jsonl_path), True, f, pmin=pmin, prng=prange)
+    # Emit through merge: filter_results writes in corpus order, and p2/queued is
+    # later fed to `comm -23`, which silently misbehaves on unsorted input.
+    unsorted = out_path.with_name(out_path.name + ".unsorted")
+    try:
+        with unsorted.open("w") as f:
+            filter_results([jsonl_path], True, f, pmin=pmin, prng=prange)
+        setops.merge([unsorted], out_path)
+    finally:
+        unsorted.unlink(missing_ok=True)
 
     n = sum(1 for _ in out_path.open())
     log.success(f"Filtered {n} pairs [{pmin:.2f}, {pmin + prange:.2f}) → {out_path.name}")

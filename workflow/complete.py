@@ -4,13 +4,13 @@ from workflow import complete_pairs, complete_yes, usage, dispatch
 
 
 _TARGETS = {
-    "pairs": complete_pairs,
-    "yes": complete_yes
+    "p1": complete_pairs,
+    "p2": complete_yes
 }
 
 
 def help_summary(name):
-    return "complete — complete evaluation (pairs|yes)"
+    return "complete — complete evaluation (p1|p2)"
 
 
 def run(command, opts, argv):

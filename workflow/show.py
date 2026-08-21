@@ -48,7 +48,7 @@ def show_target(parts: list[str], opts) -> bool:
             if not found:
                 print(f"{'/'.join(parts)}:")
                 found = True
-            print(f"  {p.name}")
+            print(f"  {p.name}/" if p.is_dir() else f"  {p.name}")
     return found
 
 

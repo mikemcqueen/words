@@ -1,13 +1,12 @@
 # submit_pairs.py
 
 from pathlib import Path
-from plumbum.cmd import sort
 
-from workflow import fs, log, config, usage
+from workflow import fs, log, config, names, setops, usage
 
 
 def help_summary(name):
-    return "pairs   — submit a pairs file into p1/queued (sorted, deduped)"
+    return "p1      — submit a pairs file into p1/queued (sorted, deduped)"
 
 
 def _resolve_input(argv) -> Path:
@@ -19,19 +18,13 @@ def _resolve_input(argv) -> Path:
     return src
 
 
-def _make_pairs_filename(fn: str) -> str:
-    if not fn.endswith(".pairs"):
-        return fn + ".pairs"
-    return fn
-
-
 def run(command, opts, argv):
     src = _resolve_input(argv)
-    dst = config.path(opts.dir, ["p1", "queued"]) / _make_pairs_filename(src.name)
+    dst = config.path(opts.dir, ["p1", "queued"]) / names.ensure_kind(src.name, "pairs")
     if not opts.force:
         fs.raise_if_exists(dst)
 
-    (sort["-u", str(src)] > str(dst))()
+    setops.merge([src], dst)
     log.success(f"Submitted pairs {src.name}")
     return 0
 

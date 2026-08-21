@@ -1,13 +1,19 @@
 # extract_p1_yes.py
+#
+# The first recipe. This command used to carry its own resolver and its own
+# extraction routine; both are gone. What is left is a STEPS list and an
+# argument parser -- resolution is `select`, filtering is `filter_results`, and
+# emitting a set is the standard producing-op convention.
 
 import argparse
-import subprocess
-import tempfile
 
 from pathlib import Path
 
-from src.filter import filter_results
-from workflow import config, fs, log, usage
+from workflow import context, log, steps, usage
+from workflow.steps import filter as filter_step
+
+
+STEPS = [filter_step]
 
 
 def help_summary(name):
@@ -41,42 +47,6 @@ def show_help(command, opts, argv):
     return 0
 
 
-def _result_paths(opts, source: str) -> list[Path]:
-    results_dir = config.path(opts.dir, ["p1", "done", "out"])
-    fs.raise_if_not_dir(results_dir)
-
-    if source != "all":
-        path = results_dir / source
-        fs.raise_if_not_file(path)
-        return [path]
-
-    paths = [p for p in results_dir.glob("*.jsonl") if p.is_file()]
-    if not paths:
-        raise ValueError(f"no .jsonl files in {results_dir}")
-    return paths
-
-
-def _extract(paths: list[Path], pmin: float, prange: float,
-             output: Path, force: bool) -> int:
-    fs.raise_if_not_dir(output.parent)
-    if not force:
-        fs.raise_if_exists(output)
-
-    with tempfile.NamedTemporaryFile(mode="w", prefix="wf-extract-p1-yes-",
-                                     suffix=".pairs") as matches:
-        for path in paths:
-            filter_results(str(path), True, matches, pmin=pmin,
-                           prng=prange, use_max=False)
-        matches.flush()
-
-        sort_args = ["sort", "-u", matches.name]
-        with output.open("w") as f:
-            subprocess.run(sort_args, stdout=f, check=True)
-
-    log.info(f"Extracted YES pairs from {len(paths)} p1 result files")
-    return 0
-
-
 def run(command, opts, argv):
     local_opts, rest = _make_local_parser().parse_known_args(argv)
     if not rest:
@@ -84,6 +54,11 @@ def run(command, opts, argv):
     if len(rest) > 1:
         return usage.invalid_argument(rest[1], _format_help(command))
 
-    paths = _result_paths(opts, rest[0])
-    return _extract(paths, local_opts.prob_min, local_opts.prob_range,
-                    local_opts.output, opts.force)
+    ctx = context.Context(root=opts.dir, phase="p1", force=opts.force,
+                          selector=rest[0], dest=local_opts.output,
+                          pmin=local_opts.prob_min, prange=local_opts.prob_range)
+
+    code = steps.run_steps(STEPS, ctx)
+    if code == 0:
+        log.success(f"YES pairs at {ctx.dest}")
+    return code

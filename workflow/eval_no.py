@@ -2,7 +2,7 @@ from workflow import usage
 
 
 def help_summary(name):
-    return "no      — evaluate no pairs"
+    return "p3      — evaluate no pairs"
 
 
 def show_help(command, opts, argv):

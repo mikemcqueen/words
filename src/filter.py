@@ -36,16 +36,6 @@ def _pmax(pmin: float, prng: float) -> float:
     return pmax
 
 
-def filter_results(path: str, yes: bool, out_file, pmin = 0.5, prng = 1.0, use_max = False):
-    pmax = _pmax(pmin, prng)
-    blocks = compare_native.iter_projected_blocks([path], chunk_size=8192)
-
-    for block in blocks:
-        mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
-        for idx in np.flatnonzero(mask):
-            out_file.write(block.pair_at(idx) + "\n")
-
-
 def _load_pair_set(path: str) -> set:
     """Load a pair-list file (one 'word1,word2' per line) into a set."""
     pairs = set()
@@ -60,42 +50,70 @@ def _load_pair_set(path: str) -> set:
     return pairs
 
 
-def filter_pairs(pairs_path: str, results_dir: str, yes: bool, out_file,
-                       pmin = 0.5, prng = 1.0, use_max = False):
+def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
+                   pmin = 0.5, prng = 1.0, use_max = False):
+    """Write pairs matching the label/probability band to out_file.
+
+    `paths` is a *corpus*: each file gets its own reader. A path list handed
+    straight to iter_projected_blocks means something else entirely -- aligned
+    files holding the same pairs, one per host -- and raises on a pair mismatch.
+
+    `pairs_path` optionally restricts output to members of that pair set;
+    None skips the identity mask.
+    """
+    if isinstance(paths, (str, Path)):
+        # A bare path would iterate per character; each "file" then fails to open
+        # and the warn-and-continue below would turn it into empty output.
+        raise TypeError(f"filter_results() takes a list of paths, not {type(paths).__name__}")
+    paths = list(paths)
+    if not paths:
+        raise SystemExit("no result files to filter")
+
     pmax = _pmax(pmin, prng)
-    pair_set = _load_pair_set(pairs_path)
-    print(f"loaded {len(pair_set):,} pairs from {pairs_path}", file=sys.stderr)
+    pair_set = None
+    if pairs_path is not None:
+        pair_set = _load_pair_set(pairs_path)
+        print(f"loaded {len(pair_set):,} pairs from {pairs_path}", file=sys.stderr)
 
-    files = sorted(Path(results_dir).glob("*.jsonl"))
-    if not files:
-        raise SystemExit(f"no .jsonl files in {results_dir}")
+    # Skipping an unreadable file lets one corrupt member not kill a sweep over
+    # a whole archived corpus. It must not turn "nothing could be read" into an
+    # empty result reported as success -- which is what it did for the
+    # single-file callers this function absorbed.
+    readable = 0
 
-    for results_file in files:
+    for results_file in paths:
         try:
             blocks = compare_native.iter_projected_blocks([str(results_file)], chunk_size=8192)
         except Exception as e:
             print(f"WARNING: skipping {results_file}: {e}", file=sys.stderr)
             continue
+        readable += 1
 
         for block in prefetch(blocks):
             mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
-            pair_mask = np.fromiter(
-                (p in pair_set for p in block.pairs()),
-                dtype=bool, count=block.size,
-            )
-            mask &= pair_mask
+            if pair_set is not None:
+                mask &= np.fromiter(
+                    (p in pair_set for p in block.pairs()),
+                    dtype=bool, count=block.size,
+                )
             for idx in np.flatnonzero(mask):
                 out_file.write(block.pair_at(idx) + "\n")
+
+    if not readable:
+        raise SystemExit(f"no readable result files among {len(paths)}")
 
 
 def _filter_args(args):
     use_max = not args.any
     if args.dir is not None:
-        filter_pairs(args.file, args.dir, args.yes, sys.stdout,
-                     args.prob_min, args.prob_range, use_max)
+        paths = sorted(Path(args.dir).glob("*.jsonl"))
+        if not paths:
+            raise SystemExit(f"no .jsonl files in {args.dir}")
+        filter_results(paths, args.yes, sys.stdout, pairs_path=args.file,
+                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max)
     else:
-        filter_results(args.file, args.yes, sys.stdout,
-                       args.prob_min, args.prob_range, use_max)
+        filter_results([args.file], args.yes, sys.stdout,
+                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max)
 
 
 def _parse_args():

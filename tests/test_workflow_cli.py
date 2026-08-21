@@ -22,7 +22,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("init    — initialize a workflow (stub)", stderr)
         self.assertIn("show    — display workflow state", stderr)
-        self.assertIn("submit  — submit items (pairs|yes)", stderr)
+        self.assertIn("submit  — submit items (p1|p2)", stderr)
 
     def test_invalid_show_root_target_shows_show_help(self):
         code, stdout, stderr = self._run("show", "balls")
@@ -69,35 +69,35 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("init — initialize a workflow (stub)", stderr)
 
-    def test_invalid_submit_pairs_help_argument_shows_default_help(self):
-        code, stdout, stderr = self._run("help", "submit", "pairs", "balls")
+    def test_invalid_submit_p1_help_argument_shows_default_help(self):
+        code, stdout, stderr = self._run("help", "submit", "p1", "balls")
 
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("invalid argument: 'balls'", stderr)
-        self.assertIn("pairs — submit a pairs file into p1/queued (sorted, deduped)", stderr)
-        self.assertIn("usage: wf submit pairs [-d DIR] [-f] [-h] PAIRS-FILE", stderr)
+        self.assertIn("p1 — submit a pairs file into p1/queued (sorted, deduped)", stderr)
+        self.assertIn("usage: wf submit p1 [-d DIR] [-f] [-h] PAIRS-FILE", stderr)
 
-    def test_invalid_eval_pairs_help_argument_shows_default_help(self):
-        code, stdout, stderr = self._run("help", "eval", "pairs", "balls")
+    def test_invalid_eval_p1_help_argument_shows_default_help(self):
+        code, stdout, stderr = self._run("help", "eval", "p1", "balls")
 
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("invalid argument: 'balls'", stderr)
-        self.assertIn("pairs — evaluate pairs", stderr)
+        self.assertIn("p1 — evaluate pairs", stderr)
         self.assertIn(
-            "usage: wf eval pairs [-d DIR] [-f] [-h] [--no-filter] PAIRS-FILE",
+            "usage: wf eval p1 [-d DIR] [-f] [-h] [--no-filter] SLUG",
             stderr,
         )
 
-    def test_invalid_complete_pairs_help_argument_shows_default_help(self):
-        code, stdout, stderr = self._run("help", "complete", "pairs", "balls")
+    def test_invalid_complete_p1_help_argument_shows_default_help(self):
+        code, stdout, stderr = self._run("help", "complete", "p1", "balls")
 
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("invalid argument: 'balls'", stderr)
-        self.assertIn("pairs — complete a pairs file evaluation", stderr)
-        self.assertIn("usage: wf complete pairs [-d DIR] [-f] [-h] PAIRS-FILE", stderr)
+        self.assertIn("p1 — complete a pairs file evaluation", stderr)
+        self.assertIn("usage: wf complete p1 [-d DIR] [-f] [-h] SLUG", stderr)
 
     def test_incomplete_show_command_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("show")
@@ -121,7 +121,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("missing required argument", stderr)
-        self.assertIn("pairs   — submit a pairs file into p1/queued (sorted, deduped)", stderr)
+        self.assertIn("p1      — submit a pairs file into p1/queued (sorted, deduped)", stderr)
 
     def test_incomplete_eval_command_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("eval")
@@ -129,7 +129,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("missing required argument", stderr)
-        self.assertIn("pairs   — evaluate pairs", stderr)
+        self.assertIn("p1      — evaluate pairs", stderr)
 
     def test_incomplete_complete_command_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("complete")
@@ -137,7 +137,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("missing required argument", stderr)
-        self.assertIn("pairs   — complete a pairs file evaluation", stderr)
+        self.assertIn("p1      — complete a pairs file evaluation", stderr)
 
 
 if __name__ == "__main__":

@@ -4,13 +4,13 @@ from workflow import submit_pairs, submit_yes, usage, dispatch
 
 
 SUBCOMMANDS = {
-    "pairs": submit_pairs,
-    "yes": submit_yes,
+    "p1": submit_pairs,
+    "p2": submit_yes,
 }
 
 
 def help_summary(name):
-    return "submit  — submit items (pairs|yes)"
+    return "submit  — submit items (p1|p2)"
 
 
 def run(command, opts, argv):

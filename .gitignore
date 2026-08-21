@@ -10,3 +10,4 @@ results/**
 words/**
 wt/**
 __pycache__/
+src/_compare_native*.so

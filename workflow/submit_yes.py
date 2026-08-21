@@ -1,12 +1,10 @@
 from pathlib import Path
 
-from plumbum.cmd import sort
-
-from workflow import config, fs, log, usage
+from workflow import config, fs, log, names, setops, usage
 
 
 def help_summary(name):
-    return "yes     — submit a YES pairs file into p2/queued (sorted, deduped)"
+    return "p2      — submit a YES pairs file into p2/queued (sorted, deduped)"
 
 
 def _resolve_input(argv) -> Path:
@@ -18,19 +16,13 @@ def _resolve_input(argv) -> Path:
     return src
 
 
-def _make_yes_filename(fn: str) -> str:
-    if not fn.endswith(".yes"):
-        return fn + ".yes"
-    return fn
-
-
 def run(command, opts, argv):
     src = _resolve_input(argv)
-    dst = config.path(opts.dir, ["p2", "queued"]) / _make_yes_filename(src.name)
+    dst = config.path(opts.dir, ["p2", "queued"]) / names.ensure_kind(src.name, "yes")
     if not opts.force:
         fs.raise_if_exists(dst)
 
-    (sort["-u", str(src)] > str(dst))()
+    setops.merge([src], dst)
     log.success(f"Submitted YES pairs {src.name}")
     return 0
 

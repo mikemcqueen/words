@@ -3,18 +3,18 @@
 import argparse
 import subprocess
 from pathlib import Path
-from workflow import config, eval_pairs, fs, usage, log
+from workflow import batch, config, eval_pairs, fs, usage, log
 
 
 CHUNK_SIZE = 400
 
 
 def help_summary(name) -> str:
-    return "yes     — evaluate yes pairs"
+    return "p2      — evaluate yes pairs"
 
 
 def _format_help(command, opts, argv) -> str:
-    return usage.format_help(command, help_summary(command), _make_parser(), "PAIRS-FILE")
+    return usage.format_help(command, help_summary(command), _make_parser(), "SLUG")
 
 
 def show_help(command, opts, argv) -> int:
@@ -65,10 +65,9 @@ def _make_notes(paths: list[Path]) -> None:
                         "--production"], stdout=subprocess.DEVNULL, check=True)
 
 
-def _eval_yes(src_pairs: Path, opts) -> Path:
-    log.info(f"{fs.line_count(src_pairs)} source YES pairs")
-    dst_pairs = eval_pairs.make_dst_pairs_path(src_pairs, "p2", opts)
-    src_pairs.rename(dst_pairs)
+def _eval_yes(slug: str, opts) -> Path:
+    dst_pairs = batch.begin(opts, "p2", slug, glob="*.p1.yes")
+    log.info(f"{fs.line_count(dst_pairs)} source YES pairs")
     if not opts.no_filter:
         dst_pairs = eval_pairs.filter_done_pairs(dst_pairs, "p2", opts)
     split_prefix = f"/tmp/{dst_pairs.name}"
@@ -82,11 +81,7 @@ def run(command, opts, argv) -> int:
     if not argv:
         return usage.missing_argument(_format_help(command, opts, argv))
 
-    src_dir = config.path(opts.dir, ["p2", "queued"]);
-    src_pairs = src_dir / argv[0]
-    fs.raise_if_not_file(src_pairs)
-
-    dst_pairs = _eval_yes(src_pairs, opts)
+    dst_pairs = _eval_yes(argv[0], opts)
     if not dst_pairs:
         return 1
     
