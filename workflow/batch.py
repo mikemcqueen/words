@@ -9,35 +9,34 @@
 #
 # Every artifact inside is prefixed by the directory name, which is what lets
 # the contents be found by glob without any command taking a name apart.
+#
+# Every function here takes a Context and nothing else. The batch directory
+# itself is `ctx.batch_dir` -- there is no second way to spell it.
 
 from pathlib import Path
 
-from workflow import config, fs, select
+from workflow import config, fs, log, select, setops
 
 
-def path(opts, phase: str, slug: str) -> Path:
-    """The batch directory for one in-flight item. May not exist."""
-    return config.path(opts.dir, [phase, "eval"]) / slug
+def in_flight(ctx) -> bool:
+    return ctx.batch_dir.is_dir()
 
 
-def in_flight(opts, phase: str, slug: str) -> bool:
-    return path(opts, phase, slug).is_dir()
-
-
-def begin(opts, phase: str, slug: str, glob: str = "*") -> Path:
+def begin(ctx, glob: str = "*") -> Path:
     """Create the batch directory and move the queued artifact into it."""
-    src = select.select(opts.dir, [phase, "queued"], f"stem:{slug}", glob=glob)[0]
+    src = select.select(ctx.root, [ctx.phase, "queued"], f"stem:{ctx.slug}",
+                        glob=glob)[0]
 
-    directory = path(opts, phase, slug)
-    if directory.exists() and not opts.force:
+    directory = ctx.batch_dir
+    if directory.exists() and not ctx.force:
         raise fs.file_already_exists_error(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
     dst = directory / src.name
-    if not opts.force:
+    if not ctx.force:
         fs.raise_if_exists(dst)
     # Invariant dimensions come first, so the slug prefixes everything in here.
-    assert dst.name.startswith(slug), f"{dst.name} is not prefixed by {slug}"
+    assert dst.name.startswith(ctx.slug), f"{dst.name} is not prefixed by {ctx.slug}"
     src.rename(dst)
     return dst
 
@@ -78,6 +77,11 @@ def has_source(ctx) -> bool:
     return any(p.is_file() for p in ctx.batch_dir.glob(INPUT_GLOB[ctx.phase]))
 
 
+def filtered(src: Path) -> Path:
+    """The derivative `eval` writes when it drops already-done pairs."""
+    return src.with_name(src.name + ".filtered")
+
+
 def evaluated(ctx) -> Path:
     """The input as actually evaluated.
 
@@ -86,22 +90,39 @@ def evaluated(ctx) -> Path:
     file it chose. The original is what gets archived.
     """
     src = source(ctx)
-    filtered = src.with_name(src.name + ".filtered")
-    return filtered if filtered.exists() else src
+    candidate = filtered(src)
+    return candidate if candidate.exists() else src
 
 
-def _finish(directory: Path, slug: str) -> None:
+def done_pairs(ctx) -> Path:
+    """The phase's accumulated done-set, which every batch folds into."""
+    return config.path(ctx.root, [ctx.phase, "done"]) / f"{ctx.phase}_done.pairs"
+
+
+def filter_done(src_pairs: Path, ctx) -> Path:
+    """Drop pairs the phase has already evaluated.
+
+    Returns the file to carry forward: the `.filtered` derivative when there is
+    a done-set to subtract, otherwise `src_pairs` untouched.
+    """
+    done = done_pairs(ctx)
+    if not done.is_file():
+        return src_pairs
+
+    dst = filtered(src_pairs)
+    if not ctx.force:
+        fs.raise_if_exists(dst)
+
+    setops.diff(src_pairs, done, dst)
+    log.info(f"{fs.line_count(dst)} filtered pairs")
+    return dst
+
+
+def finish(ctx) -> None:
     """Remove the batch directory. It must already have drained into done/."""
+    directory = ctx.batch_dir
     fs.raise_if_not_dir(directory)
     leftover = sorted(p.name for p in directory.iterdir())
     if leftover:
-        raise ValueError(f"batch {slug} still holds: {', '.join(leftover)}")
+        raise ValueError(f"batch {ctx.slug} still holds: {', '.join(leftover)}")
     directory.rmdir()
-
-
-def finish_ctx(ctx) -> None:
-    _finish(ctx.batch_dir, ctx.slug)
-
-
-def finish(opts, phase: str, slug: str) -> None:
-    _finish(path(opts, phase, slug), slug)

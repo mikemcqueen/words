@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from workflow import log, fs, batch, config, setops, usage
+from workflow import log, fs, batch, context, usage
 
 def help_summary(name):
     return "p1      — evaluate pairs"
@@ -38,33 +38,12 @@ def _parse_args(argv, opts):
     return rest, opts
 
 
-def make_done_pairs_path(phase: str, opts) -> Path:
-    return config.path(opts.dir, [phase, "done"]) / f"{phase}_done.pairs"
-
-
-def make_filtered_pairs_path(src_pairs: Path) -> Path:
-    return src_pairs.with_name(src_pairs.name + ".filtered")
-
-
-def filter_done_pairs(src_pairs: Path, phase: str, opts) -> None:
-    done_pairs = make_done_pairs_path(phase, opts)
-    if not done_pairs.is_file():
-        return src_pairs
-
-    filtered_pairs = make_filtered_pairs_path(src_pairs)
-    if not opts.force:
-        fs.raise_if_exists(filtered_pairs)
-
-    setops.diff(src_pairs, done_pairs, filtered_pairs)
-    log.info(f"{fs.line_count(filtered_pairs)} filtered pairs")
-    return filtered_pairs
-
-
 def _eval_pairs(slug: str, opts) -> Path:
-    dst_pairs = batch.begin(opts, "p1", slug)
+    ctx = context.Context(root=opts.dir, phase="p1", force=opts.force, slug=slug)
+    dst_pairs = batch.begin(ctx)
     log.info(f"{fs.line_count(dst_pairs)} source pairs")
     if not opts.no_filter:
-        dst_pairs = filter_done_pairs(dst_pairs, "p1", opts)
+        dst_pairs = batch.filter_done(dst_pairs, ctx)
     return dst_pairs
 
 

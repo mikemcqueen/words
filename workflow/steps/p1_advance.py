@@ -45,4 +45,4 @@ def run_step(ctx) -> None:
         for produced in sorted(ctx.batch_dir.glob(f"*.p1.{kind}")):
             fs.move_into(produced, destination, ctx.force)
 
-    batch.finish_ctx(ctx)
+    batch.finish(ctx)

@@ -349,7 +349,7 @@ class BatchLifecycleTests(unittest.TestCase):
     def _eval(self):
         code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1", self.PAIRS)
         self.assertEqual(0, code, stderr)
-        return batch.path(self.opts, "p1", self.PAIRS)
+        return Context(root=self.opts.dir, phase="p1", slug=self.PAIRS).batch_dir
 
     def test_eval_opens_a_batch_directory_and_empties_the_queue(self):
         directory = self._eval()
@@ -404,6 +404,6 @@ class BatchLifecycleTests(unittest.TestCase):
 
         self.assertEqual(0, code, stderr)
         make_notes.assert_called_once()
-        directory = batch.path(self.opts, "p2", slug)
+        directory = Context(root=self.opts.dir, phase="p2", slug=slug).batch_dir
         self.assertEqual([names.artifact(slug, "p1", "yes")],
                          [p.name for p in directory.iterdir()])

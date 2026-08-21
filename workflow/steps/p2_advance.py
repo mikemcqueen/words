@@ -29,4 +29,4 @@ def run_step(ctx) -> None:
     destination = config.path(ctx.root, DESTINATION)
     for produced in inputs(ctx):
         fs.move_into(produced, destination, ctx.force)
-    batch.finish_ctx(ctx)
+    batch.finish(ctx)

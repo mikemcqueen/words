@@ -5,14 +5,10 @@
 
 from pathlib import Path
 
-from workflow import batch, config, setops
+from workflow import batch, setops
 
 
 NAME = "merge"
-
-
-def done_pairs(ctx) -> Path:
-    return config.path(ctx.root, [ctx.phase, "done"]) / f"{ctx.phase}_done.pairs"
 
 
 def inputs(ctx) -> list[Path]:
@@ -20,7 +16,7 @@ def inputs(ctx) -> list[Path]:
 
 
 def outputs(ctx) -> list[Path]:
-    return [done_pairs(ctx)]
+    return [batch.done_pairs(ctx)]
 
 
 def is_done(ctx) -> bool:
@@ -34,6 +30,6 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
-    dst = done_pairs(ctx)
+    dst = batch.done_pairs(ctx)
     src = batch.evaluated(ctx)
     setops.merge([dst, src] if dst.exists() else [src], dst)

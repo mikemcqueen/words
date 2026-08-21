@@ -3,7 +3,7 @@
 import argparse
 import subprocess
 from pathlib import Path
-from workflow import batch, config, eval_pairs, fs, usage, log
+from workflow import batch, context, eval_pairs, fs, usage, log
 
 
 CHUNK_SIZE = 400
@@ -66,10 +66,11 @@ def _make_notes(paths: list[Path]) -> None:
 
 
 def _eval_yes(slug: str, opts) -> Path:
-    dst_pairs = batch.begin(opts, "p2", slug, glob="*.p1.yes")
+    ctx = context.Context(root=opts.dir, phase="p2", force=opts.force, slug=slug)
+    dst_pairs = batch.begin(ctx, glob="*.p1.yes")
     log.info(f"{fs.line_count(dst_pairs)} source YES pairs")
     if not opts.no_filter:
-        dst_pairs = eval_pairs.filter_done_pairs(dst_pairs, "p2", opts)
+        dst_pairs = batch.filter_done(dst_pairs, ctx)
     split_prefix = f"/tmp/{dst_pairs.name}"
     split_paths = _split_pairs(dst_pairs, split_prefix)
     _make_notes(split_paths)

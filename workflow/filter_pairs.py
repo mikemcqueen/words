@@ -2,7 +2,7 @@
 
 import argparse
 from pathlib import Path
-from workflow import log, fs, batch, config, names, setops, usage
+from workflow import log, fs, context, config, names, setops, usage
 from src.filter import filter_results
 
 
@@ -57,7 +57,7 @@ def run(command, opts, argv):
     # paths, rather than scanning three slots for a matching name. The batch
     # directory exists iff the work is in flight; done/in answers the rest.
     for candidate in (queued_dir / out_name,
-                      batch.path(opts, "p2", slug),
+                      context.Context(root=opts.dir, phase="p2", slug=slug).batch_dir,
                       config.path(opts.dir, ["p2", "done", "in"]) / out_name):
         if candidate.exists() and not opts.force:
             raise ValueError(

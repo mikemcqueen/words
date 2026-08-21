@@ -12,6 +12,7 @@ from unittest import mock
 
 from tests import wf_fixture as fx
 from workflow import batch, names, setops
+from workflow.context import Context
 from workflow.select import select
 
 
@@ -215,35 +216,38 @@ class BatchDirectoryTests(unittest.TestCase):
         self.queued = fx.slot(self.opts, ["p1", "queued"]) / self.SLUG
         fx.write_pairs(self.queued, ["alpha,two", "mid,three"])
 
+    def _ctx(self, slug=None) -> Context:
+        return Context(root=self.opts.dir, phase="p1", slug=slug or self.SLUG)
+
     def test_begin_moves_the_queued_artifact_into_a_new_directory(self):
-        moved = batch.begin(self.opts, "p1", self.SLUG)
-        self.assertEqual(batch.path(self.opts, "p1", self.SLUG) / self.SLUG, moved)
+        moved = batch.begin(self._ctx())
+        self.assertEqual(self._ctx().batch_dir / self.SLUG, moved)
         self.assertTrue(moved.is_file())
         self.assertFalse(self.queued.exists())
 
     def test_directory_exists_exactly_while_work_is_in_flight(self):
-        self.assertFalse(batch.in_flight(self.opts, "p1", self.SLUG))
-        batch.begin(self.opts, "p1", self.SLUG)
-        self.assertTrue(batch.in_flight(self.opts, "p1", self.SLUG))
+        self.assertFalse(batch.in_flight(self._ctx()))
+        batch.begin(self._ctx())
+        self.assertTrue(batch.in_flight(self._ctx()))
 
     def test_begin_refuses_a_batch_already_in_flight(self):
-        batch.begin(self.opts, "p1", self.SLUG)
+        batch.begin(self._ctx())
         fx.write_pairs(self.queued, ["alpha,two"])
         with self.assertRaises(ValueError):
-            batch.begin(self.opts, "p1", self.SLUG)
+            batch.begin(self._ctx())
 
     def test_begin_refuses_an_unknown_slug(self):
         with self.assertRaises(ValueError):
-            batch.begin(self.opts, "p1", "nope")
+            batch.begin(self._ctx("nope"))
 
     def test_one_finds_the_single_match(self):
-        directory = batch.begin(self.opts, "p1", self.SLUG).parent
+        directory = batch.begin(self._ctx()).parent
         (directory / f"{self.SLUG}.jsonl").write_text("")
         self.assertEqual(directory / f"{self.SLUG}.jsonl",
                          batch.one(directory, "*.jsonl"))
 
     def test_one_rejects_zero_and_multiple_matches(self):
-        directory = batch.begin(self.opts, "p1", self.SLUG).parent
+        directory = batch.begin(self._ctx()).parent
         with self.assertRaises(ValueError):
             batch.one(directory, "*.jsonl")
         (directory / f"{self.SLUG}.a.jsonl").write_text("")
@@ -252,13 +256,13 @@ class BatchDirectoryTests(unittest.TestCase):
             batch.one(directory, "*.jsonl")
 
     def test_finish_removes_a_drained_directory(self):
-        moved = batch.begin(self.opts, "p1", self.SLUG)
+        moved = batch.begin(self._ctx())
         moved.unlink()
-        batch.finish(self.opts, "p1", self.SLUG)
-        self.assertFalse(batch.in_flight(self.opts, "p1", self.SLUG))
+        batch.finish(self._ctx())
+        self.assertFalse(batch.in_flight(self._ctx()))
 
     def test_finish_refuses_to_drop_a_directory_still_holding_artifacts(self):
-        batch.begin(self.opts, "p1", self.SLUG)
+        batch.begin(self._ctx())
         with self.assertRaises(ValueError):
-            batch.finish(self.opts, "p1", self.SLUG)
-        self.assertTrue(batch.in_flight(self.opts, "p1", self.SLUG))
+            batch.finish(self._ctx())
+        self.assertTrue(batch.in_flight(self._ctx()))
