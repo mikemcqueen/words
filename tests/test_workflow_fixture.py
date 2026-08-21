@@ -15,7 +15,8 @@ from pathlib import Path
 
 from src.filter import filter_results
 from tests import wf_fixture as fx
-from workflow import batch, config, eval_yes, names
+from workflow import batch, config, names
+from workflow import eval as evaluate
 from workflow.context import Context
 
 
@@ -398,8 +399,8 @@ class BatchLifecycleTests(unittest.TestCase):
             ["alpha,two", "mid,three"])
 
         # `note --create --production` and split.sh are external side effects.
-        with mock.patch.object(eval_yes, "_split_pairs", return_value=[]), \
-             mock.patch.object(eval_yes, "_make_notes") as make_notes:
+        with mock.patch.object(evaluate, "_split_pairs", return_value=[]), \
+             mock.patch.object(evaluate, "_make_notes") as make_notes:
             code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p2", slug)
 
         self.assertEqual(0, code, stderr)
