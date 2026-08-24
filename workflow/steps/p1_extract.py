@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from src.filter import filter_results
-from workflow import bundle, config, names, setops
+from workflow import bundle, config, fs, log, names, setops
 
 
 NAME = "extract"
@@ -52,11 +52,18 @@ def run_step(ctx) -> None:
     corpus = inputs(ctx)
     restrict = bundle.source(ctx)
     yes_path, no_path = outputs(ctx)
+    log.info(f"found {fs.line_count(restrict):,} source pairs")
 
     for yes, dest in ((True, yes_path), (False, no_path)):
         with tempfile.NamedTemporaryFile(mode="w", prefix="wf-p1-extract-",
                                          suffix=".pairs") as matches:
             filter_results(corpus, yes, matches, pairs_path=str(restrict),
-                           pmin=ctx.pmin, prng=ctx.prange)
+                           pmin=ctx.pmin, prng=ctx.prange,
+                           report_pair_load=False)
             matches.flush()
             setops.merge([matches.name], dest)
+
+        label = (f"{round(ctx.pmin * 100)}-"
+                 f"{round((ctx.pmin + ctx.prange) * 100)}% YES"
+                 if yes else "NO")
+        log.info(f"filtered {fs.line_count(dest):,} {label} pairs")

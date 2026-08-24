@@ -51,7 +51,8 @@ def _load_pair_set(path: str) -> set:
 
 
 def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
-                   pmin = 0.5, prng = 1.0, use_max = False):
+                   pmin = 0.5, prng = 1.0, use_max = False,
+                   report_pair_load = True):
     """Write pairs matching the label/probability band to out_file.
 
     `paths` is a *corpus*: each file gets its own reader. A path list handed
@@ -73,7 +74,9 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     pair_set = None
     if pairs_path is not None:
         pair_set = _load_pair_set(pairs_path)
-        print(f"loaded {len(pair_set):,} pairs from {pairs_path}", file=sys.stderr)
+        if report_pair_load:
+            print(f"loaded {len(pair_set):,} pairs from {pairs_path}",
+                  file=sys.stderr)
 
     # Skipping an unreadable file lets one corrupt member not kill a sweep over
     # a whole archived corpus. It must not turn "nothing could be read" into an

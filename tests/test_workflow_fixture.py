@@ -326,6 +326,15 @@ class ProducedNameTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(name.startswith(bundle_name))
 
+    def test_complete_reports_pair_and_filter_counts_once(self):
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "complete", "p1", self.PAIRS)
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(1, stderr.count("found 9 source pairs"))
+        self.assertIn("filtered 6 90-100% YES pairs", stderr)
+        self.assertIn("filtered 2 NO pairs", stderr)
+        self.assertNotIn("loaded 9 pairs", stderr)
+
     def test_filter_and_complete_agree_on_the_bundle_name(self):
         # Both derive the bundle name from the p1 result stem, so re-slicing the same
         # band names the same artifact rather than a near-miss duplicate.
