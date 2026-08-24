@@ -15,8 +15,8 @@ produces byte-identical output to the current implementation.
 ### In scope
 
 - `src/filter.py` — unify the two filter entry points into one signature.
-- `workflow/` — op protocol, `STEPS` recipes, `Context`, name rendering, `eval/<slug>/`
-  batch directories.
+- `workflow/` — op protocol, `STEPS` recipes, `Context`, name rendering,
+  `eval/<bundle_name>/` bundle directories.
 - `tests/` — a fixture harness (Item 0), updates for the new CLI surface, and the
   `extract-p1-yes` regression test.
 
@@ -46,10 +46,10 @@ These are decided-out, not deferred:
   is kept as-is for this refactor.
 
   If it is picked up later, the fix needs no new concepts: the note title *is* the split
-  file's name, so move the splits into the batch directory and rename each one
+  file's name, so move the splits into the bundle directory and rename each one
   `split/` → `noted/` as its note is created (`is_done` = "`split/` is empty"). Create
   first, rename second — claim-first fails toward a silently missing note, which
-  `_retrieve_notes`'s break-on-404 would absorb as a truncated batch that looks like
+  `_retrieve_notes`'s break-on-404 would absorb as a truncated bundle that looks like
   success. To close the crash window between create and rename, have `_make_notes` probe
   for the note before creating it, reusing the `"note not found"` check
   `_retrieve_notes` already relies on.
@@ -64,10 +64,10 @@ A filename is a **content key**: a flat rendering of the dimensions that disting
 what is in the file. It is not a history of operations.
 
 ```
-<slug>.<classifier>.<kind>
+<bundle_name>.<classifier>.<kind>
 
-slug        = <batch>.<slice>          batch-invariant; equals the eval directory name
-batch       = stem of the originating p1 result file
+bundle_name = <result_stem>.<slice>     bundle-invariant; the eval directory name
+result_stem = stem of the originating p1 result file
 slice       = <round(pmin*100)>.<round(prange*100)>        e.g. 90.10
 classifier  = p1 | p2 | p3             whose verdict this file represents
 kind        = pairs | yes | no | jsonl
@@ -81,23 +81,24 @@ Rules:
    editing another name. `_phase2_name` is deleted. A phase transition does not rename
    an artifact — p2 *derives a new artifact* from p1's, and p1's keeps its name forever.
 2. **Never decomposed.** No command recovers a dimension by splitting a filename.
-   Where a slug is needed from an existing file, the slug is the *input* and the file is
-   found by prefix — `select(slot, "stem:<slug>")` — never the reverse.
+   Where a bundle name is needed from an existing file, the bundle name is the *input*
+   and the file is found by prefix — `select(slot, "stem:<bundle_name>")` — never the
+   reverse.
 3. **Every rendered value is delimiter-free.** This is why the slice renders as `90.10`
    rather than `0.9.0.1`. Any new dimension must render without a `.`.
-4. **Invariant dimensions come first**, so the slug is a true prefix of every filename
-   in a batch. `filename.startswith(dirname)` holds and is asserted.
-5. **Inside a batch, match by kind — never by the directory's name.** Rule 4 makes the
+4. **Invariant dimensions come first**, so the bundle name is a true prefix of every
+   filename in a bundle. `filename.startswith(dirname)` holds and is asserted.
+5. **Inside a bundle, match by kind — never by the directory's name.** Rule 4 makes the
    directory name a *prefix* of what it holds, not an equal: `wf eval p1 a` creates `a/`
    holding `a.pairs`, because `begin` resolves the queued file by `stem:` prefix. A glob
-   built from the slug therefore misses the very file it is looking for. The directory is
-   already the namespace — everything in it belongs to this batch by construction — so
-   scope by suffix (`*.pairs`, `*.p1.yes`, `*.jsonl`) and let `batch.one` enforce
-   uniqueness. Rule 4 still holds; it is just not a thing to *glob on*, and it is not
-   enforced for the evalpair result, which no `wf` command places.
+   built from the bundle name therefore misses the very file it is looking for. The
+   directory is already the namespace — everything in it belongs to this bundle by
+   construction — so scope by suffix (`*.pairs`, `*.p1.yes`, `*.jsonl`) and let
+   `bundle.one` enforce uniqueness. Rule 4 still holds; it is just not a thing to *glob
+   on*, and it is not enforced for the evalpair result, which no `wf` command places.
 
 This reverses today's segment order (`foo.p1.90.10.yes` → `foo.90.10.p1.yes`), because
-the current order interleaves the classifier between batch and slice, leaving no
+the current order interleaves the classifier between result stem and slice, leaving no
 contiguous invariant prefix to hoist into a directory name.
 
 No manifest file. The directory name carries the record; downstream steps append to it.
@@ -110,7 +111,7 @@ No manifest file. The directory name carries the record; downstream steps append
 .wf/p2/
     queued/                       flat — one file per pending item
         foo.90.10.p1.yes
-    eval/                         one directory per in-flight batch
+    eval/                         one directory per in-flight bundle
         foo.90.10/
             foo.90.10.p1.yes      input, moved here by `eval`
             foo.90.10.p2.yes      produced
@@ -118,23 +119,23 @@ No manifest file. The directory name carries the record; downstream steps append
             enex/                 up to 26 files, contained
     done/
         in/   out/                flat — corpus, globbed in aggregate
-        out/enex/foo.90.10/       per-batch, never globbed across batches
+        out/enex/foo.90.10/       per-bundle, never globbed across bundles
         p2_done.pairs
 ```
 
 - `queued/` and `done/` stay flat: one artifact per item, and aggregate reads
   (`filter_pairs` globs `done/out/*.jsonl` across all history).
 - `eval/` is the only slot with many artifacts per item, so it is the only slot that
-  gets batch directories.
-- The batch directory is **created by `eval`** and **removed by `archive`**. It exists
+  gets bundle directories.
+- The bundle directory is **created by `eval`** and **removed by `archive`**. It exists
   iff work is in flight, so `ls eval/` is the in-flight list.
-- `enex/` is archived to `done/out/enex/<slug>/` rather than flat, because it is never
-  queried across batches — the "flat where you query" rule does not apply to it.
+- `enex/` is archived to `done/out/enex/<bundle_name>/` rather than flat, because it is
+  never queried across bundles — the "flat where you query" rule does not apply to it.
 
-**The directory name is the batch-invariant prefix for that phase, which is not the same
-string in p1 and p2.** In p2 it is the slug, as above. In p1 it cannot be: the batch is
-the stem of the p1 *result* file, which evalpair has not written yet when `eval` runs,
-and the slice is not chosen until `complete` filters into p2. So a p1 batch directory is
+**The directory name is the bundle-invariant prefix for that phase, which is not the
+same string in p1 and p2.** In p2 it is the bundle name above. In p1 it cannot include
+the result stem or slice: evalpair has not written the p1 *result* file when `eval` runs,
+and the slice is not chosen until `complete` filters into p2. So a p1 bundle directory is
 named by the submitted pairs filename — `s6.txt.pairs/` holding `s6.txt.pairs`,
 `s6.txt.pairs_third_p3_juniper.qwen35.jsonl`, and any `.filtered`. The prefix invariant
 holds in both phases, which is the property that actually matters; what varies is how
@@ -189,7 +190,7 @@ the default gets it wrong, each of which has bitten:
   without `--force`.
 
 **Every move in a multi-move step is independently restartable.** Take whatever is still
-there rather than demand to find it — glob the batch, or use `fs.move_into_once` /
+there rather than demand to find it — glob the bundle, or use `fs.move_into_once` /
 `fs.rename_once` for a rendered name — so a retry after a partial failure finishes the
 rest instead of dying on what already left. Missing from the source *and* absent at the
 destination is a real error and still raises.
@@ -222,7 +223,7 @@ Re-running a recipe after a mid-way failure continues from where it stopped.
 `-f/--force` means "ignore `is_done` and overwrite".
 
 Note that `merge` names both a primitive (§2.7 set union over given paths) and a step
-(§2.4, fold *this batch's* source pairs into `p{N}_done.pairs`). The step calls the
+(§2.4, fold *this bundle's* source pairs into `p{N}_done.pairs`). The step calls the
 primitive. Same for `filter`. Where the distinction matters below, "the `merge` step"
 and "the `merge` primitive" are written out.
 
@@ -232,21 +233,21 @@ and "the `merge` primitive" are written out.
 extract → merge → archive → advance
 ```
 
-- **extract** produces into the batch directory. Retryable, phase-private, nothing
+- **extract** produces into the bundle directory. Retryable, phase-private, nothing
   observable outside the phase.
 - **merge** folds the source into `p{N}_done.pairs`. Idempotent (`sort -u`) and
   rollback-guarded; runs before anything moves.
-- **archive** renames the batch's *inputs* into `done/{in,out}`. Atomic per file, and
+- **archive** renames the bundle's *inputs* into `done/{in,out}`. Atomic per file, and
   each file independently skippable, so a partial failure resumes rather than restarts.
 - **advance** renames produced artifacts into the next phase's `queued/`, then removes
-  the batch directory. Last, because publication is the only effect another `wf`
-  invocation can observe — and because the directory's existence is what marks the batch
+  the bundle directory. Last, because publication is the only effect another `wf`
+  invocation can observe — and because the directory's existence marks the bundle
   in flight, so it must outlive every other step.
 
 Today every producing call writes *directly into* the next phase's queue
 (`_filter_pairs_to`, `_extract_pairs_to(no)`, `filter_pairs.py`), which fuses production
 with publication and is why the order cannot currently be changed. Under this protocol
-production always targets the batch directory.
+production always targets the bundle directory.
 
 ### 2.5 Context
 
@@ -255,14 +256,14 @@ production always targets the batch directory.
 class Context:
     root: Path            # the .wf directory
     phase: str            # p1 | p2 | p3
-    slug: str             # foo.90.10
+    bundle_name: str      # foo.90.10
     force: bool
     selector: str = "all" # passed to select() by steps that read a slot; see §2.3
 
     @property
-    def batch_dir(self) -> Path:            # root/phase/eval/slug
+    def bundle_dir(self) -> Path:           # root/phase/eval/bundle_name
     def artifact(self, classifier, kind) -> Path:
-        return self.batch_dir / f"{self.slug}.{classifier}.{kind}"
+        return self.bundle_dir / f"{self.bundle_name}.{classifier}.{kind}"
 ```
 
 Built once at command entry, and **fully immutable** — no field is written during a
@@ -273,13 +274,14 @@ within one run.
 needing a previous step to hand it a path list. It carries the CLI's `all` /
 `name:<n>` / `stem:<s>` argument verbatim.
 
-`dest`, `pmin` and `prange` were added when Item 5 landed. The four batch coordinates are
-enough for a *lifecycle* step, which renders every path it touches from phase and slug —
-but `extract-p1-yes` is a corpus query, not a batch operation: it has no slug, and it
-writes outside the layout to wherever `-o` points. Those three carry what it needs, and
+`dest`, `pmin` and `prange` were added when Item 5 landed. The four bundle coordinates
+are enough for a *lifecycle* step, which renders every path it touches from phase and
+bundle name — but `extract-p1-yes` is a corpus query, not a bundle operation: it has no
+bundle name, and it writes outside the layout to wherever `-o` points. Those three carry
+what it needs, and
 they are what make `outputs(ctx)` derivable from the context alone, which is the
 precondition for `is_done` working at all. The band is a real dimension of the design
-(§2.1's slice), not an incidental flag. Steps that operate on a batch ignore all three.
+(§2.1's slice), not an incidental flag. Steps that operate on a bundle ignore all three.
 
 ### 2.6 CLI surface
 
@@ -287,8 +289,8 @@ Phase is a **required positional**, replacing the phase-named subcommands:
 
 ```
 wf submit   p1|p2  FILE          (was: submit pairs | submit yes)
-wf eval     p1|p2  SLUG          (was: eval pairs | eval yes)
-wf complete p1|p2  SLUG          (was: complete pairs | complete yes)
+wf eval     p1|p2  BUNDLE-NAME   (was: eval pairs | eval yes)
+wf complete p1|p2  BUNDLE-NAME   (was: complete pairs | complete yes)
 ```
 
 The surface barely moves — `yes` becomes `p2`. What changes is behind it: one
@@ -298,8 +300,8 @@ duplication was never in the CLI shape, it was in `submit_pairs.py`/`submit_yes.
 positional, and `dispatch.py`'s registry becomes `{"p1": …, "p2": …}` — a near-mechanical
 swap from `{"pairs": …, "yes": …}`.
 
-Lifecycle positionals after the phase are the **slug** (the batch directory name), never
-a filename. This is what keeps rule 2 of §2.1 honest: `eval p2 foo.90.10` locates its
+Lifecycle positionals after the phase are the **bundle name** (the bundle directory
+name), never a filename. This keeps rule 2 of §2.1 honest: `eval p2 foo.90.10` locates its
 input by globbing `queued/foo.90.10.*`, so no command ever has to take a name apart.
 
 Individually invokable operations:
@@ -309,10 +311,10 @@ wf select   SLOT all|name:NAME|stem:STEM [--glob PAT]
 wf filter   JSONL... [--pm PMIN] [--pr PRANGE] [-o FILE]
 wf merge    SRC... DST
 wf diff     A B
-wf retrieve p2      SLUG
-wf extract  p1|p2   SLUG
-wf archive  p1|p2   SLUG
-wf advance  p1|p2   SLUG
+wf retrieve p2      BUNDLE-NAME
+wf extract  p1|p2   BUNDLE-NAME
+wf archive  p1|p2   BUNDLE-NAME
+wf advance  p1|p2   BUNDLE-NAME
 ```
 
 These four are the primitives of §2.3: they take arguments, not a `Context`.
@@ -322,13 +324,13 @@ destination to `p2/queued/<rendered name>`; `-o FILE` overrides that destination
 
 `filter` takes a path *list*, matching the unified `filter_results` signature of Item 1.
 The `-o` override is what lets the same primitive serve both `wf filter` (publish a
-re-sliced batch into `p2/queued`) and `extract-p1-yes` (write a corpus-wide extract to an
+re-sliced bundle into `p2/queued`) and `extract-p1-yes` (write a corpus-wide extract to an
 arbitrary file). Without it the two would need separate implementations, which is the
 duplication this refactor removes.
 
 Two commands create new work and are therefore not lifecycle steps: **`submit`**
 (external file → `queued/`) and **`filter`** (re-slice an archived p1 result at a new
-band → `p2/queued/`). Everything else operates on a batch already in flight.
+band → `p2/queued/`). Everything else operates on a bundle already in flight.
 
 `submit` is where the sorted-unique set invariant is established — it is the boundary
 where an arbitrary external file becomes a repo-managed set.
@@ -419,14 +421,14 @@ Callers:
 | caller | paths | pairs_path |
 |---|---|---|
 | `wf filter` | `[one_jsonl]` | `None` |
-| `complete p1` | `[*done_out.glob("*.jsonl"), new_result]` | the batch's source pairs |
+| `complete p1` | `[*done_out.glob("*.jsonl"), new_result]` | the bundle's source pairs |
 | `extract-p1-yes` | all selected | `None` |
 
 The `complete p1` row is correct **only under the new step ordering**. Today
 `_complete` moves the result into `done/out` *before* filtering (with a comment
 explaining that `filter_pairs` needs all of `done/out`), so the glob alone already
 covers the new result. Under §2.4 `archive` runs after `extract`, so at filter time the
-new result is still in the batch directory and must be listed explicitly. Listing both
+new result is still in the bundle directory and must be listed explicitly. Listing both
 under today's ordering would double-count it.
 
 Carry `prefetch()` and the per-file `try/except`-and-warn from the old `filter_pairs`
@@ -495,24 +497,24 @@ its split file, and `_retrieve_notes` reconstructs those same titles to fetch th
 Renaming a p2/eval file whose notes already exist in Evernote leaves `retrieve` looking
 up titles that were never created, and it reports "no note parts found" rather than
 anything that points at the cause. Either drain `p2/eval` before renaming, or exclude
-in-flight batches from the rename and let them finish under their old names.
+in-flight bundles from the rename and let them finish under their old names.
 
-### Item 4 — `eval/<slug>/` batch directories
+### Item 4 — `eval/<bundle_name>/` bundle directories
 
-`eval` creates the batch directory and moves the queued file in. `archive` fans the
+`eval` creates the bundle directory and moves the queued file in. `archive` fans the
 contents out to `done/{in,out}` and removes the directory.
 
-Delete `_check_already_submitted`: with a batch directory, `is_done` is one stat against
+Delete `_check_already_submitted`: with a bundle directory, `is_done` is one stat against
 a known path rather than a three-slot name scan. Its lifecycle question ("has this ever
 been through p2?") is answered by `done/in`.
 
-Update `show` so `wf show p2 eval` lists batch directories, one line each, rather than
+Update `show` so `wf show p2 eval` lists bundle directories, one line each, rather than
 every loose file.
 
 `complete p2` also has to start archiving the *queued* artifact rather than the
 `.filtered` derivative `eval` may have produced from it. It archived the derivative and
 left the original in `p2/eval` forever — invisible while the slot was flat, but it keeps
-the batch directory from ever draining, so `finish` would refuse to remove it. p1 already
+the bundle directory from ever draining, so `finish` would refuse to remove it. p1 already
 had this right: merge the filtered set, archive the original, drop the derivative.
 
 ### Item 5 — `extract-p1-yes` as the first recipe
@@ -539,12 +541,11 @@ Pure reads, one output, no state transitions, no network — and a known-good re
 implementation to diff against. It validates the vocabulary on the cheapest possible
 case before Item 6 stresses it.
 
-One behaviour changes as a consequence. `_extract` used to refuse to overwrite an
-existing output (`fs.raise_if_exists`); under the protocol an existing output means
-`is_done`, so a re-run now **skips** the step and reports it rather than failing.
-`-f/--force` overwrites. That is the protocol working as specified, not an oversight —
-but it turns a hard error into a logged no-op, so the skip must stay visible in the
-output.
+`filter.is_done()` always returns `False` because a user-chosen output path does not
+record which selector or probability band produced it. A re-run therefore preserves the
+old `_extract` behavior and refuses to overwrite an existing output
+(`fs.raise_if_exists`); `-f/--force` overwrites it. Treating existence as completion here
+would silently preserve stale output while reporting success.
 
 ### Item 6 — `complete` as a recipe
 
@@ -576,7 +577,7 @@ as a complete one.
 
 This is deliberately *not* a manifest. Placement already records everything the other
 five steps need (`archive` and `advance` are atomic renames; `extract_*` become atomic
-under §2.7; the idempotent folds read placement, see below), so a batch manifest would
+under §2.7; the idempotent folds read placement, see below), so a bundle manifest would
 add a second source of truth that has to be reconciled with placement, and would
 relocate rather than remove the crash window it is meant to close. If a manifest is ever
 added it should be *advisory provenance only* — model and prompt-variant, timings, row
@@ -584,18 +585,18 @@ counts, the things names cannot carry — with a hard rule that `is_done` and ev
 control decision never read it.
 
 **An idempotent fold may always run only while its input is in place.** `merge` and
-`p2_classify` fold the batch into a set shared across every batch (`p1_done.pairs`,
+`p2_classify` fold the bundle into a set shared across every bundle (`p1_done.pairs`,
 `classified/yes.pairs`). Union under `sort -u` is idempotent, and the shared set's
-existence says nothing about *this* batch, so it is tempting to write `is_done` as a
+existence says nothing about *this* bundle, so it is tempting to write `is_done` as a
 constant `False` and let the fold always run. That is wrong: idempotent is not the same
 as always *runnable*. Both folds sit before `archive`, which relocates their input into
 done/, so on any retry after `archive` an always-run fold re-executes and dies on a
 missing input — taking out the resume path for `advance`, the one step that still has
-work left to do, and leaving the batch permanently un-completable. Placement carries the
+work left to do, and leaving the bundle permanently un-completable. Placement carries the
 answer here too: the input's absence *is* the record that `archive` ran, and therefore
-that the fold ran before it. `is_done` reads that (`batch.has_source`), not a manifest.
+that the fold ran before it. `is_done` reads that (`bundle.has_source`), not a manifest.
 
-`extract` no longer writes to `p2/queued` or `p3/queued`; it writes to the batch
+`extract` no longer writes to `p2/queued` or `p3/queued`; it writes to the bundle
 directory, and `advance` publishes.
 
 ---
@@ -613,12 +614,12 @@ archive is in reach.
    an identical file. Cover both selectors (`all` and a single named result) and at
    least one band whose `pmin + prange != 1.0`, so the `_pmax` special case is not the
    only path tested. This is the acceptance test for the whole refactor.
-2. **Resumability.** Run `complete p2` on a fixture batch, stop after the `merge` step,
+2. **Resumability.** Run `complete p2` on a fixture bundle, stop after the `merge` step,
    re-run without `--force`: it skips to `archive` and completes. Today this raises on
    the already-present enex files. Assert the skip is logged, not just that the exit
    code is 0 — a silently re-run step passes this test for the wrong reason.
 3. **Prefix invariant.** Assert `filename.startswith(dirname)` for every artifact
-   *file* in every batch directory the fixture run produces. The assertion exempts
+   *file* in every bundle directory the fixture run produces. The assertion exempts
    grouping subdirectories (`enex/`, and `enex.part/` while retrieve is mid-flight),
    which are named by role rather than by content key.
 4. **CLI tests.** `tests/test_workflow_cli.py` asserts help strings that change with the

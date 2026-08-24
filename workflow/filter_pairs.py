@@ -38,15 +38,17 @@ class FilterPairs(command.Action):
             jsonl_path = config.path(opts.dir, ["p1", "done", "out"]) / rest[0]
         fs.raise_if_not_file(jsonl_path)
 
-        slug = names.slug(jsonl_path.stem, pmin, prange)
-        out_name = names.artifact(slug, "p1", "yes")
+        bundle_name = names.bundle_name(jsonl_path.stem, pmin, prange)
+        out_name = names.artifact(bundle_name, "p1", "yes")
 
         queued_dir = config.path(opts.dir, ["p2", "queued"])
-        # "Has this batch already been through p2?" -- three stats against known
-        # paths, rather than scanning three slots for a matching name. The batch
-        # directory exists iff the work is in flight; done/in answers the rest.
+        # "Has this bundle already been through p2?" -- three stats against
+        # known paths, rather than scanning three slots for a matching name. The
+        # bundle directory exists iff the work is in flight; done/in answers the
+        # rest.
         for candidate in (queued_dir / out_name,
-                          context.Context(root=opts.dir, phase="p2", slug=slug).batch_dir,
+                          context.Context(root=opts.dir, phase="p2",
+                                          bundle_name=bundle_name).bundle_dir,
                           config.path(opts.dir, ["p2", "done", "in"]) / out_name):
             if candidate.exists() and not opts.force:
                 raise ValueError(

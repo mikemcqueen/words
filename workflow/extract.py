@@ -11,7 +11,7 @@ import argparse
 
 from pathlib import Path
 
-from workflow import command, context, log, steps, usage
+from workflow import command, config, context, fs, log, steps, usage
 from workflow.steps import filter as filter_step
 
 
@@ -22,7 +22,7 @@ class ExtractYes(command.Action):
     def __init__(self):
         super().__init__(
             summary="yes     — extract YES pairs from p1/done/out without queueing",
-            positional="all|JSONL-FILE",
+            positional="[all|JSONL-FILE]",
         )
 
     def parser(self):
@@ -35,17 +35,37 @@ class ExtractYes(command.Action):
                        help="probability range width (default: 0.1)")
         p.add_argument("-o", "--output", type=Path, required=True, metavar="FILE",
                        help="write pairs to FILE")
+        p.add_argument("--pairs", type=Path, metavar="PAIRS-FILE",
+                       help="scan all results and restrict output to pairs in FILE")
+        p.add_argument("--results-dir", type=Path, metavar="RESULTS-DIR",
+                       help="with --pairs, scan DIR instead of p1/done/out")
         return p
 
     def run(self, command, opts, argv) -> int:
         rest = self.parse(opts, argv)
-        if not rest:
+        if opts.results_dir is not None and opts.pairs is None:
+            log.error("--results-dir requires --pairs")
+            return 2
+
+        if opts.pairs is None and not rest:
             return usage.missing_argument(self.format_help(command))
-        if len(rest) > 1:
-            return usage.invalid_argument(rest[1], self.format_help(command))
+        if opts.pairs is not None:
+            if rest:
+                return usage.invalid_argument(rest[0], self.format_help(command))
+            fs.raise_if_not_file(opts.pairs)
+            results_dir = opts.results_dir or config.path(
+                opts.dir, ["p1", "done", "out"])
+            fs.raise_if_not_dir(results_dir)
+            selector = "all"
+        else:
+            if len(rest) > 1:
+                return usage.invalid_argument(rest[1], self.format_help(command))
+            results_dir = None
+            selector = rest[0]
 
         ctx = context.Context(root=opts.dir, phase="p1", force=opts.force,
-                              selector=rest[0], dest=opts.output,
+                              selector=selector, dest=opts.output,
+                              results_dir=results_dir, pairs_path=opts.pairs,
                               pmin=opts.prob_min, prange=opts.prob_range)
 
         code = steps.run_steps(STEPS, ctx)

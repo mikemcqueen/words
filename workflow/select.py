@@ -5,8 +5,8 @@
 # used to carry.
 #
 # Selectors name what to find, never how a filename is spelled -- no caller
-# recovers a dimension by taking a name apart. Where a slug is needed, the slug
-# is the input and the file is found by prefix.
+# recovers a dimension by taking a name apart. Where a bundle name is needed,
+# it is the input and the file is found by prefix.
 
 from pathlib import Path
 

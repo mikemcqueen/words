@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import batch, names
+from workflow import bundle, names
 from workflow.context import Context
 from workflow.steps import p2_extract, p2_retrieve
 
@@ -63,7 +63,7 @@ class FakeNotes:
 
 
 class P2RecipeTests(unittest.TestCase):
-    SLUG = "s6.txt.pairs_third.90.10"
+    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -71,27 +71,30 @@ class P2RecipeTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.opts, _ = fx.make_wf(self.root)
 
-        self.batch_dir = fx.make_batch(self.opts, "p2", self.SLUG)
-        self.queued = self.batch_dir / names.artifact(self.SLUG, "p1", "yes")
+        self.bundle_dir = fx.make_bundle(
+            self.opts, "p2", self.BUNDLE_NAME)
+        self.queued = self.bundle_dir / names.artifact(
+            self.BUNDLE_NAME, "p1", "yes")
         fx.write_pairs(self.queued, ["alpha,two", "mid,three", "zeta,one"])
 
         self.notes = FakeNotes()
-        self.ctx = Context(root=self.root, phase="p2", slug=self.SLUG)
+        self.ctx = Context(
+            root=self.root, phase="p2", bundle_name=self.BUNDLE_NAME)
 
     def _complete(self, *extra):
         with mock.patch.object(p2_retrieve.subprocess, "run", self.notes.route):
             return fx.run_wf("-d", str(self.root), *extra,
-                             "complete", "p2", self.SLUG)
+                             "complete", "p2", self.BUNDLE_NAME)
 
     def _slot(self, *parts):
         return fx.slot(self.opts, list(parts))
 
     # ---------------------------------------------------------------- happy path
 
-    def test_completes_and_closes_the_batch(self):
+    def test_completes_and_closes_the_bundle(self):
         code, _, stderr = self._complete()
         self.assertEqual(0, code, stderr)
-        self.assertFalse(self.batch_dir.exists())
+        self.assertFalse(self.bundle_dir.exists())
 
     def test_retrieve_probes_until_a_part_is_missing(self):
         self._complete()
@@ -102,14 +105,17 @@ class P2RecipeTests(unittest.TestCase):
         self._complete()
         self.assertTrue((self._slot("p2", "done", "in") / self.queued.name).is_file())
         self.assertTrue((self._slot("p2", "done", "out")
-                         / names.artifact(self.SLUG, "p2", "yes")).is_file())
-        enex = self._slot("p2", "done", "out", "enex") / self.SLUG
+                         / names.artifact(
+                             self.BUNDLE_NAME, "p2", "yes")).is_file())
+        enex = (self._slot("p2", "done", "out", "enex")
+                / self.BUNDLE_NAME)
         self.assertEqual([f"{self.queued.name}.aa.enex", f"{self.queued.name}.ab.enex"],
                          sorted(p.name for p in enex.iterdir()))
 
     def test_publishes_the_no_set_into_p3(self):
         self._complete()
-        published = self._slot("p3", "queued") / names.artifact(self.SLUG, "p2", "no")
+        published = self._slot("p3", "queued") / names.artifact(
+            self.BUNDLE_NAME, "p2", "no")
         self.assertEqual(["yankee,four", "zeta,one"],
                          published.read_text().splitlines())
 
@@ -143,17 +149,17 @@ class P2RecipeTests(unittest.TestCase):
         # in total, not re-fetched on the resume; .ab was picked up after it.
         self.assertEqual(1, self.notes.fetched.count(f"{self.queued.name}.aa"))
         self.assertIn(f"{self.queued.name}.ab", self.notes.fetched)
-        self.assertFalse(self.batch_dir.exists())
+        self.assertFalse(self.bundle_dir.exists())
 
     def test_rerunning_after_merge_skips_forward_and_completes(self):
         from workflow import complete, steps as step_runner
         with mock.patch.object(p2_retrieve.subprocess, "run", self.notes.route):
             step_runner.run_steps(complete.P2.steps[:5], self.ctx)
 
-        self.assertTrue(self.batch_dir.exists())
+        self.assertTrue(self.bundle_dir.exists())
         code, _, stderr = self._complete()
         self.assertEqual(0, code, stderr)
-        self.assertFalse(self.batch_dir.exists())
+        self.assertFalse(self.bundle_dir.exists())
         # retrieve was skipped on the second pass, not repeated
         self.assertEqual(2, len(self.notes.fetched))
 

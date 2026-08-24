@@ -45,11 +45,11 @@ def place(opts, parts: list[str], name: str, content: str = "") -> Path:
     return path
 
 
-def make_batch(opts, phase: str, slug: str) -> Path:
-    """Create an eval batch directory, as `eval` would."""
-    directory = slot(opts, [phase, "eval"]) / slug
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+def make_bundle(opts, phase: str, bundle_name: str) -> Path:
+    """Create an eval bundle directory, as `eval` would."""
+    bundle_dir = slot(opts, [phase, "eval"]) / bundle_name
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    return bundle_dir
 
 
 def run_wf(*argv) -> tuple[int, str, str]:

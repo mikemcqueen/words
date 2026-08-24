@@ -16,6 +16,12 @@ SLOT = ["p1", "done", "out"]
 
 
 def inputs(ctx) -> list[Path]:
+    if ctx.results_dir is not None:
+        fs.raise_if_not_dir(ctx.results_dir)
+        paths = sorted(p for p in ctx.results_dir.glob("*.jsonl") if p.is_file())
+        if not paths:
+            raise ValueError(f"no *.jsonl files in {ctx.results_dir}")
+        return paths
     # The selector arrives on the Context, so this resolves from ctx alone --
     # no previous step has to hand the path list forward.
     return select.select(ctx.root, SLOT, ctx.selector, glob="*.jsonl")
@@ -43,6 +49,8 @@ def run_step(ctx) -> None:
     with tempfile.NamedTemporaryFile(mode="w", prefix="wf-filter-",
                                      suffix=".pairs") as matches:
         filter_results(paths, True, matches,
+                       pairs_path=(str(ctx.pairs_path)
+                                   if ctx.pairs_path is not None else None),
                        pmin=ctx.pmin, prng=ctx.prange, use_max=False)
         matches.flush()
         setops.merge([matches.name], ctx.dest)

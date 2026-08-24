@@ -16,7 +16,7 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import batch, fs, log
+from workflow import bundle, fs, log
 
 
 NAME = "retrieve"
@@ -25,15 +25,15 @@ MAX_NOTE_PARTS = 26
 
 
 def enex_dir(ctx) -> Path:
-    return ctx.batch_dir / "enex"
+    return ctx.bundle_dir / "enex"
 
 
 def partial_dir(ctx) -> Path:
-    return ctx.batch_dir / "enex.part"
+    return ctx.bundle_dir / "enex.part"
 
 
 def inputs(ctx) -> list[Path]:
-    return [batch.evaluated(ctx)]
+    return [bundle.evaluated(ctx)]
 
 
 def outputs(ctx) -> list[Path]:
@@ -49,7 +49,7 @@ def _title(source: Path, index: int) -> str:
 
 
 def run_step(ctx) -> None:
-    source = batch.evaluated(ctx)
+    source = bundle.evaluated(ctx)
     staging = partial_dir(ctx)
     staging.mkdir(exist_ok=True)
 

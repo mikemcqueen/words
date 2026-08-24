@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import batch, names, setops
+from workflow import bundle, names, setops
 from workflow.context import Context
 from workflow.select import select
 
@@ -162,38 +162,42 @@ class NameRenderingTests(unittest.TestCase):
         self.assertEqual("50.30", names.slice_segment(0.5, 0.3))
 
     def test_artifact_puts_invariant_dimensions_first(self):
-        slug = names.slug("batch", 0.9, 0.1)
-        self.assertEqual("batch.90.10.p1.yes", names.artifact(slug, "p1", "yes"))
+        bundle_name = names.bundle_name("sample", 0.9, 0.1)
+        self.assertEqual(
+            "sample.90.10.p1.yes",
+            names.artifact(bundle_name, "p1", "yes"))
 
-    def test_slug_prefixes_every_artifact_of_its_batch(self):
-        slug = names.slug("batch", 0.9, 0.1)
+    def test_bundle_name_prefixes_every_artifact_of_its_bundle(self):
+        bundle_name = names.bundle_name("sample", 0.9, 0.1)
         for classifier in names.CLASSIFIERS:
             for kind in names.KINDS:
                 with self.subTest(classifier=classifier, kind=kind):
                     self.assertTrue(
-                        names.artifact(slug, classifier, kind).startswith(slug))
+                        names.artifact(
+                            bundle_name, classifier, kind).startswith(bundle_name))
 
     def test_a_phase_transition_derives_a_sibling_not_a_rename(self):
-        slug = names.slug("batch", 0.9, 0.1)
-        p1 = names.artifact(slug, "p1", "yes")
-        p2 = names.artifact(slug, "p2", "yes")
+        bundle_name = names.bundle_name("sample", 0.9, 0.1)
+        p1 = names.artifact(bundle_name, "p1", "yes")
+        p2 = names.artifact(bundle_name, "p2", "yes")
         self.assertNotEqual(p1, p2)
-        self.assertTrue(p1.startswith(slug) and p2.startswith(slug))
+        self.assertTrue(
+            p1.startswith(bundle_name) and p2.startswith(bundle_name))
 
-    def test_different_bands_are_different_batches(self):
-        self.assertNotEqual(names.slug("batch", 0.9, 0.1),
-                            names.slug("batch", 0.5, 0.3))
+    def test_different_bands_are_different_bundles(self):
+        self.assertNotEqual(names.bundle_name("sample", 0.9, 0.1),
+                            names.bundle_name("sample", 0.5, 0.3))
 
     def test_unknown_classifier_or_kind_is_rejected(self):
-        slug = names.slug("batch", 0.9, 0.1)
+        bundle_name = names.bundle_name("sample", 0.9, 0.1)
         with self.assertRaises(ValueError):
-            names.artifact(slug, "p9", "yes")
+            names.artifact(bundle_name, "p9", "yes")
         with self.assertRaises(ValueError):
-            names.artifact(slug, "p1", "maybe")
+            names.artifact(bundle_name, "p1", "maybe")
 
-    def test_empty_batch_or_slug_is_rejected(self):
+    def test_empty_result_stem_or_bundle_name_is_rejected(self):
         with self.assertRaises(ValueError):
-            names.slug("", 0.9, 0.1)
+            names.bundle_name("", 0.9, 0.1)
         with self.assertRaises(ValueError):
             names.artifact("", "p1", "yes")
 
@@ -203,66 +207,68 @@ class NameRenderingTests(unittest.TestCase):
         self.assertEqual(once, names.ensure_kind(once, "pairs"))
 
 
-class BatchDirectoryTests(unittest.TestCase):
-    """Item 4: the batch directory is the in-flight record."""
+class BundleDirectoryTests(unittest.TestCase):
+    """Item 4: the bundle directory is the in-flight record."""
 
-    SLUG = "s6.txt.pairs"
+    BUNDLE_NAME = "s6.txt.pairs"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.opts, _ = fx.make_wf(self.root)
-        self.queued = fx.slot(self.opts, ["p1", "queued"]) / self.SLUG
+        self.queued = fx.slot(
+            self.opts, ["p1", "queued"]) / self.BUNDLE_NAME
         fx.write_pairs(self.queued, ["alpha,two", "mid,three"])
 
-    def _ctx(self, slug=None) -> Context:
-        return Context(root=self.opts.dir, phase="p1", slug=slug or self.SLUG)
+    def _ctx(self, bundle_name=None) -> Context:
+        return Context(root=self.opts.dir, phase="p1",
+                       bundle_name=bundle_name or self.BUNDLE_NAME)
 
     def test_begin_moves_the_queued_artifact_into_a_new_directory(self):
-        moved = batch.begin(self._ctx())
-        self.assertEqual(self._ctx().batch_dir / self.SLUG, moved)
+        moved = bundle.begin(self._ctx())
+        self.assertEqual(self._ctx().bundle_dir / self.BUNDLE_NAME, moved)
         self.assertTrue(moved.is_file())
         self.assertFalse(self.queued.exists())
 
     def test_directory_exists_exactly_while_work_is_in_flight(self):
-        self.assertFalse(batch.in_flight(self._ctx()))
-        batch.begin(self._ctx())
-        self.assertTrue(batch.in_flight(self._ctx()))
+        self.assertFalse(bundle.in_flight(self._ctx()))
+        bundle.begin(self._ctx())
+        self.assertTrue(bundle.in_flight(self._ctx()))
 
-    def test_begin_refuses_a_batch_already_in_flight(self):
-        batch.begin(self._ctx())
+    def test_begin_refuses_a_bundle_already_in_flight(self):
+        bundle.begin(self._ctx())
         fx.write_pairs(self.queued, ["alpha,two"])
         with self.assertRaises(ValueError):
-            batch.begin(self._ctx())
+            bundle.begin(self._ctx())
 
-    def test_begin_refuses_an_unknown_slug(self):
+    def test_begin_refuses_an_unknown_bundle_name(self):
         with self.assertRaises(ValueError):
-            batch.begin(self._ctx("nope"))
+            bundle.begin(self._ctx("nope"))
 
     def test_one_finds_the_single_match(self):
-        directory = batch.begin(self._ctx()).parent
-        (directory / f"{self.SLUG}.jsonl").write_text("")
-        self.assertEqual(directory / f"{self.SLUG}.jsonl",
-                         batch.one(directory, "*.jsonl"))
+        bundle_dir = bundle.begin(self._ctx()).parent
+        (bundle_dir / f"{self.BUNDLE_NAME}.jsonl").write_text("")
+        self.assertEqual(bundle_dir / f"{self.BUNDLE_NAME}.jsonl",
+                         bundle.one(bundle_dir, "*.jsonl"))
 
     def test_one_rejects_zero_and_multiple_matches(self):
-        directory = batch.begin(self._ctx()).parent
+        bundle_dir = bundle.begin(self._ctx()).parent
         with self.assertRaises(ValueError):
-            batch.one(directory, "*.jsonl")
-        (directory / f"{self.SLUG}.a.jsonl").write_text("")
-        (directory / f"{self.SLUG}.b.jsonl").write_text("")
+            bundle.one(bundle_dir, "*.jsonl")
+        (bundle_dir / f"{self.BUNDLE_NAME}.a.jsonl").write_text("")
+        (bundle_dir / f"{self.BUNDLE_NAME}.b.jsonl").write_text("")
         with self.assertRaises(ValueError):
-            batch.one(directory, "*.jsonl")
+            bundle.one(bundle_dir, "*.jsonl")
 
     def test_finish_removes_a_drained_directory(self):
-        moved = batch.begin(self._ctx())
+        moved = bundle.begin(self._ctx())
         moved.unlink()
-        batch.finish(self._ctx())
-        self.assertFalse(batch.in_flight(self._ctx()))
+        bundle.finish(self._ctx())
+        self.assertFalse(bundle.in_flight(self._ctx()))
 
     def test_finish_refuses_to_drop_a_directory_still_holding_artifacts(self):
-        batch.begin(self._ctx())
+        bundle.begin(self._ctx())
         with self.assertRaises(ValueError):
-            batch.finish(self._ctx())
-        self.assertTrue(batch.in_flight(self._ctx()))
+            bundle.finish(self._ctx())
+        self.assertTrue(bundle.in_flight(self._ctx()))

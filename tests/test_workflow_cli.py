@@ -86,7 +86,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — evaluate pairs", stderr)
         self.assertIn(
-            "usage: wf eval p1 [-d DIR] [-f] [-h] [--no-filter] SLUG",
+            "usage: wf eval p1 [-d DIR] [-f] [-h] [--no-filter] BUNDLE-NAME",
             stderr,
         )
 
@@ -97,7 +97,8 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual("", stdout)
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — complete a pairs file evaluation", stderr)
-        self.assertIn("usage: wf complete p1 [-d DIR] [-f] [-h] SLUG", stderr)
+        self.assertIn(
+            "usage: wf complete p1 [-d DIR] [-f] [-h] BUNDLE-NAME", stderr)
 
     def test_incomplete_show_command_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("show")

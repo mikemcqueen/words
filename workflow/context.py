@@ -18,24 +18,27 @@ from workflow import config, names
 
 @dataclass(frozen=True)
 class Context:
-    # Batch coordinates: what a lifecycle step resolves its paths against.
+    # Bundle coordinates: what a lifecycle step resolves its paths against.
     root: Path            # the workflow root -- the directory *containing* .wf
     phase: str            # p1 | p2 | p3
     force: bool = False   # ignore is_done and overwrite
-    slug: str = ""        # the batch directory name; empty for non-batch reads
+    bundle_name: str = ""  # eval directory name; empty for non-bundle reads
 
-    # Query parameters: what a corpus read needs and a batch operation does not.
+    # Query parameters: what a corpus read needs and a bundle operation does not.
     selector: str = "all"        # handed to select() by steps that read a slot
-    dest: Path | None = None     # where a non-batch read places its result
+    dest: Path | None = None     # where a non-bundle read places its result
+    results_dir: Path | None = None  # optional corpus outside the workflow slot
+    pairs_path: Path | None = None   # optional identity mask for a corpus read
     pmin: float = 0.9
     prange: float = 0.1
 
     @property
-    def batch_dir(self) -> Path:
-        if not self.slug:
-            raise ValueError("context has no batch: slug is empty")
-        return config.path(self.root, [self.phase, "eval"]) / self.slug
+    def bundle_dir(self) -> Path:
+        if not self.bundle_name:
+            raise ValueError("context has no bundle: bundle name is empty")
+        return config.path(self.root, [self.phase, "eval"]) / self.bundle_name
 
     def artifact(self, classifier: str, kind: str) -> Path:
-        """A rendered artifact path inside this batch."""
-        return self.batch_dir / names.artifact(self.slug, classifier, kind)
+        """A rendered artifact path inside this bundle."""
+        return self.bundle_dir / names.artifact(
+            self.bundle_name, classifier, kind)

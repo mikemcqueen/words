@@ -106,16 +106,17 @@ class ContextTests(unittest.TestCase):
         with self.assertRaises(dataclasses.FrozenInstanceError):
             ctx.phase = "p2"
 
-    def test_batch_dir_and_artifact_render_under_the_slug(self):
-        slug = names.slug("batch", 0.9, 0.1)
-        ctx = Context(root=self.root, phase="p2", slug=slug)
-        self.assertEqual(fx.slot(self.opts, ["p2", "eval"]) / slug, ctx.batch_dir)
-        self.assertEqual(ctx.batch_dir / f"{slug}.p2.yes",
+    def test_bundle_dir_and_artifact_render_under_the_bundle_name(self):
+        bundle_name = names.bundle_name("sample", 0.9, 0.1)
+        ctx = Context(root=self.root, phase="p2", bundle_name=bundle_name)
+        self.assertEqual(
+            fx.slot(self.opts, ["p2", "eval"]) / bundle_name, ctx.bundle_dir)
+        self.assertEqual(ctx.bundle_dir / f"{bundle_name}.p2.yes",
                          ctx.artifact("p2", "yes"))
 
-    def test_batch_dir_without_a_slug_is_an_error(self):
+    def test_bundle_dir_without_a_bundle_name_is_an_error(self):
         with self.assertRaises(ValueError):
-            Context(root=self.root, phase="p1").batch_dir
+            Context(root=self.root, phase="p1").bundle_dir
 
 
 @fx.requires_native
@@ -143,12 +144,11 @@ class ExtractRecipeTests(unittest.TestCase):
              "yes,high", "yes,one", "yes,rvsonly"],
             self.dest.read_text().splitlines())
 
-    def test_rerunning_skips_instead_of_redoing_the_work(self):
+    def test_rerunning_refuses_to_clobber_the_output(self):
         self._extract()
         self.dest.write_text("sentinel\n")
-        code, _, stderr = self._extract()
-        self.assertEqual(0, code, stderr)
-        self.assertIn("skip filter", stderr)
+        with self.assertRaisesRegex(ValueError, "file already exists"):
+            self._extract()
         self.assertEqual("sentinel\n", self.dest.read_text())
 
     def test_force_overwrites(self):

@@ -1,6 +1,6 @@
 # steps/p2_extract.py
 #
-# Parse the retrieved enex into YES and NO pair sets, produced into the batch
+# Parse the retrieved enex into YES and NO pair sets, produced into the bundle
 # directory. Two steps, one implementation: the kind is the only difference, so
 # they are instances rather than two near-identical modules. The runner only
 # needs NAME/outputs/run_step, not a module.

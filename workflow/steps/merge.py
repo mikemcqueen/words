@@ -1,35 +1,35 @@
 # steps/merge.py
 #
-# Fold this batch's evaluated pairs into the phase's done-set. Shared by both
+# Fold this bundle's evaluated pairs into the phase's done-set. Shared by both
 # phases: only the slot differs, and that comes off the Context.
 
 from pathlib import Path
 
-from workflow import batch, setops
+from workflow import bundle, setops
 
 
 NAME = "merge"
 
 
 def inputs(ctx) -> list[Path]:
-    return [batch.evaluated(ctx)]
+    return [bundle.evaluated(ctx)]
 
 
 def outputs(ctx) -> list[Path]:
-    return [batch.done_pairs(ctx)]
+    return [bundle.done_pairs(ctx)]
 
 
 def is_done(ctx) -> bool:
-    # The done-set is shared across every batch, so its existence says nothing
-    # about *this* batch, and union under `sort -u` is idempotent -- so this
+    # The done-set is shared across every bundle, so its existence says nothing
+    # about *this* bundle, and union under `sort -u` is idempotent -- so this
     # step would happily always run. What it cannot do is run *after*
     # `archive`, which relocates its input into done/. Idempotent is not the
     # same as always runnable, and placement is what answers the difference:
-    # if the batch no longer holds its input, archive ran, so merge did too.
-    return not batch.has_source(ctx)
+    # if the bundle no longer holds its input, archive ran, so merge did too.
+    return not bundle.has_source(ctx)
 
 
 def run_step(ctx) -> None:
-    dst = batch.done_pairs(ctx)
-    src = batch.evaluated(ctx)
+    dst = bundle.done_pairs(ctx)
+    src = bundle.evaluated(ctx)
     setops.merge([dst, src] if dst.exists() else [src], dst)

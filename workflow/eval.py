@@ -1,6 +1,7 @@
 # eval.py
 #
-# Open a batch: move a queued artifact into <phase>/eval/<slug>/ and prepare it
+# Open a bundle: move a queued artifact into <phase>/eval/<bundle_name>/ and
+# prepare it
 # for whatever does the actual evaluating.
 #
 # Unlike submit and complete, the phases here are not the same command with
@@ -13,7 +14,7 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import batch, command, context, fs, log, usage
+from workflow import bundle, command, context, fs, log, usage
 
 
 CHUNK_SIZE = 400
@@ -22,7 +23,7 @@ CHUNK_SIZE = 400
 class Eval(command.Action):
     def __init__(self, phase: str, summary: str, glob: str = "*",
                  source_noun: str = "pairs", ready_for: str = "evalpairs"):
-        super().__init__(summary=summary, positional="SLUG")
+        super().__init__(summary=summary, positional="BUNDLE-NAME")
         self.phase = phase
         self.glob = glob
         self.source_noun = source_noun
@@ -35,21 +36,21 @@ class Eval(command.Action):
         return p
 
     def prepare(self, pairs: Path, ctx) -> None:
-        """What this phase does with its pairs once the batch is open."""
+        """What this phase does with its pairs once the bundle is open."""
 
     def run(self, command, opts, argv) -> int:
         rest = self.parse(opts, argv)
         if not rest:
             return usage.missing_argument(self.format_help(command))
 
-        # The positional is the batch directory name, and the queued artifact
+        # The positional is the bundle directory name, and the queued artifact
         # is found under it by prefix.
         ctx = context.Context(root=opts.dir, phase=self.phase,
-                              force=opts.force, slug=rest[0])
-        pairs = batch.begin(ctx, glob=self.glob)
+                              force=opts.force, bundle_name=rest[0])
+        pairs = bundle.begin(ctx, glob=self.glob)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
         if not opts.no_filter:
-            pairs = batch.filter_done(pairs, ctx)
+            pairs = bundle.filter_done(pairs, ctx)
 
         self.prepare(pairs, ctx)
 

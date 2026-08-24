@@ -1,6 +1,6 @@
 # steps/p2_classify.py
 #
-# Fold this batch's manually-confirmed YES pairs into the global classified set.
+# Fold this bundle's manually-confirmed YES pairs into the global classified set.
 # Carried over as-is from _process_yes_pairs.
 
 from pathlib import Path
@@ -24,11 +24,11 @@ def outputs(ctx) -> list[Path]:
 
 
 def is_done(ctx) -> bool:
-    # Global across every batch, like the phase done-set: its existence says
-    # nothing about this batch, and union is idempotent -- but see merge, whose
+    # Global across every bundle, like the phase done-set: its existence says
+    # nothing about this bundle, and union is idempotent -- but see merge, whose
     # answer this mirrors. `archive` relocates this fold's input into
     # p2/done/out, so the input's absence is the record that the fold ran.
-    # Tested directly rather than via batch.has_source: extract_yes writes this
+    # Tested directly rather than via bundle.has_source: extract_yes writes this
     # artifact unconditionally, so at this point in the recipe it is present
     # unless archive has taken it.
     return not ctx.artifact("p2", "yes").exists()

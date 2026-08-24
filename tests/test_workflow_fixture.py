@@ -15,7 +15,7 @@ from pathlib import Path
 
 from src.filter import filter_results
 from tests import wf_fixture as fx
-from workflow import batch, config, names
+from workflow import bundle, config, names
 from workflow import eval as evaluate
 from workflow.context import Context
 
@@ -67,7 +67,7 @@ class FilterMaskTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.results = fx.write_results(
-            Path(self._tmp.name) / "batch.jsonl", fx.BAND_ROWS)
+            Path(self._tmp.name) / "sample.jsonl", fx.BAND_ROWS)
 
     def _filter(self, yes, **kwargs) -> list[str]:
         out = io.StringIO()
@@ -145,6 +145,56 @@ class ExtractP1YesSnapshotTests(unittest.TestCase):
         got = self._extract("all")
         self.assertEqual(sorted(set(got)), got)
 
+    def _extract_pairs(self, pairs: Path, *extra: str):
+        dst = self.root / "extracted.filtered.pairs"
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "extract", "p1", "yes", "-o", str(dst),
+            "--pairs", str(pairs), *extra)
+        self.assertEqual(0, code, stderr)
+        return dst.read_text().splitlines()
+
+    def test_pairs_scans_the_archive_and_restricts_output(self):
+        pairs = fx.write_pairs(
+            self.root / "wanted.pairs", ["yes,high", "mixed,split", "no,both"])
+        self.assertEqual(["mixed,split", "yes,high"], self._extract_pairs(pairs))
+
+    def test_pairs_honors_the_requested_probability_band(self):
+        pairs = fx.write_pairs(
+            self.root / "wanted.pairs", ["yes,divergent", "yes,high"])
+        self.assertEqual(
+            ["yes,divergent"],
+            self._extract_pairs(pairs, "--pm", "0.5", "--pr", "0.3"))
+
+    def test_results_dir_overrides_the_archive_for_pairs_mode(self):
+        results_dir = self.root / "other-results"
+        results_dir.mkdir()
+        fx.write_results(results_dir / "only.jsonl", fx.BAND_ROWS[5:])
+        pairs = fx.write_pairs(
+            self.root / "wanted.pairs", ["yes,high", "mixed,split"])
+
+        self.assertEqual(
+            ["mixed,split"],
+            self._extract_pairs(pairs, "--results-dir", str(results_dir)))
+
+    def test_results_dir_requires_pairs(self):
+        dst = self.root / "unused.pairs"
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "extract", "p1", "yes", "-o", str(dst),
+            "--results-dir", str(self.root), "all")
+        self.assertEqual(2, code)
+        self.assertIn("--results-dir requires --pairs", stderr)
+        self.assertFalse(dst.exists())
+
+    def test_pairs_mode_rejects_a_positional_source(self):
+        pairs = fx.write_pairs(self.root / "wanted.pairs", ["yes,high"])
+        dst = self.root / "unused.pairs"
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "extract", "p1", "yes", "-o", str(dst),
+            "--pairs", str(pairs), "all")
+        self.assertEqual(2, code)
+        self.assertIn("invalid argument: 'all'", stderr)
+        self.assertFalse(dst.exists())
+
 
 @fx.requires_native
 class UnifiedFilterTests(unittest.TestCase):
@@ -216,10 +266,12 @@ class FilterQueuePublishTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.opts, _ = fx.make_wf(self.root)
         fx.write_results(
-            fx.slot(self.opts, ["p1", "done", "out"]) / "batch.jsonl", fx.BAND_ROWS)
+            fx.slot(self.opts, ["p1", "done", "out"]) / "sample.jsonl",
+            fx.BAND_ROWS)
 
     def test_queued_output_is_a_sorted_unique_set(self):
-        code, _, stderr = fx.run_wf("-d", str(self.root), "filter", "batch.jsonl")
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "filter", "sample.jsonl")
         self.assertEqual(0, code, stderr)
 
         queued = list(fx.slot(self.opts, ["p2", "queued"]).iterdir())
@@ -230,7 +282,7 @@ class FilterQueuePublishTests(unittest.TestCase):
         self.assertEqual(sorted(set(lines)), lines)
 
     def test_no_scratch_file_is_left_behind(self):
-        fx.run_wf("-d", str(self.root), "filter", "batch.jsonl")
+        fx.run_wf("-d", str(self.root), "filter", "sample.jsonl")
         strays = [p.name for p in fx.slot(self.opts, ["p2", "queued"]).iterdir()
                   if p.suffix in (".tmp", ".unsorted")]
         self.assertEqual([], strays)
@@ -238,7 +290,7 @@ class FilterQueuePublishTests(unittest.TestCase):
 
 @fx.requires_native
 class ProducedNameTests(unittest.TestCase):
-    """§4.1.3: every artifact a batch produces is prefixed by that batch's slug."""
+    """Every artifact a bundle produces is prefixed by its bundle name."""
 
     # As in the real corpus, evalpair appends its own suffixes to the result
     # name, so the result stem is not the pairs name.
@@ -250,7 +302,7 @@ class ProducedNameTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.opts, _ = fx.make_wf(self.root)
-        ev = fx.make_batch(self.opts, "p1", self.PAIRS)
+        ev = fx.make_bundle(self.opts, "p1", self.PAIRS)
         fx.write_pairs(ev / self.PAIRS, fx.pairs_of(fx.BAND_ROWS))
         fx.write_results(ev / self.RESULT, fx.BAND_ROWS)
 
@@ -259,73 +311,81 @@ class ProducedNameTests(unittest.TestCase):
             [p.name for p in fx.slot(self.opts, ["p2", "queued"]).iterdir()]
             + [p.name for p in fx.slot(self.opts, ["p3", "queued"]).iterdir()])
 
-    def test_complete_renders_every_artifact_under_one_slug(self):
+    def test_complete_renders_every_artifact_under_one_bundle_name(self):
         code, _, stderr = fx.run_wf(
             "-d", str(self.root), "complete", "p1", self.PAIRS)
         self.assertEqual(0, code, stderr)
 
-        slug = names.slug(Path(self.RESULT).stem, 0.9, 0.1)
+        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
         produced = self._produced()
         self.assertEqual(
-            [names.artifact(slug, "p1", "no"), names.artifact(slug, "p1", "yes")],
+            [names.artifact(bundle_name, "p1", "no"),
+             names.artifact(bundle_name, "p1", "yes")],
             produced)
         for name in produced:
             with self.subTest(name=name):
-                self.assertTrue(name.startswith(slug))
+                self.assertTrue(name.startswith(bundle_name))
 
-    def test_filter_and_complete_agree_on_the_batch(self):
-        # Both derive the batch from the p1 result stem, so re-slicing the same
+    def test_filter_and_complete_agree_on_the_bundle_name(self):
+        # Both derive the bundle name from the p1 result stem, so re-slicing the same
         # band names the same artifact rather than a near-miss duplicate.
         fx.write_results(
             fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT, fx.BAND_ROWS)
         code, _, stderr = fx.run_wf("-d", str(self.root), "filter", self.RESULT)
         self.assertEqual(0, code, stderr)
 
-        slug = names.slug(Path(self.RESULT).stem, 0.9, 0.1)
-        self.assertEqual([names.artifact(slug, "p1", "yes")], self._produced())
+        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
+        self.assertEqual(
+            [names.artifact(bundle_name, "p1", "yes")], self._produced())
 
-    def test_a_different_band_renders_a_different_slug(self):
+    def test_a_different_band_renders_a_different_bundle_name(self):
         fx.write_results(
             fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT, fx.BAND_ROWS)
         fx.run_wf("-d", str(self.root), "filter", self.RESULT)
         fx.run_wf("-d", str(self.root), "filter", self.RESULT,
                   "--pm", "0.5", "--pr", "0.3")
         self.assertEqual(
-            [names.artifact(names.slug(Path(self.RESULT).stem, 0.5, 0.3), "p1", "yes"),
-             names.artifact(names.slug(Path(self.RESULT).stem, 0.9, 0.1), "p1", "yes")],
+            [names.artifact(
+                names.bundle_name(Path(self.RESULT).stem, 0.5, 0.3),
+                "p1", "yes"),
+             names.artifact(
+                 names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1),
+                 "p1", "yes")],
             self._produced())
 
 
-class BatchInputSelectionTests(unittest.TestCase):
+class BundleInputSelectionTests(unittest.TestCase):
     """`eval` may filter its input; everything downstream follows that choice."""
 
-    SLUG = "s6.txt.pairs_third.90.10"
+    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.opts, _ = fx.make_wf(self.root)
-        self.eval_dir = fx.make_batch(self.opts, "p2", self.SLUG)
-        self.queued = self.eval_dir / names.artifact(self.SLUG, "p1", "yes")
+        self.eval_dir = fx.make_bundle(self.opts, "p2", self.BUNDLE_NAME)
+        self.queued = self.eval_dir / names.artifact(
+            self.BUNDLE_NAME, "p1", "yes")
         fx.write_pairs(self.queued, ["alpha,two", "mid,three"])
-        self.ctx = Context(root=self.root, phase="p2", slug=self.SLUG)
+        self.ctx = Context(
+            root=self.root, phase="p2", bundle_name=self.BUNDLE_NAME)
 
     def test_source_is_always_the_queued_artifact(self):
-        self.assertEqual(self.queued, batch.source(self.ctx))
+        self.assertEqual(self.queued, bundle.source(self.ctx))
 
     def test_evaluated_is_the_queued_file_when_eval_did_not_filter(self):
-        self.assertEqual(self.queued, batch.evaluated(self.ctx))
+        self.assertEqual(self.queued, bundle.evaluated(self.ctx))
 
     def test_evaluated_is_the_filtered_file_when_eval_produced_one(self):
         filtered = self.queued.with_name(self.queued.name + ".filtered")
         fx.write_pairs(filtered, ["alpha,two"])
         # Note titles and the done-set merge follow this; the *original* is
         # still what gets archived.
-        self.assertEqual(filtered, batch.evaluated(self.ctx))
-        self.assertEqual(self.queued, batch.source(self.ctx))
+        self.assertEqual(filtered, bundle.evaluated(self.ctx))
+        self.assertEqual(self.queued, bundle.source(self.ctx))
 
-    def test_unknown_slug_is_an_error(self):
+    def test_unknown_bundle_name_is_an_error(self):
         # wf.main() lets these propagate; the __main__ wrapper renders
         # (OSError, ValueError) as a message and a non-zero exit.
         with self.assertRaises((OSError, ValueError)):
@@ -333,8 +393,8 @@ class BatchInputSelectionTests(unittest.TestCase):
 
 
 @fx.requires_native
-class BatchLifecycleTests(unittest.TestCase):
-    """Item 4: `eval` opens a batch directory, `complete` drains and removes it."""
+class BundleLifecycleTests(unittest.TestCase):
+    """`eval` opens a bundle directory; `complete` drains and removes it."""
 
     PAIRS = "s6.txt.pairs"
     RESULT = "s6.txt.pairs_third_p3_juniper.qwen35.jsonl"
@@ -350,11 +410,12 @@ class BatchLifecycleTests(unittest.TestCase):
     def _eval(self):
         code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1", self.PAIRS)
         self.assertEqual(0, code, stderr)
-        return Context(root=self.opts.dir, phase="p1", slug=self.PAIRS).batch_dir
+        return Context(
+            root=self.opts.dir, phase="p1", bundle_name=self.PAIRS).bundle_dir
 
-    def test_eval_opens_a_batch_directory_and_empties_the_queue(self):
-        directory = self._eval()
-        self.assertEqual([self.PAIRS], [p.name for p in directory.iterdir()])
+    def test_eval_opens_a_bundle_directory_and_empties_the_queue(self):
+        bundle_dir = self._eval()
+        self.assertEqual([self.PAIRS], [p.name for p in bundle_dir.iterdir()])
         self.assertEqual([], list(fx.slot(self.opts, ["p1", "queued"]).iterdir()))
 
     def test_ls_eval_is_the_in_flight_list(self):
@@ -362,49 +423,53 @@ class BatchLifecycleTests(unittest.TestCase):
         self.assertEqual([self.PAIRS],
                          [p.name for p in fx.slot(self.opts, ["p1", "eval"]).iterdir()])
 
-    def test_complete_drains_and_removes_the_batch_directory(self):
-        directory = self._eval()
-        fx.write_results(directory / self.RESULT, fx.BAND_ROWS)
+    def test_complete_drains_and_removes_the_bundle_directory(self):
+        bundle_dir = self._eval()
+        fx.write_results(bundle_dir / self.RESULT, fx.BAND_ROWS)
 
         code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1", self.PAIRS)
         self.assertEqual(0, code, stderr)
-        self.assertFalse(directory.exists())
+        self.assertFalse(bundle_dir.exists())
         self.assertEqual([], list(fx.slot(self.opts, ["p1", "eval"]).iterdir()))
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "in"]) / self.PAIRS).is_file())
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT).is_file())
 
-    def test_filter_refuses_a_batch_already_in_flight_in_p2(self):
+    def test_filter_refuses_a_bundle_already_in_flight_in_p2(self):
         fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
                          fx.BAND_ROWS)
-        slug = names.slug(Path(self.RESULT).stem, 0.9, 0.1)
-        fx.make_batch(self.opts, "p2", slug)
+        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
+        fx.make_bundle(self.opts, "p2", bundle_name)
 
         with self.assertRaises(ValueError):
             fx.run_wf("-d", str(self.root), "filter", self.RESULT)
 
-    def test_filter_refuses_a_batch_already_finished_in_p2(self):
+    def test_filter_refuses_a_bundle_already_finished_in_p2(self):
         fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
                          fx.BAND_ROWS)
-        slug = names.slug(Path(self.RESULT).stem, 0.9, 0.1)
+        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
         done_in = fx.slot(self.opts, ["p2", "done", "in"])
-        (done_in / names.artifact(slug, "p1", "yes")).write_text("")
+        (done_in / names.artifact(bundle_name, "p1", "yes")).write_text("")
 
         with self.assertRaises(ValueError):
             fx.run_wf("-d", str(self.root), "filter", self.RESULT)
 
-    def test_eval_p2_opens_a_batch_directory_under_the_slug(self):
-        slug = "s6.txt.pairs_third.90.10"
+    def test_eval_p2_opens_a_bundle_directory_under_the_bundle_name(self):
+        bundle_name = "s6.txt.pairs_third.90.10"
         fx.write_pairs(
-            fx.slot(self.opts, ["p2", "queued"]) / names.artifact(slug, "p1", "yes"),
+            fx.slot(self.opts, ["p2", "queued"])
+            / names.artifact(bundle_name, "p1", "yes"),
             ["alpha,two", "mid,three"])
 
         # `note --create --production` and split.sh are external side effects.
         with mock.patch.object(evaluate, "_split_pairs", return_value=[]), \
              mock.patch.object(evaluate, "_make_notes") as make_notes:
-            code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p2", slug)
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", bundle_name)
 
         self.assertEqual(0, code, stderr)
         make_notes.assert_called_once()
-        directory = Context(root=self.opts.dir, phase="p2", slug=slug).batch_dir
-        self.assertEqual([names.artifact(slug, "p1", "yes")],
-                         [p.name for p in directory.iterdir()])
+        bundle_dir = Context(
+            root=self.opts.dir, phase="p2",
+            bundle_name=bundle_name).bundle_dir
+        self.assertEqual([names.artifact(bundle_name, "p1", "yes")],
+                         [p.name for p in bundle_dir.iterdir()])
