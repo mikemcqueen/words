@@ -57,11 +57,11 @@ class P2QueueContractTests(unittest.TestCase):
         with mock.patch.object(evaluate.EvalYes, "prepare"):
             return fx.run_wf("-d", str(self.root), "eval", "p2", bundle_name)
 
-    def _assert_opens(self, submitted, queued_name, bundle_name):
+    def _assert_opens(self, submitted, queued_name, positional, opened_as=None):
         self._submit(submitted)
-        code, _, stderr = self._eval(bundle_name)
+        code, _, stderr = self._eval(positional)
         self.assertEqual(0, code, stderr)
-        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / (opened_as or positional)
         self.assertEqual([queued_name], [p.name for p in bundle_dir.iterdir()])
 
     def test_eval_opens_a_submitted_pairs_bundle(self):
@@ -71,6 +71,73 @@ class P2QueueContractTests(unittest.TestCase):
     def test_eval_opens_an_advanced_p1_yes_bundle(self):
         self._assert_opens("s6.pairs.90.10.p1.yes",
                            "s6.pairs.90.10.p1.yes", "s6.pairs.90.10")
+
+    # Naming the queued file is the second way in. The bundle it opens is the
+    # same one either spelling names -- the suffix comes off, so the eval
+    # directory never records which producer filled the slot.
+
+    def test_eval_accepts_the_queued_filename(self):
+        self._assert_opens("top.s2.m4.g4.1000", "top.s2.m4.g4.1000.pairs",
+                           "top.s2.m4.g4.1000.pairs",
+                           opened_as="top.s2.m4.g4.1000")
+        self.assertFalse(
+            (fx.slot(self.opts, ["p2", "eval"]) / "top.s2.m4.g4.1000.pairs").exists())
+
+    def test_eval_accepts_the_queued_filename_of_an_advanced_artifact(self):
+        self._assert_opens("s6.90.10.p1.yes", "s6.90.10.p1.yes",
+                           "s6.90.10.p1.yes", opened_as="s6.90.10")
+
+    # p2 has two producers, so one bundle name can name two queued files. The
+    # prefix is ambiguous by construction there; the filename is not.
+
+    def _submit_both_shapes(self):
+        self._submit("s6.90.10")            # -> s6.90.10.pairs
+        self._submit("s6.90.10.p1.yes")     # -> kept verbatim
+        self.assertEqual(["s6.90.10.p1.yes", "s6.90.10.pairs"], self._queued())
+
+    def test_a_bundle_name_shared_by_two_queue_shapes_is_refused(self):
+        self._submit_both_shapes()
+        with self.assertRaises(ValueError) as caught:
+            self._eval("s6.90.10")
+        message = str(caught.exception)
+        self.assertIn("s6.90.10.pairs", message)
+        self.assertIn("s6.90.10.p1.yes", message)
+        # Nothing was opened: the refusal is total.
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+
+    def test_naming_the_file_opens_one_of_two_shapes_sharing_a_bundle_name(self):
+        self._submit_both_shapes()
+        code, _, stderr = self._eval("s6.90.10.p1.yes")
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "s6.90.10"
+        self.assertEqual(["s6.90.10.p1.yes"], [p.name for p in bundle_dir.iterdir()])
+        # The shape left behind is untouched, and waits its turn: the two
+        # collapse to one bundle name, so it opens once this bundle completes.
+        self.assertEqual(["s6.90.10.pairs"], self._queued())
+
+    def test_the_second_shape_cannot_be_stacked_onto_an_open_bundle(self):
+        self._submit_both_shapes()
+        self.assertEqual(0, self._eval("s6.90.10.p1.yes")[0])
+
+        # Refusing the plain form is what invites `-f`, so `-f` must refuse too:
+        # a bundle holding two sources cannot be resolved and cannot be un-opened.
+        for argv in (("eval", "p2", "s6.90.10.pairs"),
+                     ("-f", "eval", "p2", "s6.90.10.pairs")):
+            with self.subTest(argv=argv):
+                with self.assertRaises(ValueError) as caught:
+                    with mock.patch.object(evaluate.EvalYes, "prepare"):
+                        fx.run_wf("-d", str(self.root), *argv)
+                self.assertIn("s6.90.10.p1.yes", str(caught.exception))
+
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "s6.90.10"
+        self.assertEqual(["s6.90.10.p1.yes"], [p.name for p in bundle_dir.iterdir()])
+        self.assertEqual(["s6.90.10.pairs"], self._queued())
+
+    def test_a_queued_name_outside_the_contract_is_rejected(self):
+        fx.place(self.opts, ["p2", "queued"], "stray.txt", "alpha,two\n")
+        with self.assertRaises(ValueError) as caught:
+            self._eval("stray.txt")
+        self.assertIn("queue shape", str(caught.exception))
 
 
 class ClassifyTests(unittest.TestCase):

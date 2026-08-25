@@ -48,6 +48,13 @@ def select(root: Path, slot: list[str], selector: str, glob="*") -> list[Path]:
     if kind == "name":
         path = directory / value
         fs.raise_if_not_file(path)
+        # The glob is the caller's shape contract, and naming a file exactly is
+        # not a way around it: a stray `notes.txt` in the results slot has to
+        # fail here, the way `stem:notes` already does, rather than reach a
+        # reader that only knows how to say the JSON was malformed.
+        if not fs.matches(path.name, glob):
+            raise ValueError(
+                f"{path.name} is not a {fs.spell(glob)} file in {directory}")
         return [path]
 
     if kind == "stem":
@@ -60,8 +67,12 @@ def select(root: Path, slot: list[str], selector: str, glob="*") -> list[Path]:
             raise ValueError(f"no {fs.spell(glob)} file found for {value!r} "
                              f"in {directory}")
         if len(matches) > 1:
+            # A prefix can be ambiguous by construction -- a phase whose queue
+            # admits two shapes holds both under one bundle name -- so this
+            # refuses to guess and says what to name instead.
             names = ", ".join(p.name for p in matches)
-            raise ValueError(f"multiple files found for {value!r} in {directory}: {names}")
+            raise ValueError(f"multiple files found for {value!r} in {directory}: "
+                             f"{names} (name one of them exactly)")
         return matches
 
     raise ValueError(f"unknown selector: {selector!r}")

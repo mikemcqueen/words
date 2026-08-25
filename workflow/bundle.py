@@ -24,13 +24,31 @@ def in_flight(ctx) -> bool:
 
 def begin(ctx) -> Path:
     """Create the bundle directory and move the queued artifact into it."""
-    src = select.select(ctx.root, [ctx.phase, "queued"],
-                        f"stem:{ctx.bundle_name}",
+    # The bundle name as a prefix is the base rule. A Context that carries a
+    # selector of its own -- `eval` builds one when the user named the queued
+    # file exactly -- overrides it, which is what makes a prefix shared by two
+    # queue shapes openable at all. `all` is the field's unset default and must
+    # not be honoured here: it would open whichever bundle sorted first.
+    selector = (f"stem:{ctx.bundle_name}"
+                if ctx.selector == select.ALL else ctx.selector)
+    src = select.select(ctx.root, [ctx.phase, "queued"], selector,
                         glob=names.queue_globs(ctx.phase))[0]
 
     bundle_dir = ctx.bundle_dir
-    if bundle_dir.exists() and not ctx.force:
-        raise fs.file_already_exists_error(bundle_dir)
+    if bundle_dir.exists():
+        # A bundle holds exactly one source artifact -- `source` resolves it by
+        # the queue contract, not by name, so a second one makes the bundle
+        # unresolvable and there is no command to un-open it. `-f` reopens a
+        # directory an earlier run left behind; it does not stack a source onto
+        # one already in flight. p2 makes that a live spelling rather than a
+        # hypothetical: its two queue shapes collapse to one bundle name, so
+        # naming the second file is the natural next thing to try.
+        held = fs.globs(bundle_dir, source_globs(ctx))
+        if held:
+            raise ValueError(f"bundle {ctx.bundle_name} is already open on "
+                             f"{', '.join(p.name for p in held)}")
+        if not ctx.force:
+            raise fs.file_already_exists_error(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     dst = bundle_dir / src.name

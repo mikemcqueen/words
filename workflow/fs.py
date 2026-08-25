@@ -1,10 +1,11 @@
 # fs.py
 
 import errno
+import fnmatch
 from pathlib import Path
 
 def not_a_directory_error(path: Path): 
-    return NotADirectoryError(errno.ENOTDIR, "not a directory:", path)
+    return NotADirectoryError(errno.ENOTDIR, "not a directory", path)
 
 
 def not_a_file_error(path: Path): 
@@ -12,7 +13,7 @@ def not_a_file_error(path: Path):
 
 
 def file_not_found_error(path: Path): 
-    return FileNotFoundError(errno.ENOENT, "file not found:", path)
+    return FileNotFoundError(errno.ENOENT, "file not found", path)
 
 
 def file_already_exists_error(path: Path): 
@@ -54,6 +55,17 @@ def raise_if_any_not_file(paths: list[Path]):
 def spell(patterns) -> str:
     """How to name one pattern or several in a diagnostic."""
     return patterns if isinstance(patterns, str) else " or ".join(patterns)
+
+
+def matches(name: str, patterns) -> bool:
+    """Does a filename match any of patterns? The name-level twin of globs.
+
+    Same one-or-several convention, for the caller that already holds the file
+    and only needs to know whether it is the shape that was asked for.
+    """
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
 
 
 def globs(directory: Path, patterns) -> list[Path]:

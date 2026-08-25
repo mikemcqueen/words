@@ -405,7 +405,8 @@ class BundleInputSelectionTests(unittest.TestCase):
 class BundleLifecycleTests(unittest.TestCase):
     """`eval` opens a bundle directory; `complete` drains and removes it."""
 
-    PAIRS = "s6.txt.pairs"
+    BUNDLE = "s6.txt"
+    PAIRS = f"{BUNDLE}.pairs"
     RESULT = "s6.txt.pairs_third_p3_juniper.qwen35.jsonl"
 
     def setUp(self):
@@ -416,32 +417,63 @@ class BundleLifecycleTests(unittest.TestCase):
         fx.write_pairs(fx.slot(self.opts, ["p1", "queued"]) / self.PAIRS,
                        fx.pairs_of(fx.BAND_ROWS))
 
-    def _eval(self):
-        code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1", self.PAIRS)
+    def _eval(self, positional=None):
+        code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1",
+                                    positional or self.BUNDLE)
         self.assertEqual(0, code, stderr)
         return Context(
-            root=self.opts.dir, phase="p1", bundle_name=self.PAIRS).bundle_dir
+            root=self.opts.dir, phase="p1", bundle_name=self.BUNDLE).bundle_dir
 
     def test_eval_opens_a_bundle_directory_and_empties_the_queue(self):
         bundle_dir = self._eval()
         self.assertEqual([self.PAIRS], [p.name for p in bundle_dir.iterdir()])
         self.assertEqual([], list(fx.slot(self.opts, ["p1", "queued"]).iterdir()))
 
+    def test_naming_the_queued_file_opens_the_same_bundle(self):
+        # The suffix comes off: the directory is named for the bundle either way.
+        self.assertEqual(self._eval(self.PAIRS),
+                         fx.slot(self.opts, ["p1", "eval"]) / self.BUNDLE)
+
     def test_ls_eval_is_the_in_flight_list(self):
         self._eval()
-        self.assertEqual([self.PAIRS],
+        self.assertEqual([self.BUNDLE],
                          [p.name for p in fx.slot(self.opts, ["p1", "eval"]).iterdir()])
 
     def test_complete_drains_and_removes_the_bundle_directory(self):
         bundle_dir = self._eval()
         fx.write_results(bundle_dir / self.RESULT, fx.BAND_ROWS)
 
-        code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1", self.PAIRS)
+        code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1", self.BUNDLE)
         self.assertEqual(0, code, stderr)
         self.assertFalse(bundle_dir.exists())
         self.assertEqual([], list(fx.slot(self.opts, ["p1", "eval"]).iterdir()))
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "in"]) / self.PAIRS).is_file())
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT).is_file())
+
+    def test_complete_accepts_the_queued_filename(self):
+        # The escape hatch: whatever string opened the bundle closes it. The
+        # directory name stays canonical -- only a miss falls back to stripping.
+        bundle_dir = self._eval(self.PAIRS)
+        fx.write_results(bundle_dir / self.RESULT, fx.BAND_ROWS)
+
+        code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1", self.PAIRS)
+        self.assertEqual(0, code, stderr)
+        self.assertFalse(bundle_dir.exists())
+        self.assertTrue((fx.slot(self.opts, ["p1", "done", "in"]) / self.PAIRS).is_file())
+
+    def test_complete_prefers_a_directory_of_exactly_that_name(self):
+        # A bundle literally named `<stem>.pairs` is still reachable: the
+        # directory wins over the strip, so the old spelling never shadows it.
+        fx.make_bundle(self.opts, "p1", self.PAIRS)
+        self._eval()
+        self.assertTrue((fx.slot(self.opts, ["p1", "eval"]) / self.BUNDLE).is_dir())
+
+        code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1", self.PAIRS)
+        self.assertEqual(0, code, stderr)
+        # The empty directory of that exact name is what closed; the real
+        # in-flight bundle was never touched.
+        evals = fx.slot(self.opts, ["p1", "eval"])
+        self.assertEqual([self.BUNDLE], [p.name for p in evals.iterdir()])
 
     def test_filter_refuses_a_bundle_already_in_flight_in_p2(self):
         fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,

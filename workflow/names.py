@@ -94,6 +94,28 @@ def queue_name(phase: str, name: str) -> str:
     return f"{name}{suffixes[0]}"
 
 
+def queue_stem(phase: str, name: str) -> str:
+    """The bundle name under a queued artifact's name -- inverse of queue_name.
+
+    `eval` is the only caller: its positional may name the queued file itself
+    rather than the bundle, and the bundle name is that name with the queue
+    suffix taken back off. This reads the same table `queue_name` writes with,
+    so it undoes exactly what submission did. It is not a name being taken
+    apart for a dimension -- no other segment is recovered, and a name the
+    contract does not admit is rejected rather than guessed at.
+    """
+    # Longest first, so a contract whose shapes overlap (`.yes` and `.p1.yes`)
+    # strips the specific one rather than whichever came first in the table.
+    for suffix in sorted(_queue_suffixes(phase), key=len, reverse=True):
+        if name.endswith(suffix):
+            stem = name[:-len(suffix)]
+            if not stem:
+                raise ValueError(f"{name!r} is a bare queue suffix, not an artifact")
+            return stem
+    shapes = ", ".join(f"*{suffix}" for suffix in _queue_suffixes(phase))
+    raise ValueError(f"{name!r} is not a {phase} queue shape (expected {shapes})")
+
+
 def queue_globs(phase: str) -> tuple[str, ...]:
     """The globs that find a phase's queued artifact, wherever it has moved to."""
     return tuple(f"*{suffix}" for suffix in _queue_suffixes(phase))

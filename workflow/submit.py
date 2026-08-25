@@ -40,7 +40,9 @@ class Submit(command.Action):
             fs.raise_if_exists(dst)
 
         setops.merge([src], dst)
-        log.success(f"Submitted {self.label} {src.name}")
+        # The queued name, not the one handed in: the queue contract may have
+        # stamped a suffix on, and this is the name `eval` will want.
+        log.success(f"Submitted {self.label} {dst.name}")
         return 0
 
 

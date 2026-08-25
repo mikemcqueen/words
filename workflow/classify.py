@@ -70,7 +70,7 @@ class Classify(command.Action):
 
         dst = config.classified(opts.dir, self.kind)
         before = fs.line_count(dst) if dst.exists() else 0
-        setops.fold(src, dst)
+        config.fold_classified(opts.dir, self.kind, src)
         total = fs.line_count(dst)
 
         log.success(f"Classified {self.kind.upper()}: {total - before} new, "

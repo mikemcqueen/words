@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from workflow import config, setops
+from workflow import config
 
 
 NAME = "classify"
@@ -35,4 +35,4 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
-    setops.fold(ctx.artifact("p2", "yes"), classified_yes(ctx))
+    config.fold_classified(ctx.root, "yes", ctx.artifact("p2", "yes"))

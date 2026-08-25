@@ -6,10 +6,35 @@
 # the bundle exists, run the recipe. Only the recipe differs, so a phase is a
 # STEPS list and nothing else.
 
-from workflow import command, context, fs, log, steps, usage
+from pathlib import Path
+
+from workflow import command, config, context, fs, log, names, steps, usage
 from workflow.steps import merge as merge_step
 from workflow.steps import p1_advance, p1_archive, p1_extract
 from workflow.steps import p2_advance, p2_archive, p2_classify, p2_extract, p2_retrieve
+
+
+def _resolve_bundle(root: Path, phase: str, positional: str) -> str:
+    """The bundle directory named by complete's positional.
+
+    The directory is canonical and its name is not ambiguous, so this is only
+    an escape hatch: `eval` takes either the bundle name or the queued
+    filename, and the string that opened a bundle has to be able to close it.
+    A positional that names a directory is used as typed; only a miss falls
+    back to taking the queue suffix off, and only if that names one.
+    """
+    if Path(positional).name != positional:
+        return positional
+    evals = config.path(root, [phase, "eval"])
+    if (evals / positional).is_dir():
+        return positional
+    try:
+        stem = names.queue_stem(phase, positional)
+    except ValueError:
+        # Not a queue shape -- or a phase with no queue contract at all. Either
+        # way there is nothing to strip, so the miss is reported as typed.
+        return positional
+    return stem if (evals / stem).is_dir() else positional
 
 
 class Complete(command.Action):
@@ -24,7 +49,7 @@ class Complete(command.Action):
 
         # The positional names the bundle directory, and every
         # artifact inside is found by prefix so nothing takes a name apart.
-        bundle_name = argv[0]
+        bundle_name = _resolve_bundle(opts.dir, self.phase, argv[0])
         ctx = context.Context(root=opts.dir, phase=self.phase,
                               force=opts.force, bundle_name=bundle_name)
         fs.raise_if_not_dir(ctx.bundle_dir)

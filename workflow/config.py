@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from workflow import fs
+from workflow import fs, setops
 
 
 _PHASE1 = {
@@ -73,14 +73,22 @@ _PHASE3 = {
 }
 
 
+# stable_mtime marks a node whose aggregate is dated by other things: a
+# reader compares its mtime against a derived artifact to ask whether that
+# artifact predates the current set of verdicts. Rewriting it with unchanged
+# content would answer that question wrongly, so a no-op fold must leave it
+# alone. The phase done-sets carry no such flag -- nothing dates them, and
+# p1_done.pairs is large enough that the compare would not be free.
 _CLASSIFIED = {
     "description": "Classified pairs (and their results?)",
     "parts": {
         "yes": {
-            "description": "yes"
+            "description": "yes",
+            "stable_mtime": True
         },
         "no": {
-            "description": "no"
+            "description": "no",
+            "stable_mtime": True
         },
         "all": {
             "description": "all"
@@ -178,3 +186,22 @@ def classified(root_dir: Path, kind: str) -> Path:
     they live beside the phases rather than inside one.
     """
     return path(root_dir, ["classified", kind]) / f"{kind}.pairs"
+
+
+def stable_mtime(parts: list[str]) -> bool:
+    """Whether this node's aggregate must keep its mtime across a no-op write."""
+    return layout_args(parts).node.get("stable_mtime", False)
+
+
+def fold_classified(root_dir: Path, kind: str, src: Path) -> Path:
+    """Union src into the standing classified set for kind.
+
+    The one way to write those aggregates. Which write policy they need is a
+    property of the destination, not of the caller's errand, so it is looked up
+    here from the layout rather than passed in: a caller that knows only which
+    verdict it is recording cannot get it wrong, and cannot be left behind if
+    the policy changes.
+    """
+    parts = ["classified", kind]
+    return setops.fold(src, classified(root_dir, kind),
+                       stable_mtime=stable_mtime(parts))

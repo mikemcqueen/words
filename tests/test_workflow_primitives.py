@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import bundle, names, setops
+from workflow import bundle, config, names, setops
 from workflow.context import Context
 from workflow.select import select
 
@@ -123,6 +123,22 @@ class SelectTests(unittest.TestCase):
     def test_bare_value_is_read_as_a_name(self):
         self.assertEqual(self._select("name:alpha.jsonl"), self._select("alpha.jsonl"))
 
+    def test_named_file_honours_the_glob(self):
+        # Naming a file exactly is not a way around the shape contract: a stray
+        # notes.txt has to fail here, the way `stem:notes` already does, rather
+        # than reach a reader that can only report it as malformed JSON.
+        with self.assertRaises(ValueError) as caught:
+            self._select("notes.txt", glob="*.jsonl")
+        self.assertIn("not a *.jsonl file", str(caught.exception))
+        # A slot holding several shapes names them all.
+        with self.assertRaises(ValueError) as caught:
+            self._select("notes.txt", glob=("*.pairs", "*.p1.yes"))
+        self.assertIn("not a *.pairs or *.p1.yes file", str(caught.exception))
+
+    def test_named_file_matching_the_glob_is_returned(self):
+        self.assertEqual([self.out / "alpha.jsonl"],
+                         self._select("alpha.jsonl", glob="*.jsonl"))
+
     def test_missing_name_is_an_error(self):
         with self.assertRaises(FileNotFoundError):
             self._select("name:nope.jsonl")
@@ -219,6 +235,25 @@ class NameRenderingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             names.queue_name("p3", "anything")
 
+    def test_queue_stem_undoes_queue_name(self):
+        for phase, name in (("p1", "ext1.txt"), ("p2", "top.s2.m4.g4.1000")):
+            with self.subTest(phase=phase):
+                self.assertEqual(
+                    name, names.queue_stem(phase, names.queue_name(phase, name)))
+        # Both p2 shapes yield the same bundle name -- which is the point: the
+        # eval directory does not record which producer filled the slot.
+        self.assertEqual("s6.90.10", names.queue_stem("p2", "s6.90.10.pairs"))
+        self.assertEqual("s6.90.10", names.queue_stem("p2", "s6.90.10.p1.yes"))
+
+    def test_queue_stem_rejects_a_name_the_contract_does_not_admit(self):
+        with self.assertRaises(ValueError):
+            names.queue_stem("p2", "s6.90.10.p2.yes")
+        with self.assertRaises(ValueError):
+            names.queue_stem("p1", "s6.90.10")
+        # A bare suffix leaves nothing to name a bundle with.
+        with self.assertRaises(ValueError):
+            names.queue_stem("p1", ".pairs")
+
 
 class BundleDirectoryTests(unittest.TestCase):
     """Item 4: the bundle directory is the in-flight record."""
@@ -285,3 +320,45 @@ class BundleDirectoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bundle.finish(self._ctx())
         self.assertTrue(bundle.in_flight(self._ctx()))
+
+
+# A classified aggregate's mtime answers "have the verdicts changed since this
+# artifact was derived?", so a fold that adds nothing must not disturb it.
+
+class FoldClassifiedTests(unittest.TestCase):
+    OLD = 1_000_000_000
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.opts, _ = fx.make_wf(self.root)
+        self.src = self.root / "in.pairs"
+
+    def _fold(self, text: str) -> Path:
+        self.src.write_text(text)
+        return config.fold_classified(self.opts.dir, "no", self.src)
+
+    def _age(self, path: Path) -> None:
+        os.utime(path, (self.OLD, self.OLD))
+
+    def test_fold_that_adds_nothing_leaves_the_mtime_alone(self):
+        dst = self._fold("bad,pair\nworse,pair\n")
+        self._age(dst)
+        self._fold("bad,pair\nworse,pair\n")
+        self.assertEqual(self.OLD, int(dst.stat().st_mtime))
+        self.assertEqual([], list(dst.parent.glob("*.tmp")))
+
+    def test_fold_that_adds_a_pair_moves_the_mtime(self):
+        dst = self._fold("bad,pair\n")
+        self._age(dst)
+        self._fold("new,pair\n")
+        self.assertNotEqual(self.OLD, int(dst.stat().st_mtime))
+        self.assertEqual("bad,pair\nnew,pair\n", dst.read_text())
+
+    def test_an_unflagged_destination_still_rewrites(self):
+        dst = self.root / "p1_done.pairs"
+        setops.fold(fx.write_pairs(self.src, ["bad,pair"]), dst)
+        self._age(dst)
+        setops.fold(self.src, dst)
+        self.assertNotEqual(self.OLD, int(dst.stat().st_mtime))

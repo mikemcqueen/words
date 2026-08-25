@@ -14,16 +14,45 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import bundle, command, context, fs, log, usage
+from workflow import bundle, command, config, context, fs, log, names, usage
 
 
 CHUNK_SIZE = 400
 
 
+def _resolve_queued(root: Path, phase: str, positional: str) -> tuple[str, str]:
+    """Read eval's positional, which may name either a bundle or a queued file.
+
+    Returns the bundle name -- the eval directory, and the prefix of every
+    artifact derived in it -- along with the selector that finds the queued
+    artifact to open.
+
+    Exact match first. A positional that is the name of a file in the phase's
+    queue is taken as that file, and the bundle name is what is left when the
+    queue suffix comes off. Everything else is a bundle name, found by prefix,
+    which stays the form to reach for.
+
+    The exact form exists because a prefix can be ambiguous by construction:
+    p2's queue admits two shapes, so `s6.90.10.pairs` submitted and
+    `s6.90.10.p1.yes` advanced can share the slot and the prefix `s6.90.10`
+    names both. Naming the file is how the user says which -- and it costs
+    nothing, because the bundle name is still derived from the contract rather
+    than from whatever the user typed.
+    """
+    # Only a bare filename can name something in the slot; a path with
+    # separators in it is not a queued name and falls through to the prefix
+    # form, which reports it as the miss it is.
+    if Path(positional).name == positional:
+        queued = config.path(root, [phase, "queued"]) / positional
+        if queued.is_file():
+            return names.queue_stem(phase, positional), f"name:{positional}"
+    return positional, f"stem:{positional}"
+
+
 class Eval(command.Action):
     def __init__(self, phase: str, summary: str,
                  source_noun: str = "pairs", ready_for: str = "evalpairs"):
-        super().__init__(summary=summary, positional="BUNDLE-NAME")
+        super().__init__(summary=summary, positional="BUNDLE-NAME|QUEUED-FILE")
         self.phase = phase
         self.source_noun = source_noun
         self.ready_for = ready_for
@@ -42,10 +71,10 @@ class Eval(command.Action):
         if not rest:
             return usage.missing_argument(self.format_help(command))
 
-        # The positional is the bundle directory name, and the queued artifact
-        # is found under it by prefix.
+        bundle_name, selector = _resolve_queued(opts.dir, self.phase, rest[0])
         ctx = context.Context(root=opts.dir, phase=self.phase,
-                              force=opts.force, bundle_name=rest[0])
+                              force=opts.force, bundle_name=bundle_name,
+                              selector=selector)
         pairs = bundle.begin(ctx)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
         if not opts.no_filter:
