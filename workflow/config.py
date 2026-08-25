@@ -168,3 +168,13 @@ def path(root_dir: Path, parts: list[str]) -> Path:
         fs.raise_if_not_dir(path)
 
     return path
+
+
+def classified(root_dir: Path, kind: str) -> Path:
+    """A global classified set: .wf/classified/<kind>/<kind>.pairs.
+
+    Bundle-independent by construction. These are the workflow's standing
+    verdicts about pairs, not a record of any one review batch, which is why
+    they live beside the phases rather than inside one.
+    """
+    return path(root_dir, ["classified", kind]) / f"{kind}.pairs"

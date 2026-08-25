@@ -50,6 +50,24 @@ def merge(srcs, dst: Path) -> Path:
     return _place(["sort", "-u", *(str(s) for s in srcs)], Path(dst))
 
 
+def fold(src: Path, dst: Path) -> Path:
+    """Union src into dst, whether or not dst already exists.
+
+    The accumulator case: every standing set in the workflow -- a phase's
+    done-set, a classified set -- is grown by folding one file into it. `merge`
+    can take dst as one of its own sources because `_place` writes aside and
+    renames, but only once dst is there to be read; this is that guard, written
+    once instead of at each accumulator.
+    """
+    src, dst = Path(src), Path(dst)
+    return merge([dst, src] if dst.exists() else [src], dst)
+
+
 def diff(a: Path, b: Path, dst: Path) -> Path:
     """Difference: the lines of a that are not in b. Both inputs must be sets."""
     return _place(["comm", "-23", str(a), str(b)], Path(dst))
+
+
+def common(a: Path, b: Path, dst: Path) -> Path:
+    """Intersection: the lines in both a and b. Both inputs must be sets."""
+    return _place(["comm", "-12", str(a), str(b)], Path(dst))

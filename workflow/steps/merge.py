@@ -30,6 +30,4 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
-    dst = bundle.done_pairs(ctx)
-    src = bundle.evaluated(ctx)
-    setops.merge([dst, src] if dst.exists() else [src], dst)
+    setops.fold(bundle.evaluated(ctx), bundle.done_pairs(ctx))

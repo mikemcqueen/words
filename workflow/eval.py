@@ -21,11 +21,10 @@ CHUNK_SIZE = 400
 
 
 class Eval(command.Action):
-    def __init__(self, phase: str, summary: str, glob: str = "*",
+    def __init__(self, phase: str, summary: str,
                  source_noun: str = "pairs", ready_for: str = "evalpairs"):
         super().__init__(summary=summary, positional="BUNDLE-NAME")
         self.phase = phase
-        self.glob = glob
         self.source_noun = source_noun
         self.ready_for = ready_for
 
@@ -47,7 +46,7 @@ class Eval(command.Action):
         # is found under it by prefix.
         ctx = context.Context(root=opts.dir, phase=self.phase,
                               force=opts.force, bundle_name=rest[0])
-        pairs = bundle.begin(ctx, glob=self.glob)
+        pairs = bundle.begin(ctx)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
         if not opts.no_filter:
             pairs = bundle.filter_done(pairs, ctx)
@@ -91,9 +90,12 @@ def _make_notes(paths: list[Path]) -> None:
 
 class EvalYes(Eval):
     def __init__(self):
-        super().__init__(phase="p2", summary="p2      — evaluate yes pairs",
-                         glob="*.p1.yes", source_noun="YES pairs",
-                         ready_for="manual filtering")
+        # Both queue shapes are opened the same way. An advanced `*.p1.yes`
+        # arrives carrying a p1 verdict and a submitted `*.pairs` does not, but
+        # that difference is provenance, not procedure: manual review reads the
+        # pairs either way.
+        super().__init__(phase="p2", summary="p2      — evaluate pairs for manual review",
+                         source_noun="pairs", ready_for="manual filtering")
 
     def prepare(self, pairs: Path, ctx) -> None:
         _make_notes(_split_pairs(pairs, f"/tmp/{pairs.name}"))

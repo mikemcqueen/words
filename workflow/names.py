@@ -53,13 +53,47 @@ def artifact(bundle_name: str, classifier: str, kind: str) -> str:
     return f"{bundle_name}{SEP}{classifier}{SEP}{kind}"
 
 
-def ensure_kind(name: str, kind: str) -> str:
-    """Give an externally-supplied file its kind suffix.
+# The canonical name shapes a phase's queue holds, most-generic first.
+#
+# p1 takes one shape. p2 takes two, because it has two producers: `complete p1`
+# advances an already-classified `*.p1.yes`, while a candidate list assembled
+# outside the workflow -- top DFS segments, say -- carries no p1 verdict and
+# must not be spelled as though it did.
+#
+# One table, read by both ends. `submit` renders an outside name into the first
+# shape unless the name already is one of them; `eval` finds the queued
+# artifact by exactly these. Spelling the two independently is what previously
+# let `submit p2` queue a `*.yes` that `eval p2` could never open.
+QUEUE_SUFFIXES = {
+    "p1": (f"{SEP}pairs",),
+    "p2": (f"{SEP}pairs", f"{SEP}p1{SEP}yes"),
+}
+
+
+def _queue_suffixes(phase: str) -> tuple[str, ...]:
+    if phase not in QUEUE_SUFFIXES:
+        raise ValueError(f"phase has no queue contract: {phase!r}")
+    return QUEUE_SUFFIXES[phase]
+
+
+def queue_name(phase: str, name: str) -> str:
+    """Give an externally-supplied file the name its queue slot expects.
 
     `submit` is the only caller: it is the boundary where an arbitrary outside
     file becomes a repo-managed artifact, and the only place a name arrives
     already spelled by someone else.
+
+    A name that is already one of the phase's shapes is kept verbatim. That is
+    what makes submission idempotent -- no `.pairs.pairs` on a resubmit -- and
+    what keeps an advanced `*.p1.yes` from being restamped as an unclassified
+    candidate list.
     """
-    _check(kind, KINDS, "kind")
-    suffix = f"{SEP}{kind}"
-    return name if name.endswith(suffix) else f"{name}{suffix}"
+    suffixes = _queue_suffixes(phase)
+    if any(name.endswith(suffix) for suffix in suffixes):
+        return name
+    return f"{name}{suffixes[0]}"
+
+
+def queue_globs(phase: str) -> tuple[str, ...]:
+    """The globs that find a phase's queued artifact, wherever it has moved to."""
+    return tuple(f"*{suffix}" for suffix in _queue_suffixes(phase))

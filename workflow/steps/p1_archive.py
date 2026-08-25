@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from workflow import bundle, config, fs
+from workflow import config, fs, names
 
 
 NAME = "archive"
@@ -17,16 +17,16 @@ def _done(ctx, inout: str) -> Path:
 
 # What moves where. Globbed rather than rendered: the result file's name is
 # evalpair's, not ours, and the bundle directory is already the namespace.
-MOVES = (("*.jsonl", "out"), (bundle.SOURCE_GLOB["p1"], "in"))
+MOVES = (("*.jsonl", "out"), (names.queue_globs("p1"), "in"))
 
 
 def inputs(ctx) -> list[Path]:
-    return [p for glob, _ in MOVES for p in sorted(ctx.bundle_dir.glob(glob))]
+    return [p for glob, _ in MOVES for p in fs.globs(ctx.bundle_dir, glob)]
 
 
 def outputs(ctx) -> list[Path]:
     return [_done(ctx, inout) / p.name
-            for glob, inout in MOVES for p in sorted(ctx.bundle_dir.glob(glob))]
+            for glob, inout in MOVES for p in fs.globs(ctx.bundle_dir, glob)]
 
 
 def is_done(ctx) -> bool:
@@ -41,7 +41,7 @@ def run_step(ctx) -> None:
     # it, so a retry after a partial move finishes the rest instead of crashing
     # on what already left. `extract` has already enforced the one-result rule.
     for glob, inout in MOVES:
-        for found in sorted(ctx.bundle_dir.glob(glob)):
+        for found in fs.globs(ctx.bundle_dir, glob):
             fs.move_into(found, _done(ctx, inout), ctx.force)
 
     # The .filtered derivative is scratch: the original is what gets archived.

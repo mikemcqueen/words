@@ -2,9 +2,11 @@
 #
 # Place a file into a phase's queue, sorted and deduped.
 #
-# p1 and p2 differ in four things -- the phase, the artifact kind, the word
-# used in help and log lines, and the name of the positional. They are one
-# class and a two-row table, not two files.
+# p1 and p2 differ in three things -- the phase, the word used in help and log
+# lines, and the name of the positional. They are one class and a two-row
+# table, not two files. What the queued copy is *called* is not among the
+# three: that is the phase's queue contract, and it lives in names.py where
+# `eval` reads the same table.
 
 from pathlib import Path
 
@@ -21,20 +23,19 @@ def _resolve_input(argv) -> Path:
 
 
 class Submit(command.Action):
-    def __init__(self, phase: str, kind: str, label: str, positional: str):
+    def __init__(self, phase: str, label: str, positional: str):
         super().__init__(
             summary=f"{phase}      — submit a {label} file into {phase}/queued "
                     f"(sorted, deduped)",
             positional=positional,
         )
         self.phase = phase
-        self.kind = kind
         self.label = label
 
     def run(self, command, opts, argv) -> int:
         src = _resolve_input(argv)
         dst = (config.path(opts.dir, [self.phase, "queued"])
-               / names.ensure_kind(src.name, self.kind))
+               / names.queue_name(self.phase, src.name))
         if not opts.force:
             fs.raise_if_exists(dst)
 
@@ -43,5 +44,5 @@ class Submit(command.Action):
         return 0
 
 
-P1 = Submit(phase="p1", kind="pairs", label="pairs",     positional="PAIRS-FILE")
-P2 = Submit(phase="p2", kind="yes",   label="YES pairs", positional="YES-PAIRS-FILE")
+P1 = Submit(phase="p1", label="pairs",           positional="PAIRS-FILE")
+P2 = Submit(phase="p2", label="review-candidate", positional="PAIRS-FILE")

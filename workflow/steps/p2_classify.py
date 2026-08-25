@@ -12,7 +12,7 @@ NAME = "classify"
 
 
 def classified_yes(ctx) -> Path:
-    return config.path(ctx.root, ["classified", "yes"]) / "yes.pairs"
+    return config.classified(ctx.root, "yes")
 
 
 def inputs(ctx) -> list[Path]:
@@ -35,6 +35,4 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
-    dst = classified_yes(ctx)
-    src = ctx.artifact("p2", "yes")
-    setops.merge([dst, src] if dst.exists() else [src], dst)
+    setops.fold(ctx.artifact("p2", "yes"), classified_yes(ctx))

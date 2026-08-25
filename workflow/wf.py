@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 from workflow import (
-    command, complete, dispatch, extract, filter_pairs, init, log, show, submit,
-    usage, wipe, eval as evaluate,
+    classify, command, complete, dispatch, extract, filter_pairs, init, log,
+    show, submit, usage, wipe, eval as evaluate,
 )
 
 
@@ -21,6 +21,8 @@ COMMANDS = {
                                    {"p1": command.Dispatcher(
                                        "p1      — extract archived p1 results (yes)",
                                        {"yes": extract.P1_YES})}),
+    "classify": command.Dispatcher("classify — record a standing verdict (yes|no)",
+                                   {"yes": classify.YES, "no": classify.NO}),
     "filter":   filter_pairs.COMMAND,
 #  ,"wipe":    wipe
 }

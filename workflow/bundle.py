@@ -15,18 +15,18 @@
 
 from pathlib import Path
 
-from workflow import config, fs, log, select, setops
+from workflow import config, fs, log, names, select, setops
 
 
 def in_flight(ctx) -> bool:
     return ctx.bundle_dir.is_dir()
 
 
-def begin(ctx, glob: str = "*") -> Path:
+def begin(ctx) -> Path:
     """Create the bundle directory and move the queued artifact into it."""
     src = select.select(ctx.root, [ctx.phase, "queued"],
                         f"stem:{ctx.bundle_name}",
-                        glob=glob)[0]
+                        glob=names.queue_globs(ctx.phase))[0]
 
     bundle_dir = ctx.bundle_dir
     if bundle_dir.exists() and not ctx.force:
@@ -43,28 +43,29 @@ def begin(ctx, glob: str = "*") -> Path:
     return dst
 
 
-def one(bundle_dir: Path, glob: str) -> Path:
+def one(bundle_dir: Path, glob) -> Path:
     """The single artifact in a bundle directory matching glob."""
-    matches = sorted(p for p in bundle_dir.glob(glob) if p.is_file())
+    matches = fs.globs(bundle_dir, glob)
     if not matches:
-        raise ValueError(f"no {glob} in {bundle_dir}")
+        raise ValueError(f"no {fs.spell(glob)} in {bundle_dir}")
     if len(matches) > 1:
         found = ", ".join(p.name for p in matches)
-        raise ValueError(f"multiple {glob} in {bundle_dir}: {found}")
+        raise ValueError(f"multiple {fs.spell(glob)} in {bundle_dir}: {found}")
     return matches[0]
 
 
-# The input artifact `eval` moved in, matched by *kind* rather than by name.
-# The directory name is only a prefix of what it holds -- `wf eval p1 a` makes
-# `a/` holding `a.pairs` -- so matching on the bundle name misses the very file
-# it is looking for. The directory is already the namespace; nothing else in it
-# ends in these suffixes.
-SOURCE_GLOB = {"p1": "*.pairs", "p2": "*.p1.yes"}
+# The input artifact `eval` moved in is matched by the phase's queue contract
+# rather than by name. The directory name is only a prefix of what it holds --
+# `wf eval p1 a` makes `a/` holding `a.pairs` -- so matching on the bundle name
+# misses the very file it is looking for. The directory is already the
+# namespace; nothing else in it ends in these suffixes.
+def source_globs(ctx) -> tuple[str, ...]:
+    return names.queue_globs(ctx.phase)
 
 
 def source(ctx) -> Path:
     """The bundle's source artifact -- whatever `eval` moved into it."""
-    return one(ctx.bundle_dir, SOURCE_GLOB[ctx.phase])
+    return one(ctx.bundle_dir, source_globs(ctx))
 
 
 def has_source(ctx) -> bool:
@@ -76,7 +77,7 @@ def has_source(ctx) -> bool:
     fold has no output of its own to test, but placement still carries the
     answer.
     """
-    return any(p.is_file() for p in ctx.bundle_dir.glob(SOURCE_GLOB[ctx.phase]))
+    return bool(fs.globs(ctx.bundle_dir, source_globs(ctx)))
 
 
 def filtered(src: Path) -> Path:

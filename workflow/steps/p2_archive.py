@@ -23,13 +23,13 @@ def enex_archive_dir(ctx) -> Path:
 
 
 def inputs(ctx) -> list[Path]:
-    return (sorted(ctx.bundle_dir.glob(bundle.SOURCE_GLOB["p2"]))
+    return (fs.globs(ctx.bundle_dir, bundle.source_globs(ctx))
             + [ctx.artifact("p2", "yes"), p2_retrieve.enex_dir(ctx)])
 
 
 def outputs(ctx) -> list[Path]:
     return [_done(ctx, "in") / p.name
-            for p in sorted(ctx.bundle_dir.glob(bundle.SOURCE_GLOB["p2"]))] + [
+            for p in fs.globs(ctx.bundle_dir, bundle.source_globs(ctx))] + [
         _done(ctx, "out") / ctx.artifact("p2", "yes").name,
         enex_archive_dir(ctx)]
 
@@ -48,7 +48,7 @@ def run_step(ctx) -> None:
     fs.move_into_once(ctx.artifact("p2", "yes"), _done(ctx, "out"), ctx.force)
     fs.rename_once(p2_retrieve.enex_dir(ctx), enex_archive_dir(ctx), ctx.force)
 
-    for found in sorted(ctx.bundle_dir.glob(bundle.SOURCE_GLOB["p2"])):
+    for found in fs.globs(ctx.bundle_dir, bundle.source_globs(ctx)):
         fs.move_into(found, _done(ctx, "in"), ctx.force)
 
     # The .filtered derivative is scratch: the original is what gets archived.

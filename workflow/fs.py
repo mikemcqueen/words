@@ -51,6 +51,26 @@ def raise_if_any_not_file(paths: list[Path]):
         raise_if_not_file(path)
 
 
+def spell(patterns) -> str:
+    """How to name one pattern or several in a diagnostic."""
+    return patterns if isinstance(patterns, str) else " or ".join(patterns)
+
+
+def globs(directory: Path, patterns) -> list[Path]:
+    """The files in directory matching any of patterns, sorted and deduplicated.
+
+    Takes one pattern or several, because a slot can hold more than one
+    canonical name shape and no caller should have to care which one arrived.
+    Deduplicated because overlapping patterns are legal and a file found twice
+    is still one file.
+    """
+    if isinstance(patterns, str):
+        patterns = (patterns,)
+    found = {p for pattern in patterns
+             for p in directory.glob(pattern) if p.is_file()}
+    return sorted(found)
+
+
 def line_count(path: Path) -> int:
     with path.open("r", encoding="utf-8") as f:
         n_lines = sum(1 for _ in f)

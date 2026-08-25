@@ -16,7 +16,7 @@ from workflow import config, fs
 ALL = "all"
 
 
-def select(root: Path, slot: list[str], selector: str, glob: str = "*") -> list[Path]:
+def select(root: Path, slot: list[str], selector: str, glob="*") -> list[Path]:
     """Resolve selector against root/<slot>, returning at least one file.
 
         all         every file in the slot matching glob, sorted
@@ -36,9 +36,9 @@ def select(root: Path, slot: list[str], selector: str, glob: str = "*") -> list[
     fs.raise_if_not_dir(directory)
 
     if selector == ALL:
-        paths = sorted(p for p in directory.glob(glob) if p.is_file())
+        paths = fs.globs(directory, glob)
         if not paths:
-            raise ValueError(f"no {glob} files in {directory}")
+            raise ValueError(f"no {fs.spell(glob)} files in {directory}")
         return paths
 
     kind, sep, value = selector.partition(":")
@@ -51,10 +51,14 @@ def select(root: Path, slot: list[str], selector: str, glob: str = "*") -> list[
         return [path]
 
     if kind == "stem":
-        matches = sorted(p for p in directory.glob(glob)
-                         if p.is_file() and p.name.startswith(value))
+        matches = [p for p in fs.globs(directory, glob)
+                   if p.name.startswith(value)]
         if not matches:
-            raise ValueError(f"no file found for {value!r} in {directory}")
+            # Naming the glob matters here: a file can be sitting in the slot
+            # under a name the phase's queue contract does not admit, and
+            # "no file found" alone points at the wrong thing.
+            raise ValueError(f"no {fs.spell(glob)} file found for {value!r} "
+                             f"in {directory}")
         if len(matches) > 1:
             names = ", ".join(p.name for p in matches)
             raise ValueError(f"multiple files found for {value!r} in {directory}: {names}")

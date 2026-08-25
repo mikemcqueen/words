@@ -201,10 +201,23 @@ class NameRenderingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             names.artifact("", "p1", "yes")
 
-    def test_ensure_kind_is_idempotent(self):
-        once = names.ensure_kind("ext1.txt", "pairs")
+    def test_queue_name_is_idempotent(self):
+        once = names.queue_name("p1", "ext1.txt")
         self.assertEqual("ext1.txt.pairs", once)
-        self.assertEqual(once, names.ensure_kind(once, "pairs"))
+        self.assertEqual(once, names.queue_name("p1", once))
+
+    def test_p2_queue_takes_pairs_or_an_advanced_p1_yes(self):
+        # An unclassified candidate list becomes `.pairs` ...
+        self.assertEqual("top.s2.m4.g4.1000.pairs",
+                         names.queue_name("p2", "top.s2.m4.g4.1000"))
+        # ... and an advanced p1 artifact keeps its provenance untouched.
+        self.assertEqual("s6.90.10.p1.yes",
+                         names.queue_name("p2", "s6.90.10.p1.yes"))
+        self.assertEqual(("*.pairs", "*.p1.yes"), names.queue_globs("p2"))
+
+    def test_a_phase_without_a_queue_contract_is_rejected(self):
+        with self.assertRaises(ValueError):
+            names.queue_name("p3", "anything")
 
 
 class BundleDirectoryTests(unittest.TestCase):
