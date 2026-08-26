@@ -5,6 +5,7 @@ import argparse
 from workflow import config, log, usage
 
 COLLECT = ("queued", "eval")
+SKIP = {"best"}
 
 
 def help_summary(name):
@@ -81,15 +82,27 @@ def _show_all_help(command) -> int:
 
 
 def _show_help_with_all(command, args, summary) -> int:
-    if not args.parts and not args.has_invalid:
-        node = dict(args.node, parts=dict(args.node["parts"],
+    if not args.parts:
+        parts = {name: child for name, child in args.node["parts"].items()
+                 if name not in SKIP}
+        node = dict(args.node, parts=dict(parts,
             all={"description": _all_help_summary()}))
         args = config.LayoutArgs(parts=args.parts, node=node, _invalid=args._invalid)
     return usage.show_layout_help(command, args, summary)
 
 
+def _reject_best(rest) -> int | None:
+    if rest and rest[0] in SKIP:
+        return usage.invalid_argument(
+            rest[0], "BEST PAIRS state is reported by `wf best status`.")
+    return None
+
+
 def show_help(command, opts, argv) -> int:
     local_opts, rest = _make_parser().parse_known_args(argv)
+    rejected = _reject_best(rest)
+    if rejected is not None:
+        return rejected
     if rest and rest[0] == "all":
         return _show_all_help(command)
     args = config.layout_args(rest)
@@ -98,6 +111,9 @@ def show_help(command, opts, argv) -> int:
 
 def run(command, opts, argv) -> int:
     rest, opts = _parse_args(argv, opts)
+    rejected = _reject_best(rest)
+    if rejected is not None:
+        return rejected
     if rest and rest[0] == "all":
         subtarget = rest[1] if len(rest) > 1 else None
         if not subtarget or subtarget in ("help", "-h", "--help"):

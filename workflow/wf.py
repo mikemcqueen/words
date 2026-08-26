@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 
 from workflow import (
-    classify, command, complete, dispatch, extract, filter_pairs, init, log,
-    show, submit, usage, wipe, eval as evaluate,
+    best, classify, command, complete, dispatch, extract, filter_pairs, init,
+    log, show, submit, usage, wipe, eval as evaluate,
 )
 
 
@@ -24,6 +24,7 @@ COMMANDS = {
                                        {"yes": extract.P1_YES})}),
     "classify": command.Dispatcher("classify — record a standing verdict (yes|no)",
                                    {"yes": classify.YES, "no": classify.NO}),
+    "best":     best.COMMAND,
     "filter":   filter_pairs.COMMAND,
 #  ,"wipe":    wipe
 }

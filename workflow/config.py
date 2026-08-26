@@ -97,6 +97,19 @@ _CLASSIFIED = {
 }
 
 
+_BEST = {
+    "description": "BEST PAIRS workflow state",
+    "parts": {
+        "idx": {
+            "description": "shared Nutrimatic indexes"
+        },
+        "dict": {
+            "description": "shared Nutrimatic dictionaries"
+        }
+    }
+}
+
+
 CONFIG_ROOT = ".wf"
 
 
@@ -106,7 +119,8 @@ CONFIG_LAYOUT = {
         "p1":         _PHASE1,
         "p2":         _PHASE2,
         "p3":         _PHASE3,
-        "classified": _CLASSIFIED
+        "classified": _CLASSIFIED,
+        "best":       _BEST
     }
 }
 
