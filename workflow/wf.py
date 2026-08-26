@@ -47,9 +47,14 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     argv = _normalize_help_argv(argv)
     opts, rest = usage.make_global_parser().parse_known_args(argv)
-    root = opts.dir or Path(os.environ.get("WFROOT") or Path.cwd())
+    if opts.dir is not None:
+        root, source = opts.dir, "-d/--dir"
+    elif os.environ.get("WFROOT"):
+        root, source = Path(os.environ["WFROOT"]), "$WFROOT"
+    else:
+        root, source = Path.cwd(), "current directory"
     if not root.is_dir():
-        print(f"-d/--dir: not a directory: {root}")
+        print(f"{source}: not a directory: {root}")
         return 2
     opts.dir = root.resolve()
     if opts.help:

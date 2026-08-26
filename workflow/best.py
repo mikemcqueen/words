@@ -25,8 +25,8 @@ from workflow import (
 
 SHAPES = (
     (re.compile(r"s[1-9]"), "s[1-9]"),
-    (re.compile(r"m\d+"), "m<N>"),
-    (re.compile(r"g\d+"), "g<N>"),
+    (re.compile(r"m[1-9]\d*"), "m<N>"),
+    (re.compile(r"g[1-9]\d*"), "g<N>"),
 )
 
 DFS_LIMIT = 1_000_000
@@ -180,6 +180,35 @@ def _newer(path: Path, reference: Path) -> bool:
     return path.stat().st_mtime_ns > reference.stat().st_mtime_ns
 
 
+def _stamp(path: Path) -> Path:
+    """The generation marker beside an artifact, touched by every gen."""
+    return path.with_name(f".{path.name}.gen")
+
+
+def _generated(path: Path) -> Path:
+    """The path whose mtime dates an artifact against its own inputs.
+
+    An artifact placed with stable_mtime keeps its mtime through a
+    byte-identical regeneration, which is what stops a no-op from cascading
+    into an hours-long DFS downstream. That same mtime cannot also answer
+    "has this been generated since its input moved?", because the answer it
+    gives never changes: an input that moves and yields identical content
+    reports stale forever, and the gen offered to clear it is the one write
+    stable_mtime suppresses. The marker answers that question -- it advances
+    on every gen, no-op or not -- and the artifact's own mtime goes on
+    answering the first for whatever reads it downstream.
+
+    Absent the marker the artifact dates itself, which is what a tree built
+    before the marker existed, or an artifact placed by hand, will do.
+    """
+    stamp = _stamp(path)
+    return stamp if stamp.exists() else path
+
+
+def _mark_generated(path: Path) -> None:
+    _stamp(path).touch()
+
+
 def _out_of_date(name: str, reasons: list[str], command_text: str) -> State:
     return State(f"{name} out of date ({', '.join(reasons)})",
                  next_command=command_text)
@@ -245,7 +274,7 @@ def derive_state(target: Target) -> State:
     if missing is not None:
         return missing
     top_segments = target.artifact("top.segments")
-    if _newer(dfs_seed, top_segments):
+    if _newer(dfs_seed, _generated(top_segments)):
         return _out_of_date(
             "top.segments", ["dfs.seed changed"],
             target.command("gen", "top.segments"))
@@ -259,12 +288,13 @@ def derive_state(target: Target) -> State:
         return missing
     best_pairs = target.artifact("best.pairs")
     confirmed_yes = config.classified(target.root, "yes")
+    generated = _generated(best_pairs)
     reasons = []
-    if _newer(top_segments, best_pairs):
+    if _newer(top_segments, generated):
         reasons.append("top.segments changed")
-    if _newer(confirmed_yes, best_pairs):
+    if _newer(confirmed_yes, generated):
         reasons.append("confirmed-YES set changed")
-    if _newer(hard_no, best_pairs):
+    if _newer(hard_no, generated):
         reasons.append("hard-NO set changed")
     if reasons:
         return _out_of_date(
@@ -308,9 +338,17 @@ class Status(command.Action):
         if not selected:
             print("no BEST PAIRS targets")
             return 0
+        failed = False
         for target in selected:
-            report(target)
-        return 0
+            # A malformed sibling -- two seeds in one universe, two review
+            # bundles for one target -- must not cost the operator the rest
+            # of the listing. status is the command they run to find out.
+            try:
+                report(target)
+            except (OSError, ValueError) as e:
+                log.error(f"{target.address}: {e}")
+                failed = True
+        return 1 if failed else 0
 
 
 def _command_not_found(name: str) -> FileNotFoundError:
@@ -453,6 +491,7 @@ def _gen_top_segments(target: Target, opts) -> None:
     argv.append(str(dfs_seed))
     _display_command(argv)
     setops._place(argv, target.artifact("top.segments"), stable_mtime=True)
+    _mark_generated(target.artifact("top.segments"))
     count = fs.line_count(target.artifact("top.segments"))
     log.success(f"Generated {count} top segments → "
                 f"{target.address}/top.segments")
@@ -478,6 +517,7 @@ def _build_best_pairs(target: Target) -> None:
         confirmed = setops.common(
             candidates, confirmed_yes, scratch / "confirmed.pairs")
         setops.diff(confirmed, hard_no, destination, stable_mtime=True)
+    _mark_generated(destination)
 
     after = set(destination.read_text().splitlines())
     log.success(f"Generated {len(after)} best pairs "
@@ -527,8 +567,10 @@ class Gen(command.Action):
         sentence, stage = rest
         if stage not in self.STAGES:
             return usage.invalid_argument(stage, self.format_help(command_text))
-        if opts.m < 0 or opts.g < 0 or (opts.count is not None and opts.count < 0):
-            raise ValueError("-m, -g, and -n require non-negative integers")
+        if opts.m < 1 or opts.g < 1:
+            raise ValueError("-m and -g require positive integers")
+        if opts.count is not None and opts.count < 0:
+            raise ValueError("-n requires a non-negative integer")
 
         target = one_target(opts.dir, sentence, opts.m, opts.g)
         if not target.target_dir.exists() and not (
@@ -554,8 +596,8 @@ def _action_target(action, command_text, opts, argv, positionals: int):
     if len(rest) > positionals:
         return usage.invalid_argument(
             rest[positionals], action.format_help(command_text))
-    if opts.m < 0 or opts.g < 0:
-        raise ValueError("-m and -g require non-negative integers")
+    if opts.m < 1 or opts.g < 1:
+        raise ValueError("-m and -g require positive integers")
     target = one_target(opts.dir, rest[0], opts.m, opts.g)
     fs.raise_if_not_dir(target.target_dir)
     return target, rest

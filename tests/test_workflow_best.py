@@ -262,6 +262,75 @@ class BestTests(unittest.TestCase):
         self.assertIn(
             f"top-segments --pairs -n 2 {dfs_seed}", stderr2)
 
+    def test_no_op_top_segments_gen_clears_a_reran_dfs_seed(self):
+        target = self._target()
+        self._shared_inputs(target.parent)
+        dfs_seed = self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        top = target / "top.segments"
+
+        def run(argv, **kwargs):
+            kwargs["stdout"].write("alpha,beta\n")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(best.subprocess, "run", side_effect=run):
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2", "-g", "4",
+                "top.segments")
+            self.assertEqual(0, code, stderr)
+            # A dfs.seed rerun that exhausts the search renames its target
+            # fresh, so top.segments goes stale on an identical input.
+            for path in (top, best._stamp(top)):
+                os.utime(path, (30, 30))
+            os.utime(dfs_seed, (35, 35))
+            _, stdout, _ = fx.run_wf(
+                "-d", str(self.root), "best", "status", "s2/m4/g4")
+            self.assertIn("top.segments out of date (dfs.seed changed)", stdout)
+
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2", "-g", "4",
+                "top.segments")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(30, int(top.stat().st_mtime))
+        self.assertNotIn("top.segments out of date", stdout)
+        self.assertIn("s2/m4/g4: review needed", stdout)
+
+    def test_no_op_best_pairs_gen_clears_changed_top_segments(self):
+        target = self._target()
+        self._complete_files(target)
+        best_pairs = target / "best.pairs"
+        # top.segments regenerated with new content, its review round came
+        # back confirming nothing new, so best.pairs recomputes identical.
+        self._write(config.classified(self.root, "yes"), "a,b\n", 10)
+        os.utime(target / "top.segments", (70, 70))
+        os.utime(next(fx.slot(self.opts, ["p2", "done", "in"]).iterdir()),
+                 (80, 80))
+
+        _, stdout, _ = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/m4/g4")
+        self.assertIn("best.pairs out of date (top.segments changed)", stdout)
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2", "-g", "4", "best.pairs")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("(0 added, 0 dropped)", stdout)
+        self.assertEqual(50, int(best_pairs.stat().st_mtime))
+        self.assertIn("s2/m4/g4: up to date", stdout)
+
+    def test_status_reports_a_malformed_target_and_keeps_listing(self):
+        universe = self._target().parent
+        self._shared_inputs(universe)
+        self._write(universe / "seed.idx2.90.10.pairs", "a,b\n", 10)
+        self._target(sentence="s3")
+
+        code, stdout, stderr = fx.run_wf("-d", str(self.root), "best", "status")
+
+        self.assertEqual(1, code)
+        self.assertIn("s2/m4/g4: multiple seeds in", stderr)
+        self.assertIn("s3/m4/g4: letters missing", stdout)
+
     def test_gen_dfs_best_uses_best_pairs_and_final_name(self):
         target = self._target()
         self._complete_files(target)
