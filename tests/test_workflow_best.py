@@ -3,9 +3,10 @@ import tempfile
 import unittest
 
 from pathlib import Path
+from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config
+from workflow import best, config
 
 
 class BestTests(unittest.TestCase):
@@ -26,6 +27,17 @@ class BestTests(unittest.TestCase):
         if mtime is not None:
             os.utime(path, (mtime, mtime))
         return path
+
+    def _shared_inputs(self, universe: Path) -> tuple[Path, Path, Path]:
+        index = self.best / "idx" / best.INDEX_NAME
+        dictionary = self.best / "dict" / best.DICTIONARY_NAME
+        seed = universe / "seed.idx2.85.15.pairs"
+        self._write(index, "index\n")
+        self._write(dictionary, "words\n")
+        self._write(universe.parent / "letters", "abcdef\n", 10)
+        self._write(seed, "a,b\n", 10)
+        os.utime(config.classified(self.root, "no"), (10, 10))
+        return index, dictionary, seed
 
     def _complete_files(self, target: Path) -> None:
         sentence_dir = target.parents[1]
@@ -153,6 +165,111 @@ class BestTests(unittest.TestCase):
         self.assertIn(
             "review awaiting completion (top.s2.m4.g4.1000.r1)", stdout)
         self.assertIn("next: wf best complete s2 -g 4", stdout)
+
+    def test_gen_dfs_seed_validates_then_creates_and_publishes_atomically(self):
+        universe = self.best / "s2" / "m4"
+        universe.mkdir(parents=True)
+        _, _, seed = self._shared_inputs(universe)
+        (self.best / "idx" / best.INDEX_NAME).unlink()
+        results = self.root / "results"
+        results.mkdir()
+        target = universe / "g4"
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kwargs["stdout"].write("9 alpha,beta\n8 gamma,delta\n")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"):
+            with self.assertRaises(FileNotFoundError):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-g", "4", "-r", str(results), "dfs.seed")
+            self.assertFalse(target.exists())
+            with self.assertRaises(FileNotFoundError):
+                fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
+                          "-g", "4", "-r", str(results), "dfs.seed")
+        self.assertFalse(target.exists())
+
+        self._write(self.best / "idx" / best.INDEX_NAME, "index\n")
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(best.subprocess, "run", side_effect=run), \
+                mock.patch.object(best.time, "monotonic", side_effect=[0, 2]):
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "-f", "best", "gen", "s2",
+                "-g", "4", "-r", str(results), "dfs.seed")
+
+        self.assertEqual(0, code, stderr)
+        link = target / "dfs.seed"
+        self.assertTrue(link.is_symlink())
+        rendered = results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.1000000"
+        self.assertEqual(rendered, link.resolve())
+        self.assertEqual("9 alpha,beta\n8 gamma,delta\n", rendered.read_text())
+        self.assertFalse(rendered.with_name(rendered.name + ".tmp").exists())
+        self.assertEqual("dfs-anagrams", calls[0][0])
+        self.assertEqual(str(seed), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual("1000000", calls[0][calls[0].index("-n") + 1])
+        self.assertIn("$(cat ", stderr)
+        self.assertIn("Generated 2 results in 2s", stdout)
+        self.assertIn("s2/m4/g4: top.segments missing", stdout)
+
+        def fail(argv, **kwargs):
+            kwargs["stdout"].write("truncated\n")
+            raise best.subprocess.CalledProcessError(1, argv)
+
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(best.subprocess, "run", side_effect=fail):
+            with self.assertRaises(best.subprocess.CalledProcessError):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-g", "4", "-r", str(results), "dfs.seed")
+        self.assertEqual(rendered, link.resolve())
+        self.assertEqual("9 alpha,beta\n8 gamma,delta\n", rendered.read_text())
+        self.assertEqual(
+            "truncated\n",
+            rendered.with_name(rendered.name + ".tmp").read_text())
+
+    def test_gen_top_segments_passes_count_and_preserves_unchanged_mtime(self):
+        target = self._target()
+        universe = target.parent
+        self._shared_inputs(universe)
+        dfs_seed = self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kwargs["stdout"].write("alpha,beta\ngamma,delta\n")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(best.subprocess, "run", side_effect=run):
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2",
+                "-g", "4", "top.segments")
+            top = target / "top.segments"
+            os.utime(top, (30, 30))
+            code2, stdout2, stderr2 = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2",
+                "-g", "4", "-n", "2", "top.segments")
+
+        self.assertEqual((0, 0), (code, code2), stderr + stderr2)
+        self.assertEqual(
+            ["top-segments", "--pairs", str(dfs_seed)], calls[0])
+        self.assertEqual(
+            ["top-segments", "--pairs", "-n", "2", str(dfs_seed)], calls[1])
+        self.assertEqual(30, int(top.stat().st_mtime))
+        self.assertIn("Generated 2 top segments", stdout + stdout2)
+        self.assertIn("s2/m4/g4: review needed", stdout2)
+        self.assertIn(
+            f"top-segments --pairs -n 2 {dfs_seed}", stderr2)
+
+    def test_gen_top_segments_rejects_force_before_running(self):
+        target = self._target()
+        self._write(target / "dfs.seed", "9 alpha,beta\n")
+        with mock.patch.object(best.shutil, "which") as which:
+            with self.assertRaisesRegex(ValueError, "only valid for gen dfs.seed"):
+                fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
+                          "-g", "4", "top.segments")
+        which.assert_not_called()
 
 
 if __name__ == "__main__":
