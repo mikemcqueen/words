@@ -127,6 +127,17 @@ class P2RecipeTests(unittest.TestCase):
         self.assertEqual(["alpha,two", "beta,five", "mid,three"],
                          (self._slot("classified", "yes") / "yes.pairs").read_text().splitlines())
 
+    def test_complete_preflights_archive_collisions_before_retrieval(self):
+        archived = (self._slot("p2", "done", "out", "enex")
+                    / self.BUNDLE_NAME)
+        archived.mkdir()
+
+        with self.assertRaisesRegex(ValueError, str(archived)):
+            self._complete()
+
+        self.assertEqual([], self.notes.fetched)
+        self.assertTrue(self.queued.is_file())
+
     # ---------------------------------------------------------------- resume
 
     def test_retrieve_is_atomic_so_a_partial_fetch_is_not_mistaken_for_done(self):

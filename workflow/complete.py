@@ -42,6 +42,8 @@ class Complete(command.Action):
         super().__init__(summary=summary, positional="BUNDLE-NAME")
         self.phase = phase
         self.steps = step_list
+        self.archive = next(step for step in step_list
+                            if step.NAME == "archive")
 
     def run(self, command, opts, argv) -> int:
         if not argv:
@@ -53,6 +55,13 @@ class Complete(command.Action):
         ctx = context.Context(root=opts.dir, phase=self.phase,
                               force=opts.force, bundle_name=bundle_name)
         fs.raise_if_not_dir(ctx.bundle_dir)
+
+        # Archive is the first irreversible part of completion. Discover every
+        # collision before extraction or folding changes anything, so -f is a
+        # decision for this invocation rather than a recovery from half an
+        # archive.
+        if not ctx.force and not steps.is_done(self.archive, ctx):
+            fs.raise_if_any_exist(self.archive.outputs(ctx))
 
         code = steps.run_steps(self.steps, ctx)
         if code == 0:

@@ -450,6 +450,26 @@ class BundleLifecycleTests(unittest.TestCase):
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "in"]) / self.PAIRS).is_file())
         self.assertTrue((fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT).is_file())
 
+    def test_complete_preflights_archive_collisions_before_work(self):
+        bundle_dir = self._eval()
+        fx.write_results(bundle_dir / self.RESULT, fx.BAND_ROWS)
+        archived = fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT
+        fx.write_results(archived, [fx.BAND_ROWS[0]])
+        old_archive = archived.read_text()
+
+        with self.assertRaisesRegex(ValueError, str(archived)):
+            fx.run_wf("-d", str(self.root), "complete", "p1", self.BUNDLE)
+
+        self.assertEqual(old_archive, archived.read_text())
+        self.assertFalse((fx.slot(self.opts, ["p1", "done"])
+                          / "p1_done.pairs").exists())
+        self.assertTrue(bundle_dir.is_dir())
+
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "-f", "complete", "p1", self.BUNDLE)
+        self.assertEqual(0, code, stderr)
+        self.assertNotEqual(old_archive, archived.read_text())
+
     def test_complete_accepts_the_queued_filename(self):
         # The escape hatch: whatever string opened the bundle closes it. The
         # directory name stays canonical -- only a miss falls back to stripping.
