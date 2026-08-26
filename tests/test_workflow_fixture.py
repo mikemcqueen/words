@@ -15,7 +15,7 @@ from pathlib import Path
 
 from src.filter import filter_results
 from tests import wf_fixture as fx
-from workflow import bundle, config, names
+from workflow import bundle, config, init, names
 from workflow import eval as evaluate
 from workflow.context import Context
 
@@ -40,6 +40,17 @@ class FixtureHarnessTests(unittest.TestCase):
         for parts in _walk_layout(config.CONFIG_LAYOUT, []):
             with self.subTest(slot="/".join(parts)):
                 self.assertTrue((self.wf_dir.joinpath(*parts)).is_dir())
+
+    def test_init_creates_empty_classified_aggregates_idempotently(self):
+        aggregates = [config.classified(self.root, kind)
+                      for kind in ("yes", "no")]
+        self.assertEqual(["", ""], [path.read_text() for path in aggregates])
+
+        aggregates[0].write_text("alpha,beta\n")
+        mtime = aggregates[0].stat().st_mtime_ns
+        init.init(self.opts)
+        self.assertEqual("alpha,beta\n", aggregates[0].read_text())
+        self.assertEqual(mtime, aggregates[0].stat().st_mtime_ns)
 
     def test_place_writes_into_the_named_slot(self):
         path = fx.place(self.opts, ["p1", "queued"], "a.pairs", "one,two\n")

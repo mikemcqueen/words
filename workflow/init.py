@@ -12,6 +12,13 @@ def ensure_dir(d: Path) -> Path:
     return d
 
 
+def ensure_file(path: Path) -> Path:
+    if not path.exists():
+        path.touch()
+    fs.raise_if_not_file(path)
+    return path
+
+
 def ensure_layout(parent: Path, child: str, layout, opts) -> None:
     d = ensure_dir(parent / child)
     if "parts" in layout:
@@ -21,6 +28,8 @@ def ensure_layout(parent: Path, child: str, layout, opts) -> None:
 
 def init(opts) -> None:
     ensure_layout(opts.dir, config.CONFIG_ROOT, config.CONFIG_LAYOUT, opts)
+    for kind in ("yes", "no"):
+        ensure_file(config.classified(opts.dir, kind))
 
 
 class Init(command.Action):
