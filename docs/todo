@@ -1,3 +1,14 @@
+HIGH PRIORITY >>
+----------------
+
+* workflow: follow up on the classified/yes.pairs + classified/no.pairs union/subtraction
+  rules for some of the `best gen` commands, and for `best review` as well.
+  * started a session on JUNIPER on this and never followed up. check there first.
+  * design is in ../nutrimatic/plans/integrate-best-pairs.md -- `review` subtracts
+    classified/no (~line 333), `gen best.pairs` intersects classified/yes (~line 458).
+
+<< HIGH PRIORITY
+
 * complete_yes move notes to backup/processed notebook once command successfully
   completes?
 
@@ -20,7 +31,7 @@
     taking a path while the rest take flags worth unifying?
   * `wf show` walks space-separated static layout parts consumed by
     layout_args, which is a different kind of argument; probably leave it.
-  * see plans/integrate-best-pairs.md (nutrimatic) for the design.
+  * see ../nutrimatic/plans/integrate-best-pairs.md for the design.
 
 * workflow: move "done" files to //dump? (or just do it manually, or have "manual" command
   to execute (e.g. archive p1)
