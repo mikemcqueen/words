@@ -84,11 +84,13 @@ def fold(src: Path, dst: Path, stable_mtime: bool = False) -> Path:
                  stable_mtime=stable_mtime)
 
 
-def diff(a: Path, b: Path, dst: Path) -> Path:
+def diff(a: Path, b: Path, dst: Path, stable_mtime: bool = False) -> Path:
     """Difference: the lines of a that are not in b. Both inputs must be sets."""
-    return _place(["comm", "-23", str(a), str(b)], Path(dst))
+    return _place(["comm", "-23", str(a), str(b)], Path(dst),
+                  stable_mtime=stable_mtime)
 
 
-def common(a: Path, b: Path, dst: Path) -> Path:
+def common(a: Path, b: Path, dst: Path, stable_mtime: bool = False) -> Path:
     """Intersection: the lines in both a and b. Both inputs must be sets."""
-    return _place(["comm", "-12", str(a), str(b)], Path(dst))
+    return _place(["comm", "-12", str(a), str(b)], Path(dst),
+                  stable_mtime=stable_mtime)

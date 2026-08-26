@@ -73,6 +73,8 @@ class MergeTests(unittest.TestCase):
 
 
 class DiffTests(unittest.TestCase):
+    OLD = 1_000_000_000
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -88,6 +90,25 @@ class DiffTests(unittest.TestCase):
         a = self.dir / "a"; a.write_text("alpha\nbeta\n")
         b = self.dir / "b"; b.write_text("alpha\nbeta\n")
         self.assertEqual("", setops.diff(a, b, self.dir / "out").read_text())
+
+    def test_diff_can_preserve_mtime_when_the_result_is_unchanged(self):
+        a = self.dir / "a"; a.write_text("alpha\nbeta\nzeta\n")
+        b = self.dir / "b"; b.write_text("beta\n")
+        out = setops.diff(a, b, self.dir / "out", stable_mtime=True)
+        os.utime(out, (self.OLD, self.OLD))
+
+        setops.diff(a, b, out, stable_mtime=True)
+        self.assertEqual(self.OLD, int(out.stat().st_mtime))
+
+    def test_common_can_preserve_mtime_when_the_result_is_unchanged(self):
+        a = self.dir / "a"; a.write_text("alpha\nbeta\nzeta\n")
+        b = self.dir / "b"; b.write_text("beta\nzeta\n")
+        out = setops.common(a, b, self.dir / "out", stable_mtime=True)
+        self.assertEqual("beta\nzeta\n", out.read_text())
+        os.utime(out, (self.OLD, self.OLD))
+
+        setops.common(a, b, out, stable_mtime=True)
+        self.assertEqual(self.OLD, int(out.stat().st_mtime))
 
 
 class SelectTests(unittest.TestCase):
