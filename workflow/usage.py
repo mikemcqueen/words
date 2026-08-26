@@ -9,7 +9,7 @@ from workflow import config, log
 def make_global_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("-d", "--dir", type=Path, metavar="DIR",
-                   help="workflow root directory (default: cwd)")
+                   help="workflow root directory (default: $WFROOT or cwd)")
     p.add_argument("-f", "--force", action="store_true",
                    help="force overwrite existing files")
     p.add_argument("-h", "--help", action="store_true",

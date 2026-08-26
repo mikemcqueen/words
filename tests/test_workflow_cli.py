@@ -1,7 +1,11 @@
 import io
+import os
+import tempfile
 import unittest
 
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest import mock
 
 from workflow import wf
 
@@ -23,6 +27,26 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("init    — initialize a workflow (stub)", stderr)
         self.assertIn("show    — display workflow state", stderr)
         self.assertIn("submit  — submit items (p1|p2)", stderr)
+
+    def test_wfroot_is_the_default_workflow_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch.dict(os.environ, {"WFROOT": root}):
+                with mock.patch.object(
+                    wf.Path, "cwd", side_effect=FileNotFoundError
+                ):
+                    code, _, stderr = self._run("init")
+            self.assertEqual(0, code, stderr)
+            self.assertTrue((Path(root) / ".wf").is_dir())
+
+    def test_explicit_dir_overrides_wfroot(self):
+        with tempfile.TemporaryDirectory() as default_root:
+            with tempfile.TemporaryDirectory() as explicit_root:
+                with mock.patch.dict(os.environ, {"WFROOT": default_root}):
+                    code, _, stderr = self._run(
+                        "-d", explicit_root, "init")
+                self.assertEqual(0, code, stderr)
+                self.assertTrue((Path(explicit_root) / ".wf").is_dir())
+                self.assertFalse((Path(default_root) / ".wf").exists())
 
     def test_invalid_show_root_target_shows_show_help(self):
         code, stdout, stderr = self._run("show", "balls")

@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -45,10 +46,11 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     argv = _normalize_help_argv(argv)
     opts, rest = usage.make_global_parser().parse_known_args(argv)
-    if opts.dir is not None and not opts.dir.is_dir():
-        print(f"-d/--dir: not a directory: {opts.dir}")
+    root = opts.dir or Path(os.environ.get("WFROOT") or Path.cwd())
+    if not root.is_dir():
+        print(f"-d/--dir: not a directory: {root}")
         return 2
-    opts.dir = (opts.dir or Path.cwd()).resolve()
+    opts.dir = root.resolve()
     if opts.help:
         rest = ["help"] + rest
     return dispatch.run(None, COMMANDS, opts, rest)
