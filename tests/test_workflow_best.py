@@ -262,6 +262,46 @@ class BestTests(unittest.TestCase):
         self.assertIn(
             f"top-segments --pairs -n 2 {dfs_seed}", stderr2)
 
+    def test_gen_dfs_best_uses_best_pairs_and_final_name(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        pairs = self._write(target / "best.pairs", "alpha,beta\n", 50)
+        results = self.root / "results"
+        calls = []
+
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kwargs["stdout"].write("9 alpha,beta\n8 gamma,delta\n")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(best.subprocess, "run", side_effect=run), \
+                mock.patch.object(best.time, "monotonic", side_effect=[0, 3]):
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2",
+                "-g", "4", "-r", str(results), "-n", "25", "dfs.best")
+
+        self.assertEqual(0, code, stderr)
+        link = target / "dfs.best"
+        rendered = (results / "s2"
+                    / "dfs.s2.idx2.85.15.m4.x2.g4.best.25")
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(rendered, link.resolve())
+        self.assertEqual("9 alpha,beta\n8 gamma,delta\n", rendered.read_text())
+        self.assertEqual(str(pairs), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual("25", calls[0][calls[0].index("-n") + 1])
+        self.assertIn(f"--pairs {pairs}", stderr)
+        self.assertIn("Generated 2 results in 3s", stdout)
+        self.assertIn("s2/m4/g4: up to date", stdout)
+
+        with mock.patch.object(best.shutil, "which") as which:
+            with self.assertRaisesRegex(ValueError,
+                                        "only valid for gen dfs.seed"):
+                fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
+                          "-g", "4", "-r", str(results), "dfs.best")
+        which.assert_not_called()
+
     def test_gen_top_segments_rejects_force_before_running(self):
         target = self._target()
         self._write(target / "dfs.seed", "9 alpha,beta\n")

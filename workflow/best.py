@@ -332,9 +332,10 @@ def _seed_annotation(seed: Path) -> str:
     return seed.name[len("seed"):-len(".pairs")]
 
 
-def _dfs_name(target: Target, seed: Path, limit: int) -> str:
+def _dfs_name(target: Target, seed: Path, limit: int, final: bool) -> str:
+    stage = ".best" if final else ""
     return (f"dfs.{target.sentence}{_seed_annotation(seed)}."
-            f"m{target.min_words}.x2.g{target.segment_count}.{limit}")
+            f"m{target.min_words}.x2.g{target.segment_count}{stage}.{limit}")
 
 
 def _display_dfs(argv: list[str], letters: Path) -> None:
@@ -382,9 +383,13 @@ def _dfs_inputs(target: Target, results_dir: Path) -> tuple[Path, Path, Path]:
     return index, dictionary, seed
 
 
-def _gen_dfs_seed(target: Target, opts) -> None:
+def _gen_dfs(target: Target, opts, final: bool) -> None:
+    if final and opts.force:
+        raise ValueError("-f/--force is only valid for gen dfs.seed")
     results_dir = Path(opts.results_dir or "results").resolve()
     index, dictionary, seed = _dfs_inputs(target, results_dir)
+    pairs = target.artifact("best.pairs") if final else seed
+    fs.raise_if_not_file(pairs)
     sentence_results = results_dir / target.sentence
     if sentence_results.exists():
         fs.raise_if_not_dir(sentence_results)
@@ -398,7 +403,7 @@ def _gen_dfs_seed(target: Target, opts) -> None:
     fs.raise_if_not_dir(sentence_results)
 
     limit = DFS_LIMIT if opts.count is None else opts.count
-    rendered = sentence_results / _dfs_name(target, seed, limit)
+    rendered = sentence_results / _dfs_name(target, seed, limit, final)
     scratch = rendered.with_name(rendered.name + ".tmp")
     letters = target.letters.read_text().rstrip("\r\n")
     argv = [
@@ -409,7 +414,7 @@ def _gen_dfs_seed(target: Target, opts) -> None:
         "-n", str(limit),
         "--word-bonus", "1",
         "--dict", str(dictionary),
-        "--pairs", str(seed),
+        "--pairs", str(pairs),
         "--exclude-pairs", str(target.root),
         "-x", "2",
         "-g", str(target.segment_count),
@@ -419,10 +424,19 @@ def _gen_dfs_seed(target: Target, opts) -> None:
     with scratch.open("w") as output:
         subprocess.run(argv, stdout=output, check=True)
     scratch.replace(rendered)
-    _publish_link(target.artifact("dfs.seed"), rendered)
+    artifact = "dfs.best" if final else "dfs.seed"
+    _publish_link(target.artifact(artifact), rendered)
     elapsed = _format_duration(time.monotonic() - started)
     log.success(f"Generated {fs.line_count(rendered)} results in {elapsed} "
                 f"→ {rendered}")
+
+
+def _gen_dfs_seed(target: Target, opts) -> None:
+    _gen_dfs(target, opts, final=False)
+
+
+def _gen_dfs_best(target: Target, opts) -> None:
+    _gen_dfs(target, opts, final=True)
 
 
 def _gen_top_segments(target: Target, opts) -> None:
@@ -488,6 +502,7 @@ class Gen(command.Action):
         "dfs.seed": _gen_dfs_seed,
         "top.segments": _gen_top_segments,
         "best.pairs": _gen_best_pairs,
+        "dfs.best": _gen_dfs_best,
     }
 
     def __init__(self):
