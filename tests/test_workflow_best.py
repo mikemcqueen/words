@@ -271,6 +271,129 @@ class BestTests(unittest.TestCase):
                           "-g", "4", "top.segments")
         which.assert_not_called()
 
+    def test_exclude_classifies_hard_no_and_reports_target_status(self):
+        target = self._target()
+        self._complete_files(target)
+        excluded = self._write(self.root / "excluded.pairs", "hard,no\n")
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "exclude", "s2",
+            "-g", "4", str(excluded))
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(
+            "hard,no\n", config.classified(self.root, "no").read_text())
+        self.assertIn("Classified NO: 1 new, 1 total", stdout)
+        self.assertIn("dfs.seed out of date (hard-NO set changed)", stdout)
+
+    def test_review_subtracts_hard_no_and_opens_unfiltered_round(self):
+        target = self._target()
+        universe = target.parent
+        self._shared_inputs(universe)
+        self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        top = self._write(target / "top.segments", "", 30)
+        hard_no = config.classified(self.root, "no")
+        self._write(hard_no, "hard,no\n", 10)
+
+        with self.assertRaisesRegex(ValueError, "top.segments is empty"):
+            fx.run_wf("-d", str(self.root), "best", "review", "s2",
+                      "-g", "4")
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
+
+        self._write(top, "keep,known\nhard,no\nnew,pair\n", 30)
+        self._write(fx.slot(self.opts, ["p2", "done"]) / "p2_done.pairs",
+                    "keep,known\n")
+        with mock.patch.object(best.evaluate.P2, "prepare") as prepare:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-g", "4")
+
+        self.assertEqual(0, code, stderr)
+        bundle_name = "top.s2.m4.g4.3.r1"
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        source = bundle_dir / f"{bundle_name}.pairs"
+        self.assertEqual("keep,known\nnew,pair\n", source.read_text())
+        self.assertFalse(source.with_name(source.name + ".filtered").exists())
+        prepare.assert_called_once()
+        self.assertIn(f"review awaiting completion ({bundle_name})", stdout)
+
+        with self.assertRaisesRegex(ValueError, "already in flight"):
+            fx.run_wf("-d", str(self.root), "best", "review", "s2",
+                      "-g", "4")
+
+        archived = fx.slot(self.opts, ["p2", "done", "in"]) / source.name
+        source.rename(archived)
+        bundle_dir.rmdir()
+        with mock.patch.object(best.evaluate.P2, "prepare"):
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertTrue(
+            (fx.slot(self.opts, ["p2", "eval"])
+             / "top.s2.m4.g4.3.r2").is_dir())
+
+    def test_gen_best_pairs_accumulates_and_preserves_unchanged_mtime(self):
+        target = self._target()
+        self._complete_files(target)
+        top = self._write(target / "top.segments", "a,b\nbad,pair\n", 30)
+        old_best = self._write(
+            target / "best.pairs", "bad,pair\nx,y\n", 50)
+        self._write(config.classified(self.root, "yes"),
+                    "a,b\nbad,pair\nx,y\n", 45)
+        self._write(config.classified(self.root, "no"), "bad,pair\n", 10)
+
+        with self.assertRaisesRegex(ValueError, "-n is not valid"):
+            fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                      "-g", "4", "-n", "2", "best.pairs")
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2",
+            "-g", "4", "best.pairs")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("a,b\nx,y\n", old_best.read_text())
+        self.assertEqual("a,b\nbad,pair\n", top.read_text())
+        self.assertIn("Generated 2 best pairs (1 added, 1 dropped)", stdout)
+        self.assertIn("dfs.best out of date (best.pairs changed)", stdout)
+
+        mtime = old_best.stat().st_mtime_ns
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2",
+            "-g", "4", "best.pairs")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(mtime, old_best.stat().st_mtime_ns)
+        self.assertIn("Generated 2 best pairs (0 added, 0 dropped)", stdout)
+
+    def test_complete_selects_target_bundle_and_generates_best_pairs(self):
+        target = self._target()
+        universe = target.parent
+        self._shared_inputs(universe)
+        self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        self._write(target / "top.segments", "a,b\nnew,pair\n", 30)
+        self._write(config.classified(self.root, "yes"), "a,b\nnew,pair\n", 10)
+        bundle_name = "top.s2.m4.g4.2.r1"
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        bundle_dir.mkdir()
+
+        def complete(command_text, opts, argv):
+            self.assertEqual(("complete p2", [bundle_name]),
+                             (command_text, argv))
+            bundle_dir.rmdir()
+            self._write(
+                fx.slot(self.opts, ["p2", "done", "in"])
+                / f"{bundle_name}.pairs", "a,b\nnew,pair\n", 40)
+            return 0
+
+        with mock.patch.object(best.complete_phase.P2, "run",
+                               side_effect=complete) as run:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "complete", "s2", "-g", "4")
+
+        self.assertEqual(0, code, stderr)
+        run.assert_called_once()
+        self.assertEqual("a,b\nnew,pair\n",
+                         (target / "best.pairs").read_text())
+        self.assertIn("Generated 2 best pairs (2 added, 0 dropped)", stdout)
+        self.assertIn("s2/m4/g4: dfs.best missing", stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,12 +11,16 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from dataclasses import dataclass
 from pathlib import Path
 
-from workflow import command, config, fs, log, setops, usage
+from workflow import (
+    classify, command, config, fs, log, setops, submit, usage,
+    complete as complete_phase, eval as evaluate,
+)
 
 
 SHAPES = (
@@ -182,6 +186,21 @@ def _out_of_date(name: str, reasons: list[str], command_text: str) -> State:
 
 
 def _review_state(target: Target, top_segments: Path) -> State | None:
+    queued, evaluating, archived = _review_locations(target)
+    if queued:
+        return State(f"review submitted ({queued[0].name})",
+                     next_command=f"wf eval p2 {queued[0].name}")
+    if evaluating:
+        return State(f"review awaiting completion ({evaluating[0].name})",
+                     next_command=target.command("complete"))
+
+    newest = max((path.stat().st_mtime_ns for path in archived), default=0)
+    if newest > top_segments.stat().st_mtime_ns:
+        return None
+    return State("review needed", next_command=target.command("review"))
+
+
+def _review_locations(target: Target) -> tuple[list[Path], list[Path], list[Path]]:
     prefix = target.review_prefix
     queued_dir = config.path(target.root, ["p2", "queued"])
     queued = fs.globs(queued_dir, f"{prefix}*.pairs")
@@ -193,19 +212,9 @@ def _review_state(target: Target, top_segments: Path) -> State | None:
     if len(in_flight) > 1:
         found = ", ".join(path.name for path in in_flight)
         raise ValueError(f"multiple review bundles for {target.address}: {found}")
-    if queued:
-        return State(f"review submitted ({queued[0].name})",
-                     next_command=f"wf eval p2 {queued[0].name}")
-    if evaluating:
-        return State(f"review awaiting completion ({evaluating[0].name})",
-                     next_command=target.command("complete"))
-
     done_dir = config.path(target.root, ["p2", "done", "in"])
     archived = fs.globs(done_dir, f"{prefix}*.pairs")
-    newest = max((path.stat().st_mtime_ns for path in archived), default=0)
-    if newest > top_segments.stat().st_mtime_ns:
-        return None
-    return State("review needed", next_command=target.command("review"))
+    return queued, evaluating, archived
 
 
 def derive_state(target: Target) -> State:
@@ -435,10 +444,50 @@ def _gen_top_segments(target: Target, opts) -> None:
                 f"{target.address}/top.segments")
 
 
+def _build_best_pairs(target: Target) -> None:
+    top_segments = target.artifact("top.segments")
+    confirmed_yes = config.classified(target.root, "yes")
+    hard_no = config.classified(target.root, "no")
+    fs.raise_if_not_file(top_segments)
+    fs.raise_if_not_file(confirmed_yes)
+    fs.raise_if_not_file(hard_no)
+
+    destination = target.artifact("best.pairs")
+    before = set(destination.read_text().splitlines()) \
+        if destination.exists() else set()
+    with tempfile.TemporaryDirectory(prefix="wf-best-pairs-") as tmp:
+        scratch = Path(tmp)
+        collated = setops.merge([top_segments], scratch / "top.pairs")
+        candidates = setops.merge(
+            [collated, destination] if destination.exists() else [collated],
+            scratch / "candidates.pairs")
+        confirmed = setops.common(
+            candidates, confirmed_yes, scratch / "confirmed.pairs")
+        setops.diff(confirmed, hard_no, destination, stable_mtime=True)
+
+    after = set(destination.read_text().splitlines())
+    log.success(f"Generated {len(after)} best pairs "
+                f"({len(after - before)} added, {len(before - after)} dropped) "
+                f"→ {target.address}/best.pairs")
+    if not after:
+        log.warn("BEST PAIRS is empty; dfs.best would run without pair bonuses")
+
+
+def _gen_best_pairs(target: Target, opts) -> None:
+    if opts.force:
+        raise ValueError("-f/--force is only valid for gen dfs.seed")
+    if opts.results_dir is not None:
+        raise ValueError("-r/--results-dir is only valid for DFS stages")
+    if opts.count is not None:
+        raise ValueError("-n is not valid for gen best.pairs")
+    _build_best_pairs(target)
+
+
 class Gen(command.Action):
     STAGES = {
         "dfs.seed": _gen_dfs_seed,
         "top.segments": _gen_top_segments,
+        "best.pairs": _gen_best_pairs,
     }
 
     def __init__(self):
@@ -476,7 +525,139 @@ class Gen(command.Action):
         return 0
 
 
+def _target_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-g", type=int, metavar="N")
+    parser.add_argument("-m", type=int, default=4, metavar="N")
+    return parser
+
+
+def _action_target(action, command_text, opts, argv, positionals: int):
+    rest = action.parse(opts, argv)
+    if len(rest) < positionals or opts.g is None:
+        return usage.missing_argument(action.format_help(command_text))
+    if len(rest) > positionals:
+        return usage.invalid_argument(
+            rest[positionals], action.format_help(command_text))
+    if opts.m < 0 or opts.g < 0:
+        raise ValueError("-m and -g require non-negative integers")
+    target = one_target(opts.dir, rest[0], opts.m, opts.g)
+    fs.raise_if_not_dir(target.target_dir)
+    return target, rest
+
+
+class Exclude(command.Action):
+    def __init__(self):
+        super().__init__(summary="exclude  — classify hard-NO pairs for a target",
+                         positional="SENTENCE PAIRS-FILE")
+
+    def parser(self):
+        return _target_parser()
+
+    def run(self, command_text, opts, argv) -> int:
+        parsed = _action_target(self, command_text, opts, argv, 2)
+        if isinstance(parsed, int):
+            return parsed
+        target, rest = parsed
+        if opts.force:
+            raise ValueError("-f/--force is not valid for best exclude")
+        code = classify.NO.run("classify no", opts, [rest[1]])
+        if code == 0:
+            report(target)
+        return code
+
+
+class Review(command.Action):
+    def __init__(self):
+        super().__init__(summary="review   — submit a target for P2 review",
+                         positional="SENTENCE")
+
+    def parser(self):
+        return _target_parser()
+
+    def run(self, command_text, opts, argv) -> int:
+        parsed = _action_target(self, command_text, opts, argv, 1)
+        if isinstance(parsed, int):
+            return parsed
+        target, _ = parsed
+        if opts.force:
+            raise ValueError("-f/--force is not valid for best review")
+
+        top_segments = target.artifact("top.segments")
+        fs.raise_if_not_file(top_segments)
+        cutoff = fs.line_count(top_segments)
+        if cutoff == 0:
+            raise ValueError(
+                f"top.segments is empty; regenerate {target.artifact('dfs.seed')}")
+
+        queued, evaluating, archived = _review_locations(target)
+        in_flight = [*queued, *evaluating]
+        if in_flight:
+            location = in_flight[0]
+            raise ValueError(
+                f"review bundle already in flight: {location.name} in "
+                f"{location.parent}")
+
+        round_number = len(archived) + 1
+        review_name = (f"{target.review_prefix}{cutoff}."
+                       f"r{round_number}.pairs")
+        hard_no = config.classified(target.root, "no")
+        fs.raise_if_not_file(hard_no)
+        with tempfile.TemporaryDirectory(prefix="wf-best-review-") as tmp:
+            scratch = Path(tmp)
+            collated = setops.merge([top_segments], scratch / "top.pairs")
+            review_file = setops.diff(
+                collated, hard_no, scratch / review_name)
+            if fs.line_count(review_file) == 0:
+                raise ValueError(
+                    "no review candidates remain after hard-NO exclusions")
+            code = submit.P2.run("submit p2", opts, [str(review_file)])
+        if code != 0:
+            return code
+        code = evaluate.P2.run(
+            "eval p2", opts, ["--no-filter", review_name])
+        if code == 0:
+            report(target)
+        return code
+
+
+class Complete(command.Action):
+    def __init__(self):
+        super().__init__(summary="complete — complete target P2 review",
+                         positional="SENTENCE")
+
+    def parser(self):
+        return _target_parser()
+
+    def run(self, command_text, opts, argv) -> int:
+        parsed = _action_target(self, command_text, opts, argv, 1)
+        if isinstance(parsed, int):
+            return parsed
+        target, _ = parsed
+        queued, evaluating, _ = _review_locations(target)
+        if queued:
+            raise ValueError(
+                f"review bundle is queued: {queued[0].name}; "
+                f"run wf eval p2 {queued[0].name}")
+        if not evaluating:
+            raise ValueError(f"no review awaiting completion for {target.address}")
+
+        code = complete_phase.P2.run(
+            "complete p2", opts, [evaluating[0].name])
+        if code != 0:
+            return code
+        _build_best_pairs(target)
+        report(target)
+        return 0
+
+
 COMMAND = command.Dispatcher(
     "best     — manage BEST PAIRS workflow state",
-    {"status": Status(), "gen": Gen()},
+    {
+        "status": Status(),
+        "gen": Gen(),
+        "exclude": Exclude(),
+        "review": Review(),
+        "complete": Complete(),
+    },
 )
