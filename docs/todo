@@ -1,36 +1,26 @@
-HIGH PRIORITY >>
-----------------
-
-* complete_yes needs to keep trying notes until it can't find one, don't
-  rely on split/CHUNK size.
-
 * complete_yes move notes to backup/processed notebook once command successfully
   completes?
-
-* BUG: Complete_yes:
-  * _complete() BROKEN
-  * yes_pairs = src_pairs.parent / _replace_suffix(src_pairs.name, ".p1.yes", ".p2.yes")
-  * actual suffix is e.g. p1.90.100.yes
-  * maybe we just need to replace the rfind("p1", "p2")
-  * or regex, so it works with p1.xx.yy.yes -> p2.xx.yy.no 
-
-* evalpair: auto-execution/resumption of P1 filtering
-  * how about send a text message when it's complete?
-  * this is a big deal, long term.  any time when results are not being generated is wasted
-    and it adds up.
 
 * workflow: top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining
   90% YES? just a reminder to do something, at some point. OK to punt until i get there though.
   * this is a big deal. don't remove this. think about it.
 
-
------------------
-<< HIGH PRIORITY
-
-
 * categorize these issues into two buckets:  workflow focused, and distraction
 
 * workflow: check if file has already been submitted in p1, by looking in p1/done/...
+
+* workflow: should the `/`-delimited target address go beyond `wf best status`?
+  * `status` special-cases it: an address is a prefix of the `.wf/best` tree
+    (`s2`, `s2/m4`, `s2/m4/g4`) meaning "every target under it". The prefix
+    semantics are the point, and they are what justifies the form there.
+  * every other `best` command acts on exactly one fully-qualified target and
+    names it with `-g`/`-m` (`wf best gen s2 -g 4 dfs.seed`), which is already
+    unambiguous. They would gain the syntax without the semantics.
+  * so this is a consistency question, not a usability one: is one command
+    taking a path while the rest take flags worth unifying?
+  * `wf show` walks space-separated static layout parts consumed by
+    layout_args, which is a different kind of argument; probably leave it.
+  * see plans/integrate-best-pairs.md (nutrimatic) for the design.
 
 * workflow: move "done" files to //dump? (or just do it manually, or have "manual" command
   to execute (e.g. archive p1)
@@ -57,6 +47,11 @@ HIGH PRIORITY >>
 * commmon thinking off, logprob parsing, system-prompt handling code between ask_openai and evalpair
 
 * http/https requirement(?), local LAN hosts (args.local?), auto-port determination
+
+* evalpair: auto-execution/resumption of P1 filtering
+  * how about send a text message when it's complete?
+  * this is a big deal, long term.  any time when results are not being generated is wasted
+    and it adds up.
 
 * openai-specific max_tokens stuff (low pri)
 
@@ -136,6 +131,27 @@ HIGH PRIORITY >>
   "anchored" bias but this isn't an anchored diff, so the new_* results look wrong.
 
 --less important--
+
+* packaging: investigate renaming src -> words.
+  * `src` is the import name claimed venv-wide in site-packages, and it's the most generic
+    directory name in software. any other project installing a package called `src` would
+    shadow it. theoretical today (i control the venv), but it's a landmine.
+  * the project is already called `words` in setup.py `name=` and the repo dir. the
+    distribution name and the import name just disagree, which is legal but confusing.
+  * usual convention is src/ CONTAINS the package rather than BEING it: src/words/, so
+    `import words` and src/ is invisible to imports.
+  * cost: ~46 reference lines across 21 files (workflow/, misc/, tests/, src/ itself),
+    mostly a mechanical sed. three spots need real thought:
+    * setup.py Extension("src._compare_native") -> words._compare_native, needs a rebuild
+      of the .so, not just a move.
+    * mini.sh uses `python -m src.evalpair`; juniper.sh/juniper_s8.sh use `python
+      src/evalpair.py` (path form).
+    * tests/ has three files importing src.
+  * not urgent. it's a smell, not a bug. do it when it starts bothering me.
+
+* the shell runners (juniper.sh, juniper_s8.sh, mini.sh) call bare `python`, so they only
+  work if the venv is activated. wf calls ../.torch/bin/python explicitly and doesn't care.
+  point them at the venv interpreter too next time i touch them.
 
 * PERF: don't calc so much shit upfront in _score_any_yes? looks minimal, one bitwise vector &, one
   countbits.

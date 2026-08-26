@@ -17,5 +17,6 @@ ext_modules = [
 setup(
     name="words",
     version="0.0.0",
+    packages=["src", "workflow", "workflow.steps"],
     ext_modules=ext_modules,
 )

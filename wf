@@ -2,5 +2,10 @@
 set -euo pipefail
 
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
-cd "$here"
-exec "$here/../.torch/bin/python" -m workflow.wf "$@"
+py="$here/../.torch/bin/python"
+[[ -x "$py" ]] || { echo "wf: venv interpreter not found: $py" >&2; exit 1; }
+
+# Put the repo on the import path rather than chdir'ing into it, so relative
+# path arguments still resolve against the caller's cwd. -P keeps the caller's
+# cwd off sys.path so a stray workflow/ or src/ there can't shadow ours.
+exec env PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" "$py" -P -m workflow.wf "$@"
