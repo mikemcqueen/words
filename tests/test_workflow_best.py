@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import best, config
+from workflow import config
+from workflow.best import commands, generate, state
 
 
 class BestTests(unittest.TestCase):
@@ -29,8 +30,8 @@ class BestTests(unittest.TestCase):
         return path
 
     def _shared_inputs(self, universe: Path) -> tuple[Path, Path, Path]:
-        index = self.best / "idx" / best.INDEX_NAME
-        dictionary = self.best / "dict" / best.DICTIONARY_NAME
+        index = self.best / "idx" / generate.INDEX_NAME
+        dictionary = self.best / "dict" / generate.DICTIONARY_NAME
         seed = universe / "seed.idx2.85.15.pairs"
         self._write(index, "index\n")
         self._write(dictionary, "words\n")
@@ -170,7 +171,7 @@ class BestTests(unittest.TestCase):
         universe = self.best / "s2" / "m4"
         universe.mkdir(parents=True)
         _, _, seed = self._shared_inputs(universe)
-        (self.best / "idx" / best.INDEX_NAME).unlink()
+        (self.best / "idx" / generate.INDEX_NAME).unlink()
         results = self.root / "results"
         results.mkdir()
         target = universe / "g4"
@@ -181,7 +182,7 @@ class BestTests(unittest.TestCase):
             kwargs["stdout"].write("9 alpha,beta\n8 gamma,delta\n")
             return mock.Mock(returncode=0)
 
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"):
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"):
             with self.assertRaises(FileNotFoundError):
                 fx.run_wf("-d", str(self.root), "best", "gen", "s2",
                           "-g", "4", "-r", str(results), "dfs.seed")
@@ -191,10 +192,10 @@ class BestTests(unittest.TestCase):
                           "-g", "4", "-r", str(results), "dfs.seed")
         self.assertFalse(target.exists())
 
-        self._write(self.best / "idx" / best.INDEX_NAME, "index\n")
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(best.subprocess, "run", side_effect=run), \
-                mock.patch.object(best.time, "monotonic", side_effect=[0, 2]):
+        self._write(self.best / "idx" / generate.INDEX_NAME, "index\n")
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run), \
+                mock.patch.object(generate.time, "monotonic", side_effect=[0, 2]):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "-f", "best", "gen", "s2",
                 "-g", "4", "-r", str(results), "dfs.seed")
@@ -215,11 +216,11 @@ class BestTests(unittest.TestCase):
 
         def fail(argv, **kwargs):
             kwargs["stdout"].write("truncated\n")
-            raise best.subprocess.CalledProcessError(1, argv)
+            raise generate.subprocess.CalledProcessError(1, argv)
 
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(best.subprocess, "run", side_effect=fail):
-            with self.assertRaises(best.subprocess.CalledProcessError):
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=fail):
+            with self.assertRaises(generate.subprocess.CalledProcessError):
                 fx.run_wf("-d", str(self.root), "best", "gen", "s2",
                           "-g", "4", "-r", str(results), "dfs.seed")
         self.assertEqual(rendered, link.resolve())
@@ -240,8 +241,8 @@ class BestTests(unittest.TestCase):
             kwargs["stdout"].write("alpha,beta\ngamma,delta\n")
             return mock.Mock(returncode=0)
 
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(best.subprocess, "run", side_effect=run):
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2",
                 "-g", "4", "top.segments")
@@ -272,15 +273,15 @@ class BestTests(unittest.TestCase):
             kwargs["stdout"].write("alpha,beta\n")
             return mock.Mock(returncode=0)
 
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(best.subprocess, "run", side_effect=run):
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run):
             code, _, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-g", "4",
                 "top.segments")
             self.assertEqual(0, code, stderr)
             # A dfs.seed rerun that exhausts the search renames its target
             # fresh, so top.segments goes stale on an identical input.
-            for path in (top, best._stamp(top)):
+            for path in (top, state._stamp(top)):
                 os.utime(path, (30, 30))
             os.utime(dfs_seed, (35, 35))
             _, stdout, _ = fx.run_wf(
@@ -344,9 +345,9 @@ class BestTests(unittest.TestCase):
             kwargs["stdout"].write("9 alpha,beta\n8 gamma,delta\n")
             return mock.Mock(returncode=0)
 
-        with mock.patch.object(best.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(best.subprocess, "run", side_effect=run), \
-                mock.patch.object(best.time, "monotonic", side_effect=[0, 3]):
+        with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run), \
+                mock.patch.object(generate.time, "monotonic", side_effect=[0, 3]):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2",
                 "-g", "4", "-r", str(results), "-n", "25", "dfs.best")
@@ -364,7 +365,7 @@ class BestTests(unittest.TestCase):
         self.assertIn("Generated 2 results in 3s", stdout)
         self.assertIn("s2/m4/g4: up to date", stdout)
 
-        with mock.patch.object(best.shutil, "which") as which:
+        with mock.patch.object(generate.shutil, "which") as which:
             with self.assertRaisesRegex(ValueError,
                                         "only valid for gen dfs.seed"):
                 fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
@@ -374,7 +375,7 @@ class BestTests(unittest.TestCase):
     def test_gen_top_segments_rejects_force_before_running(self):
         target = self._target()
         self._write(target / "dfs.seed", "9 alpha,beta\n")
-        with mock.patch.object(best.shutil, "which") as which:
+        with mock.patch.object(generate.shutil, "which") as which:
             with self.assertRaisesRegex(ValueError, "only valid for gen dfs.seed"):
                 fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
                           "-g", "4", "top.segments")
@@ -412,7 +413,7 @@ class BestTests(unittest.TestCase):
         self._write(top, "keep,known\nhard,no\nnew,pair\n", 30)
         self._write(fx.slot(self.opts, ["p2", "done"]) / "p2_done.pairs",
                     "keep,known\n")
-        with mock.patch.object(best.evaluate.P2, "prepare") as prepare:
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "review", "s2", "-g", "4")
 
@@ -432,7 +433,7 @@ class BestTests(unittest.TestCase):
         archived = fx.slot(self.opts, ["p2", "done", "in"]) / source.name
         source.rename(archived)
         bundle_dir.rmdir()
-        with mock.patch.object(best.evaluate.P2, "prepare"):
+        with mock.patch.object(commands.evaluate.P2, "prepare"):
             code, _, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "review", "s2", "-g", "4")
         self.assertEqual(0, code, stderr)
@@ -491,7 +492,7 @@ class BestTests(unittest.TestCase):
                 / f"{bundle_name}.pairs", "a,b\nnew,pair\n", 40)
             return 0
 
-        with mock.patch.object(best.complete_phase.P2, "run",
+        with mock.patch.object(commands.complete_phase.P2, "run",
                                side_effect=complete) as run:
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "complete", "s2", "-g", "4")
