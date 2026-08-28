@@ -9,8 +9,34 @@ from workflow import (
 )
 from workflow.best import generate
 from workflow.best.state import (
-    one_target, report, review_locations, targets,
+    check_letter_set, one_target, report, review_locations, targets,
 )
+
+
+def _add_letter_set(parser: argparse.ArgumentParser) -> None:
+    """The two spellings of one working bag, of which exactly one is required.
+
+    Both are ordinary optional flags, checked by hand beside the checks -g and
+    -m already get. Argparse's required mutually exclusive group would report
+    the failure against a bare parser carrying no prog -- naming wf.py, without
+    the subcommand or the positionals -- and exit around log.error, where every
+    other required argument here gets the command's own help.
+    """
+    parser.add_argument("-o", metavar="LETTERS",
+                        help="letter set: use only these letters")
+    parser.add_argument("-u", metavar="LETTERS",
+                        help="letter set: the sentence less these letters")
+
+
+def _letter_set(opts) -> str | None:
+    """The letter-set directory name -o/-u selects, or None if neither did."""
+    if opts.o is not None and opts.u is not None:
+        raise ValueError("-o and -u name one letter set; give exactly one")
+    if opts.o is not None:
+        return f"o-{opts.o}"
+    if opts.u is not None:
+        return f"u-{opts.u}"
+    return None
 
 
 class Status(command.Action):
@@ -32,6 +58,7 @@ class Status(command.Action):
             # bundles for one target -- must not cost the operator the rest
             # of the listing. status is the command they run to find out.
             try:
+                check_letter_set(target)
                 report(target)
             except (OSError, ValueError) as e:
                 log.error(f"{target.address}: {e}")
@@ -62,6 +89,7 @@ class Gen(command.Action):
 
     def parser(self):
         parser = argparse.ArgumentParser(add_help=False)
+        _add_letter_set(parser)
         parser.add_argument("-g", type=int, metavar="COUNT",
                             help="number of segments")
         parser.add_argument("-m", type=int, default=4, metavar="LENGTH",
@@ -76,7 +104,8 @@ class Gen(command.Action):
 
     def run(self, command_text, opts, argv) -> int:
         rest = self.parse(opts, argv)
-        if len(rest) < 2 or opts.g is None:
+        letter_set = _letter_set(opts)
+        if len(rest) < 2 or opts.g is None or letter_set is None:
             return usage.missing_argument(self.format_help(command_text))
         if len(rest) > 2:
             return usage.invalid_argument(rest[2],
@@ -89,14 +118,22 @@ class Gen(command.Action):
         if opts.count is not None and opts.count < 0:
             raise ValueError("-n requires a non-negative integer")
 
-        target = one_target(opts.dir, sentence, opts.m, opts.g)
-        if not target.target_dir.exists():
-            if stage == "dfs.seed" and not opts.force:
-                raise FileNotFoundError(
-                    f"target directory does not exist: {target.target_dir}; "
-                    "use -f to force creation")
+        target = one_target(opts.dir, sentence, letter_set, opts.m, opts.g)
+        if stage == "dfs.seed":
+            # Before anything is created, and gated on the same condition
+            # status gates it on, so the label status refuses is the label gen
+            # refuses.
+            check_letter_set(target)
+        missing = next(
+            (path for path in (target.letter_set_dir, target.universe_dir,
+                               target.target_dir) if not path.exists()), None)
+        if missing is not None:
             if stage != "dfs.seed":
-                fs.raise_if_not_dir(target.target_dir)
+                fs.raise_if_not_dir(missing)
+            elif not opts.force:
+                raise FileNotFoundError(
+                    f"directory does not exist: {missing}; "
+                    "use -f to force creation")
         self.STAGES[stage](target, opts)
         report(target)
         return 0
@@ -104,6 +141,7 @@ class Gen(command.Action):
 
 def _target_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
+    _add_letter_set(parser)
     parser.add_argument("-g", type=int, metavar="N")
     parser.add_argument("-m", type=int, default=4, metavar="N")
     return parser
@@ -111,14 +149,15 @@ def _target_parser() -> argparse.ArgumentParser:
 
 def _action_target(action, command_text, opts, argv, positionals: int):
     rest = action.parse(opts, argv)
-    if len(rest) < positionals or opts.g is None:
+    letter_set = _letter_set(opts)
+    if len(rest) < positionals or opts.g is None or letter_set is None:
         return usage.missing_argument(action.format_help(command_text))
     if len(rest) > positionals:
         return usage.invalid_argument(
             rest[positionals], action.format_help(command_text))
     if opts.m < 1 or opts.g < 1:
         raise ValueError("-m and -g require positive integers")
-    target = one_target(opts.dir, rest[0], opts.m, opts.g)
+    target = one_target(opts.dir, rest[0], letter_set, opts.m, opts.g)
     fs.raise_if_not_dir(target.target_dir)
     return target, rest
 
