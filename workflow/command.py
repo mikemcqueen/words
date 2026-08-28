@@ -58,9 +58,11 @@ class Dispatcher(Command):
 class Action(Command):
     """Does the work itself:  wf submit p1 FILE"""
 
-    def __init__(self, summary: str, positional: str | None = None):
+    def __init__(self, summary: str, positional: str | None = None,
+                 positional_help: tuple[tuple[str, str], ...] = ()):
         super().__init__(summary)
         self.positional = positional
+        self.positional_help = positional_help
 
     def parser(self):
         """An argparse parser for this command's own flags, or None."""
@@ -77,7 +79,7 @@ class Action(Command):
 
     def format_help(self, command) -> str:
         return usage.format_help(command, self.summary, self.parser(),
-                                 self.positional)
+                                 self.positional, self.positional_help)
 
     def show_help(self, command, opts, argv) -> int:
         text = self.format_help(command)

@@ -26,15 +26,18 @@ def _global_opts_section() -> str:
 def format_help(command: str | None = None,
                 description: str | None = None,
                 local_parser: argparse.ArgumentParser | None = None,
-                positional: str | None = None) -> str:
+                positional: str | None = None,
+                positional_help: tuple[tuple[str, str], ...] = ()) -> str:
     prog = f"wf {command}" if command else "wf"
     parents = [make_global_parser()]
     if local_parser is not None:
         parents.append(local_parser)
     p = argparse.ArgumentParser(prog=prog, description=description,
                                 parents=parents, add_help=False)
+    for name, help_text in positional_help:
+        p.add_argument(name.lower(), metavar=name, help=help_text)
     usage = p.format_usage().rstrip()
-    if positional is not None:
+    if positional is not None and not positional_help:
         usage += f" {positional}"
     _, _, after_usage = p.format_help().partition("\n\n")
     return usage + "\n\n" + after_usage

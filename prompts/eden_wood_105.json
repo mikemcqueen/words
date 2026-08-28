@@ -1,6 +1,0 @@
-[
-    {
-        "id": "prompt_1",
-        "text": "Think of '{PAIR}' as a clue. Does it point to something recognizable? The words may work together as a description, or each word may contribute separately to the hint. Answer with YES or NO only. Do not fabricate — if nothing comes to mind, answer NO. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist."
-    }
-]

@@ -60,6 +60,23 @@ class BestTests(unittest.TestCase):
         dfs_best = self._write(results / "dfs.best.out", "1 a b\n", 60)
         (target / "dfs.best").symlink_to(dfs_best)
 
+    def test_gen_help_describes_options_and_positionals(self):
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "help")
+
+        self.assertEqual(0, code, stderr)
+        self.assertRegex(
+            stdout, r"SENTENCE\s+sentence identifier under \.wf/best")
+        self.assertRegex(stdout, r"STAGE\s+artifact to generate: dfs\.seed")
+        self.assertIn("-g COUNT", stdout)
+        self.assertIn("number of segments", stdout)
+        self.assertIn("-m LENGTH", stdout)
+        self.assertIn("min word length", stdout)
+        self.assertIn("-n COUNT", stdout)
+        self.assertIn("maximum results to output", stdout)
+        rendered = "".join(line.strip() for line in stdout.splitlines())
+        self.assertIn("dfs-anagrams and top-segments", rendered)
+
     def test_init_builds_static_crown_and_show_points_to_status(self):
         self.assertTrue((self.best / "idx").is_dir())
         self.assertTrue((self.best / "dict").is_dir())

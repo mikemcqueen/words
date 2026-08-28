@@ -11,3 +11,5 @@ words/**
 wt/**
 __pycache__/
 src/_compare_native*.so
+/prompts/sys
+/prompts/old

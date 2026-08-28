@@ -49,14 +49,29 @@ class Gen(command.Action):
 
     def __init__(self):
         super().__init__(summary="gen      — generate one BEST PAIRS artifact",
-                         positional="SENTENCE STAGE")
+                         positional="SENTENCE STAGE",
+                         positional_help=(
+                             ("SENTENCE", "sentence identifier under .wf/best "
+                              "(for example, s2)"),
+                             ("STAGE", "artifact to generate: dfs.seed "
+                              "(provisional DFS results), top.segments "
+                              "(frequent pairs from dfs.seed), best.pairs "
+                              "(confirmed reviewed pairs), or dfs.best "
+                              "(final DFS results using best.pairs)"),
+                         ))
 
     def parser(self):
         parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("-g", type=int, metavar="N")
-        parser.add_argument("-m", type=int, default=4, metavar="N")
-        parser.add_argument("-r", "--results-dir", type=Path, metavar="DIR")
-        parser.add_argument("-n", dest="count", type=int, metavar="N")
+        parser.add_argument("-g", type=int, metavar="COUNT",
+                            help="number of segments")
+        parser.add_argument("-m", type=int, default=4, metavar="LENGTH",
+                            help="min word length")
+        parser.add_argument("-r", "--results-dir", type=Path, metavar="DIR",
+                            help="DFS output directory (default: results)")
+        parser.add_argument(
+            "-n", dest="count", type=int, metavar="COUNT",
+            help="maximum results to output (for dfs-anagrams and "
+                 "top-segments)")
         return parser
 
     def run(self, command_text, opts, argv) -> int:
@@ -75,10 +90,13 @@ class Gen(command.Action):
             raise ValueError("-n requires a non-negative integer")
 
         target = one_target(opts.dir, sentence, opts.m, opts.g)
-        if not target.target_dir.exists() and not (
-            stage == "dfs.seed" and opts.force
-        ):
-            fs.raise_if_not_dir(target.target_dir)
+        if not target.target_dir.exists():
+            if stage == "dfs.seed" and not opts.force:
+                raise FileNotFoundError(
+                    f"target directory does not exist: {target.target_dir}; "
+                    "use -f to force creation")
+            if stage != "dfs.seed":
+                fs.raise_if_not_dir(target.target_dir)
         self.STAGES[stage](target, opts)
         report(target)
         return 0

@@ -1,6 +1,0 @@
-[
-    {
-        "id": "prompt_1",
-        "text": "Think of '{PAIR}' as a clue. Does it point to an identifiable thing or concept? The words may serve as a label or indirect clue for something. Answer with YES or NO only. Do not speculate or guess — if nothing comes to mind, answer NO. Be especially wary of inventing product names, brand names, business names, or technical terms that may not actually exist."
-    }
-]

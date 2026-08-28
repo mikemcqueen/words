@@ -1,6 +1,0 @@
-[
-    {
-        "id": "prompt_1",
-        "text": "Think of '{PAIR}' as a clue. Does it point to something recognizable? Consider whether the words serve as a name, description, or hint pointing to an identifiable thing or concept. Pointing to a well-known type or category also counts. Answer with YES or NO only. Do not speculate or guess — if you cannot identify what the words point to, answer NO. Be especially wary of inventing product names, brand names, or technical terms that may not actually exist."
-    }
-]
