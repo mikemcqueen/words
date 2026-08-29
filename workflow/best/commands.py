@@ -4,13 +4,13 @@ import tempfile
 from pathlib import Path
 
 from workflow import (
-    classify, command, config, fs, log, setops, submit, usage,
+    classify, command, config, fs, log, names, notes, setops, submit, usage,
     complete as complete_phase, eval as evaluate,
 )
 from workflow.best import generate
 from workflow.best.state import (
-    check_letter_set, one_target, report, review_locations, targets,
-    yes_pairs_argv,
+    check_letter_set, eval_p2_command, one_target, report, review_locations,
+    review_rounds, targets, yes_pairs_argv,
 )
 
 
@@ -215,7 +215,10 @@ class Review(command.Action):
                 f"review bundle already in flight: {location.name} in "
                 f"{location.parent}")
 
-        round_number = len(archived) + 1
+        # max + 1, not count + 1: an archive with a gap in it -- a round
+        # deleted, or never archived -- would otherwise render a name that
+        # already exists.
+        round_number = max(review_rounds(target, archived), default=0) + 1
         review_name = (f"{target.review_prefix}{cutoff}."
                        f"r{round_number}.pairs")
         hard_no = config.classified(target.root, "no")
@@ -239,6 +242,55 @@ class Review(command.Action):
         return code
 
 
+class Notes(command.Action):
+    """Re-raise the notes of the target's current review round.
+
+    The notes are what the operator actually works in, and nothing records
+    them -- so deleting them used to mean pushing the bundle backwards through
+    the queue to reach a derivation that was never stateful. This resolves
+    which round is current and hands the primitive the same two inputs
+    `best review` gave it.
+    """
+
+    def __init__(self):
+        super().__init__(summary="notes    — recreate a target's review notes",
+                         positional="SENTENCE")
+
+    def parser(self):
+        return _target_parser()
+
+    def run(self, command_text, opts, argv) -> int:
+        parsed = _action_target(self, command_text, opts, argv, 1)
+        if isinstance(parsed, int):
+            return parsed
+        target, _ = parsed
+        queued, evaluating, archived = review_locations(target)
+        if queued:
+            # Notes for this round have never existed, and making them is the
+            # eval this bundle is still waiting for -- which moves state, so it
+            # is named rather than run.
+            raise ValueError(
+                f"review bundle is queued: {queued[0].name}; "
+                f"run {eval_p2_command(target, queued[0].name)}")
+        if evaluating:
+            bundle_name = evaluating[0].name
+        else:
+            rounds = review_rounds(target, archived)
+            if not rounds:
+                raise ValueError(
+                    f"no review to recreate notes for {target.address}")
+            # -f is the primitive's gate, not this one's: it is what says
+            # "work from the archived round", and the primitive owns both the
+            # refusal and the caveats that come with it.
+            bundle_name = names.queue_stem(
+                "p2", rounds[max(rounds)].name)
+        code = notes.P2.run("notes p2", opts,
+                            [bundle_name, *yes_pairs_argv(target)])
+        if code == 0:
+            report(target)
+        return code
+
+
 class Complete(command.Action):
     def __init__(self):
         super().__init__(summary="complete — complete target P2 review",
@@ -254,11 +306,9 @@ class Complete(command.Action):
         target, _ = parsed
         queued, evaluating, _ = review_locations(target)
         if queued:
-            eval_command = " ".join(["wf", "eval", "p2", queued[0].name,
-                                     *yes_pairs_argv(target)])
             raise ValueError(
                 f"review bundle is queued: {queued[0].name}; "
-                f"run {eval_command}")
+                f"run {eval_p2_command(target, queued[0].name)}")
         if not evaluating:
             raise ValueError(f"no review awaiting completion for {target.address}")
 
@@ -278,6 +328,7 @@ COMMAND = command.Dispatcher(
         "gen": Gen(),
         "exclude": Exclude(),
         "review": Review(),
+        "notes": Notes(),
         "complete": Complete(),
     },
 )

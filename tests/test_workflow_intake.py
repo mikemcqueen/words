@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config, eval as evaluate
+from workflow import config, eval as evaluate, names
 
 
 class P2QueueContractTests(unittest.TestCase):
@@ -138,6 +138,64 @@ class P2QueueContractTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             self._eval("stray.txt")
         self.assertIn("queue shape", str(caught.exception))
+
+
+class NameCharacterTests(unittest.TestCase):
+    """Names are checked at both ends of the queue contract.
+
+    A bundle name is inherited from a submitted filename and then interpolated
+    into globs, so a name carrying `*?[]` stops being a name and becomes a
+    pattern. The check is an allowlist, which is also what keeps whitespace out
+    of the arguments `notes` hands to `split.sh` and `note`.
+    """
+
+    BAD = ["a[1]", "top.s2 m4", "a*b", "x?y"]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.opts, _ = fx.make_wf(self.root)
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+
+    def test_a_submitted_filename_is_checked_before_it_becomes_an_artifact(self):
+        for name in self.BAD:
+            with self.subTest(name=name):
+                src = fx.write_pairs(self.outside / f"{name}.pairs", ["a,b"])
+                with self.assertRaises(ValueError) as caught:
+                    fx.run_wf("-d", str(self.root), "submit", "p2", str(src))
+                self.assertIn("may use only", str(caught.exception))
+                # Nothing reached the queue.
+                self.assertEqual(
+                    [], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
+
+    def test_a_bundle_name_is_checked_when_it_is_rendered_back(self):
+        # The half a submit-time check alone would leave open: a positional
+        # nobody submitted, globbing its way onto a file it does not name.
+        for name in self.BAD:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError) as caught:
+                    names.queue_names("p2", name)
+                self.assertIn("may use only", str(caught.exception))
+
+    def test_a_space_is_named_as_a_space_rather_than_quoted(self):
+        with self.assertRaises(ValueError) as caught:
+            names.queue_names("p2", "top.s2 m4")
+        self.assertIn("contains space", str(caught.exception))
+
+    def test_the_names_the_workflow_actually_uses_still_pass(self):
+        for name in ["s1.2.aa_third_p3_juniper.qwen35",
+                     "top.s2.m4.g4.u-that.1000",
+                     "s6.txt.pairs_third.90.10",
+                     "idx.2.s9.m4.remain"]:
+            with self.subTest(name=name):
+                self.assertEqual(name, names.check_name(name, "bundle name"))
+
+    def test_an_empty_name_is_still_rejected(self):
+        with self.assertRaises(ValueError) as caught:
+            names.queue_names("p2", "")
+        self.assertIn("may not be empty", str(caught.exception))
 
 
 class ClassifyTests(unittest.TestCase):

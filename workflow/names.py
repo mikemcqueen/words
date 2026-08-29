@@ -20,10 +20,43 @@
 # and p1's keeps its name forever. Nothing here takes a name apart -- where a
 # bundle name is needed, it is the input and the file is found by prefix.
 
+import re
+
 SEP = "."
 
 CLASSIFIERS = ("p1", "p2", "p3")
 KINDS = ("pairs", "yes", "no", "jsonl")
+
+# What a name may be spelled with.
+#
+# An allowlist, and deliberately narrower than the filesystem's. A bundle name
+# is inherited from a submitted filename and then interpolated into globs --
+# `queue_names` here, `review_prefix` in best/state.py -- so a name carrying
+# `*?[]` stops being a name and becomes a pattern: `a[1].pairs` would match
+# `a1.pairs` and never find itself. The same names also reach `split.sh` and
+# `note` as subprocess arguments, which is the other reason whitespace is out.
+#
+NAME_CHARS = re.compile(r"[a-z0-9.-]+")
+
+
+def check_name(name: str, label: str) -> str:
+    """Reject a name that cannot be spelled safely. Returns it unchanged.
+
+    Applied at both ends of the contract -- `queue_name` where an outside file
+    becomes a repo artifact, and `queue_names` where a bundle name is rendered
+    back into filenames -- because either end alone leaves the other open. A
+    check only at submission still lets a mistyped positional glob its way onto
+    a file that is not the one named.
+    """
+    if not name:
+        raise ValueError(f"{label} may not be empty")
+    if not NAME_CHARS.fullmatch(name):
+        bad = sorted({c for c in name if not NAME_CHARS.fullmatch(c)})
+        spelled = ", ".join("space" if c == " " else repr(c) for c in bad)
+        raise ValueError(
+            f"{label} {name!r} contains {spelled}; names may use only "
+            f"letters, digits, '.', '_' and '-'. Rename the file and retry.")
+    return name
 
 
 def _check(value: str, allowed: tuple[str, ...], label: str) -> str:
@@ -88,6 +121,7 @@ def queue_name(phase: str, name: str) -> str:
     what keeps an advanced `*.p1.yes` from being restamped as an unclassified
     candidate list.
     """
+    check_name(name, "submitted filename")
     suffixes = _queue_suffixes(phase)
     if any(name.endswith(suffix) for suffix in suffixes):
         return name
@@ -114,6 +148,23 @@ def queue_stem(phase: str, name: str) -> str:
             return stem
     shapes = ", ".join(f"*{suffix}" for suffix in _queue_suffixes(phase))
     raise ValueError(f"{name!r} is not a {phase} queue shape (expected {shapes})")
+
+
+def queue_names(phase: str, bundle_name: str) -> tuple[str, ...]:
+    """The exact filenames one bundle's source artifact can have.
+
+    `queue_globs` finds *a* phase's queued artifact, which is what a slot
+    holding one bundle's work can be asked for. A slot holding many side by
+    side -- the queue itself, or done/in -- has to be asked for *this*
+    bundle's, and by exact name: a prefix would let `...r1.pairs` answer for
+    `...r10.pairs`. Rendered off the same table, so the shapes stay one list.
+
+    These are handed to `fs.globs` by the caller, which is only safe because
+    `check_name` has already ruled out the characters a glob would read.
+    """
+    check_name(bundle_name, "bundle name")
+    return tuple(f"{bundle_name}{suffix}"
+                 for suffix in _queue_suffixes(phase))
 
 
 def queue_globs(phase: str) -> tuple[str, ...]:

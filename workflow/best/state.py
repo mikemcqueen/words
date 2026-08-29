@@ -379,16 +379,53 @@ def yes_pairs_argv(target: Target) -> list[str]:
     return ["--yes-pairs", str(best_pairs)] if best_pairs.is_file() else []
 
 
-def _eval_p2_command(target: Target, queued_name: str) -> str:
+def eval_p2_command(target: Target, queued_name: str) -> str:
+    """The `wf eval p2 ...` a queued review has to be run through.
+
+    Every place that names it -- what `status` prints, and the refusals
+    `complete` and `notes` raise -- renders it here, so the flags cannot drift
+    between the message the operator reads and the command they then type.
+    """
     return " ".join(["wf", "eval", "p2", queued_name,
                      *yes_pairs_argv(target)])
+
+
+def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
+    """The target's completed review rounds, by ordinal.
+
+    Takes the list `review_locations` already returned, so no second scan.
+
+    This is the one place a name is taken apart, against names.py's rule, and
+    it is admissible because the pattern is exactly what `Review` renders and
+    the only thing recovered is the ordinal -- the dimension `Review` has to
+    read back to render the next one. Selection is by that integer and not by
+    sort order or mtime, because `r10` sorts before `r2` and an archive can be
+    touched by anything. A sibling the pattern does not admit is rejected
+    rather than guessed at: it is either a name nothing here rendered, or a
+    prefix collision, and both are worth stopping for.
+    """
+    pattern = re.compile(
+        re.escape(target.review_prefix) + r"\d+\.r([1-9]\d*)\.pairs")
+    rounds: dict[int, Path] = {}
+    for path in archived:
+        match = pattern.fullmatch(path.name)
+        if match is None:
+            raise ValueError(
+                f"{path.name} is not a review round of {target.address}")
+        ordinal = int(match.group(1))
+        if ordinal in rounds:
+            raise ValueError(
+                f"two review rounds numbered r{ordinal} for "
+                f"{target.address}: {rounds[ordinal].name}, {path.name}")
+        rounds[ordinal] = path
+    return rounds
 
 
 def _review_state(target: Target, top_segments: Path) -> State | None:
     queued, evaluating, archived = review_locations(target)
     if queued:
         return State(f"review submitted ({queued[0].name})",
-                     next_command=_eval_p2_command(target, queued[0].name))
+                     next_command=eval_p2_command(target, queued[0].name))
     if evaluating:
         return State(f"review awaiting completion ({evaluating[0].name})",
                      next_command=target.command("complete"))

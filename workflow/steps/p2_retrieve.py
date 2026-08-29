@@ -17,12 +17,10 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import bundle, fs, log
+from workflow import bundle, fs, log, notes
 
 
 NAME = "retrieve"
-
-MAX_NOTE_PARTS = 26
 
 
 def enex_dir(ctx) -> Path:
@@ -45,18 +43,15 @@ def is_done(ctx) -> bool:
     return enex_dir(ctx).is_dir()
 
 
-def _title(source: Path, index: int) -> str:
-    return f"{source.name}.a{chr(ord('a') + index)}"
-
-
 def run_step(ctx) -> None:
     source = bundle.evaluated(ctx)
     staging = partial_dir(ctx)
     staging.mkdir(exist_ok=True)
 
     fetched = 0
-    for index in range(MAX_NOTE_PARTS):
-        title = _title(source, index)
+    # The titles creation rendered, probed in the order it made them.
+    for index in range(notes.MAX_PARTS):
+        title = notes.title(source, index)
         part = staging / f"{title}.enex"
         if part.exists():
             fetched += 1

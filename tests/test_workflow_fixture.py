@@ -15,8 +15,7 @@ from pathlib import Path
 
 from src.filter import filter_results
 from tests import wf_fixture as fx
-from workflow import bundle, config, init, names
-from workflow import eval as evaluate
+from workflow import bundle, config, init, names, notes
 from workflow.context import Context
 
 
@@ -533,13 +532,13 @@ class BundleLifecycleTests(unittest.TestCase):
             ["alpha,two", "mid,three"])
 
         # `note --create --production` and split.sh are external side effects.
-        with mock.patch.object(evaluate, "_split_pairs", return_value=[]), \
-             mock.patch.object(evaluate, "_make_notes") as make_notes:
+        with mock.patch.object(notes, "split", return_value=[]), \
+             mock.patch.object(notes, "create") as create:
             code, _, stderr = fx.run_wf(
                 "-d", str(self.root), "eval", "p2", bundle_name)
 
         self.assertEqual(0, code, stderr)
-        make_notes.assert_called_once()
+        create.assert_called_once()
         bundle_dir = Context(
             root=self.opts.dir, phase="p2",
             bundle_name=bundle_name).bundle_dir
@@ -557,13 +556,13 @@ class BundleLifecycleTests(unittest.TestCase):
 
         for bad in [self.root / "no-such.pairs", self.root]:
             with self.subTest(bad=bad):
-                with mock.patch.object(evaluate, "_split_pairs", return_value=[]), \
-                     mock.patch.object(evaluate, "_make_notes") as make_notes:
+                with mock.patch.object(notes, "split", return_value=[]), \
+                     mock.patch.object(notes, "create") as create:
                     with self.assertRaises((OSError, ValueError)):
                         fx.run_wf("-d", str(self.root), "eval", "p2",
                                   bundle_name, "--yes-pairs", str(bad))
 
-                make_notes.assert_not_called()
+                create.assert_not_called()
                 # The queue still holds the source a retry needs, and no
                 # half-opened bundle stands in that retry's way.
                 self.assertTrue(queued.is_file())
