@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import bundle, names
+from workflow import bundle, names, notes
 from workflow.context import Context
 from workflow.steps import p2_extract, p2_retrieve
 
@@ -277,6 +277,167 @@ class P2RecipeTests(unittest.TestCase):
             self.BUNDLE_NAME, "p2", "no")
         self.assertEqual(["yankee,four", "zeta,one"],
                          published.read_text().splitlines())
+
+
+class NoteNamingTests(unittest.TestCase):
+    """The one rendering both ends of the note contract read."""
+
+    def test_creation_and_retrieval_render_the_same_titles(self):
+        source = Path("/tmp/s6.txt.pairs_third.90.10.p1.yes")
+        paths = notes.part_paths(Path("/tmp"), source, 3)
+        self.assertEqual([f"{source.name}.aa", f"{source.name}.ab",
+                          f"{source.name}.ac"],
+                         [path.name for path in paths])
+        # What retrieve probes for is what creation named.
+        self.assertEqual([path.name for path in paths],
+                         [notes.title(source, i) for i in range(3)])
+
+    def test_a_split_too_wide_to_name_is_refused(self):
+        source = Path("/tmp/wide.pairs")
+        notes.part_paths(Path("/tmp"), source, notes.MAX_PARTS)
+        with self.assertRaisesRegex(ValueError, "at most 26"):
+            notes.part_paths(Path("/tmp"), source, notes.MAX_PARTS + 1)
+
+
+class NotesCommandTests(unittest.TestCase):
+    """`wf notes p2` -- the note derivation, reached without moving anything.
+
+    `note --create` and split.sh are external side effects, so the two calls
+    that reach them are the assertion.
+    """
+
+    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
+    SOURCE = names.artifact(BUNDLE_NAME, "p1", "yes")
+    PAIRS = ["alpha,two", "mid,three"]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.opts, _ = fx.make_wf(self.root)
+
+    def _place(self, *parts) -> Path:
+        return fx.write_pairs(
+            fx.slot(self.opts, list(parts)) / self.SOURCE, self.PAIRS)
+
+    def _in_flight(self) -> Path:
+        bundle_dir = fx.make_bundle(self.opts, "p2", self.BUNDLE_NAME)
+        return fx.write_pairs(bundle_dir / self.SOURCE, self.PAIRS)
+
+    # Both spellings the positional advertises. Every slot case runs under
+    # each, because the source-file form is the one that has to reach past the
+    # eval directory to answer at all.
+    SPELLINGS = {"bundle name": BUNDLE_NAME, "source file": SOURCE}
+
+    def _argv(self, force: bool, argv: tuple,
+              positional: str | None = None) -> list[str]:
+        return ["-d", str(self.root), *(["-f"] if force else []),
+                "notes", "p2", positional or self.BUNDLE_NAME, *argv]
+
+    def _notes(self, *argv, force=False, positional=None):
+        with mock.patch.object(notes, "split", return_value=[]) as split, \
+             mock.patch.object(notes, "create") as create:
+            code, _, stderr = fx.run_wf(*self._argv(force, argv, positional))
+        self.assertEqual(0, code, stderr)
+        return split, create
+
+    def _refuse(self, *argv, force=False, positional=None):
+        with mock.patch.object(notes, "split") as split, \
+             mock.patch.object(notes, "create") as create:
+            with self.assertRaises((OSError, ValueError)) as caught:
+                fx.run_wf(*self._argv(force, argv, positional))
+        split.assert_not_called()
+        create.assert_not_called()
+        return str(caught.exception)
+
+    def test_an_open_bundle_is_re_noted_from_whatever_eval_evaluated(self):
+        source = self._in_flight()
+        split, create = self._notes()
+        split.assert_called_once_with(source)
+        create.assert_called_once_with([], None)
+
+        # `eval` follows the .filtered derivative when it wrote one, and so
+        # does this: the notes cover the pairs actually under review.
+        filtered = bundle.filtered(source)
+        fx.write_pairs(filtered, ["alpha,two"])
+        split, _ = self._notes()
+        split.assert_called_once_with(filtered)
+
+    def test_a_queued_review_names_the_eval_that_would_make_its_notes(self):
+        for spelling, positional in self.SPELLINGS.items():
+            with self.subTest(spelling=spelling):
+                queued = self._place("p2", "queued")
+                message = self._refuse(positional=positional)
+                self.assertIn(f"wf eval p2 {queued.name}", message)
+                # Nothing was moved: running the eval it names is the way in.
+                self.assertTrue(queued.is_file())
+                self.assertEqual(
+                    [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+                queued.unlink()
+
+    def test_an_archived_round_is_re_noted_only_under_force(self):
+        for spelling, positional in self.SPELLINGS.items():
+            with self.subTest(spelling=spelling):
+                archived = self._place("p2", "done", "in")
+                message = self._refuse(positional=positional)
+                self.assertIn("-f", message)
+                # The two ways the archived copy differs from what the round saw.
+                self.assertIn("unfiltered", message)
+                self.assertIn("--yes-pairs", message)
+
+                split, _ = self._notes(force=True, positional=positional)
+                split.assert_called_once_with(archived)
+                self.assertTrue(archived.is_file())
+                archived.unlink()
+
+    def test_an_open_bundle_answers_to_the_source_file_it_holds(self):
+        source = self._in_flight()
+        split, _ = self._notes(positional=self.SOURCE)
+        split.assert_called_once_with(source)
+
+    def test_a_bundle_in_no_slot_at_all_is_reported_as_missing(self):
+        for spelling, positional in self.SPELLINGS.items():
+            with self.subTest(spelling=spelling):
+                message = self._refuse(force=True, positional=positional)
+                self.assertIn("bundle not found", message)
+                # The miss is reported as typed rather than as a name the user
+                # never used.
+                self.assertIn(positional, message)
+
+    def test_naming_one_of_two_queue_shapes_exactly_settles_the_ambiguity(self):
+        """The reason the resolved path travels, and not just the name.
+
+        p2's queue admits two shapes, so one bundle name matches both files.
+        The bundle name cannot say which; the filename can, and that answer has
+        to survive as far as the slot lookup.
+        """
+        candidates = self._place("p2", "queued")
+        advanced = fx.write_pairs(
+            fx.slot(self.opts, ["p2", "queued"]) / f"{self.BUNDLE_NAME}.pairs",
+            self.PAIRS)
+
+        # By bundle name, both shapes answer and the ambiguity is an error.
+        self.assertIn("multiple", self._refuse())
+
+        for named in (candidates, advanced):
+            with self.subTest(named=named.name):
+                message = self._refuse(positional=named.name)
+                self.assertIn(f"wf eval p2 {named.name}", message)
+
+    def test_yes_pairs_reaches_note_creation(self):
+        self._in_flight()
+        yes_pairs = fx.write_pairs(self.root / "best.pairs", ["alpha,two"])
+        _, create = self._notes("--yes-pairs", str(yes_pairs))
+        create.assert_called_once_with([], yes_pairs)
+
+    def test_a_bad_yes_pairs_path_fails_before_a_single_note_is_made(self):
+        self._in_flight()
+        # Unlike eval, nothing here can be left half-done -- but a part
+        # already raised cannot be taken back either, and the flag is not read
+        # until `note --create`.
+        for bad in [self.root / "no-such.pairs", self.root]:
+            with self.subTest(bad=bad):
+                self._refuse("--yes-pairs", str(bad))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,16 @@ HIGH PRIORITY >>
 * complete_yes move notes to backup/processed notebook once command successfully
   completes?
 
+* workflow: a p2-completed NO pair should only be classifiable NO if it came from a
+  two-checkbox note. a one-checkbox note can only say "not YES", which is not the same
+  claim, and letting those through would retire pairs nothing actually rejected.
+  * not sure how to enforce it. the shape that comes to mind is a
+    `--require-two-checkboxes` switch on `note --parse`, so the parse fails loudly on a
+    note that lacks the second box rather than silently yielding NOs.
+  * `notes.create()` already passes `--two-checkboxes` on creation (workflow/notes.py),
+    so the invariant holds for notes this workflow raises -- the switch is about proving
+    it at parse time for notes it did not.
+
 * workflow: top 10% YES filtered to p2, all NOs filtered to p3. what about the remaining
   90% YES? just a reminder to do something, at some point. OK to punt until i get there though.
   * this is a big deal. don't remove this. think about it.

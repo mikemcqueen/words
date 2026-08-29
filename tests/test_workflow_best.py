@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 import unittest
 
@@ -507,6 +508,90 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertEqual(mtime, old_best.stat().st_mtime_ns)
         self.assertIn("Generated 2 best pairs (0 added, 0 dropped)", stdout)
+
+    # ------------------------------------------------------------ best notes
+
+    ROUND_1 = "top.s2.m4.g4.u-cdef.1000.r1"
+
+    def _run_notes(self, *extra):
+        """`best notes`, with the primitive stubbed: what it is handed is the
+        composite's whole job."""
+        with mock.patch.object(commands.notes.P2, "run",
+                               return_value=0) as run:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), *extra, "best", "notes", "s2",
+                "-u", "cdef", "-g", "4")
+        self.assertEqual(0, code, stderr)
+        return run.call_args.args[2], stdout
+
+    def test_notes_re_notes_the_in_flight_round_against_best_pairs(self):
+        target = self._target()
+        self._complete_files(target)
+        evaluating = (fx.slot(self.opts, ["p2", "eval"])
+                      / "top.s2.m4.g4.u-cdef.1000.r2")
+        evaluating.mkdir()
+        self._write(evaluating / f"{evaluating.name}.pairs", "a,b\n")
+
+        argv, stdout = self._run_notes()
+        self.assertEqual(
+            [evaluating.name, "--yes-pairs", str(target / "best.pairs")],
+            argv)
+        self.assertIn("review awaiting completion", stdout)
+
+        # A first round has nothing to check itself against, and the flag then
+        # has no value to carry.
+        (target / "best.pairs").unlink()
+        argv, _ = self._run_notes()
+        self.assertEqual([evaluating.name], argv)
+
+    def test_notes_selects_the_highest_round_across_a_gapped_archive(self):
+        target = self._target()
+        self._complete_files(target)
+        done_in = fx.slot(self.opts, ["p2", "done", "in"])
+        # r1 is _complete_files'; r3 leaves r2 as a gap, which is what makes
+        # counting and sorting both wrong.
+        self._write(done_in / "top.s2.m4.g4.u-cdef.1000.r3.pairs", "a,b\n", 40)
+        self._write(done_in / "top.s2.m4.g4.u-cdef.1000.r10.pairs", "a,b\n", 40)
+
+        argv, _ = self._run_notes("-f")
+        self.assertEqual("top.s2.m4.g4.u-cdef.1000.r10", argv[0])
+
+        # And the next review is numbered past it, not by how many there are.
+        self._write(target / "top.segments", "a,b\nnew,pair\n", 30)
+        with mock.patch.object(commands.evaluate.P2, "prepare"):
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertTrue((fx.slot(self.opts, ["p2", "eval"])
+                         / "top.s2.m4.g4.u-cdef.2.r11").is_dir())
+
+    def test_notes_refuses_a_target_with_no_review_at_all(self):
+        target = self._target()
+        self._complete_files(target)
+        next(fx.slot(self.opts, ["p2", "done", "in"]).iterdir()).unlink()
+        with self.assertRaisesRegex(ValueError, "no review to recreate"):
+            fx.run_wf("-d", str(self.root), "best", "notes", "s2",
+                      "-u", "cdef", "-g", "4")
+
+    def test_a_queued_review_is_refused_by_notes_and_complete_alike(self):
+        target = self._target()
+        self._complete_files(target)
+        queued = self._write(
+            fx.slot(self.opts, ["p2", "queued"])
+            / "top.s2.m4.g4.u-cdef.1000.r2.pairs", "a,b\n")
+
+        # Both refusals render the eval the same way, --yes-pairs included, so
+        # what the operator is told to type is what best review would have run.
+        expected = re.escape(
+            f"wf eval p2 {queued.name} --yes-pairs "
+            f"{target / 'best.pairs'}")
+        for verb in ("notes", "complete"):
+            with self.subTest(verb=verb):
+                with self.assertRaisesRegex(ValueError, expected):
+                    fx.run_wf("-d", str(self.root), "best", verb, "s2",
+                              "-u", "cdef", "-g", "4")
+        self.assertTrue(queued.is_file())
 
     def test_complete_selects_target_bundle_and_generates_best_pairs(self):
         target = self._target()

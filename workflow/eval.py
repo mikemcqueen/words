@@ -5,19 +5,19 @@
 # for whatever does the actual evaluating.
 #
 # Unlike submit and complete, the phases here are not the same command with
-# different constants -- p2 splits its pairs and raises notes against them,
-# and p1 does nothing of the kind. So the shared run() carries the shape both
-# phases agree on and hands the difference to prepare().
+# different constants -- p2 raises notes against its pairs, and p1 does nothing
+# of the kind. So the shared run() carries the shape both phases agree on and
+# hands the difference to prepare(). What p2's difference *is* belongs to
+# notes.py, which owns that derivation and offers it as a command of its own;
+# what is left here is what opening a bundle means.
 
 import argparse
-import subprocess
 
 from pathlib import Path
 
-from workflow import bundle, command, config, context, fs, log, names, usage
-
-
-CHUNK_SIZE = 400
+from workflow import (
+    bundle, command, config, context, fs, log, names, notes, usage,
+)
 
 
 def _resolve_queued(root: Path, phase: str, positional: str) -> tuple[str, str]:
@@ -101,40 +101,6 @@ class Eval(command.Action):
         return 0
 
 
-def get_split_paths(prefix: str, n_files: int, suffix: str = '') -> list[Path]:
-    assert n_files < 27, "got some work to do"
-    return [Path(f"{prefix}.a{chr(ord('a') + i)}{suffix}") for i in range(n_files)]
-
-
-def get_split_file_count(path: Path, chunk_size=CHUNK_SIZE) -> int:
-    n_lines = fs.line_count(path)
-    n_files = fs.line_count(path) // chunk_size
-    return n_files + (1 if n_files * chunk_size < n_lines else 0)
-
-
-def _split_pairs(pairs_file: Path, split_prefix: str) -> list[Path]:
-    n_files = get_split_file_count(pairs_file)
-    # check=True raises on non-zero return code
-    subprocess.run(["split.sh", f"{pairs_file}", f"{CHUNK_SIZE}", f"{split_prefix}"],
-                   stdout=subprocess.DEVNULL, check=True)
-    paths = get_split_paths(split_prefix, n_files)
-    fs.raise_if_any_not_file(paths)
-    return paths
-
-
-def _make_notes(paths: list[Path], yes_pairs: Path | None = None) -> None:
-    log.info(f"Creating {len(paths)} notes...")
-    # One argument list for both shapes: a review that has a confirmed-YES set
-    # to check itself against differs from one that does not by two arguments,
-    # not by a second call.
-    options = ["--text", "--two-checkboxes", "--production"]
-    if yes_pairs is not None:
-        options += ["--yes-pairs", str(yes_pairs)]
-    for path in paths:
-        subprocess.run(["note", "-pf.72", "--create", f"{path}", *options],
-                       stdout=subprocess.DEVNULL, check=True)
-
-
 class EvalYes(Eval):
     def __init__(self):
         # Both queue shapes are opened the same way. An advanced `*.p1.yes`
@@ -146,21 +112,14 @@ class EvalYes(Eval):
 
     def parser(self):
         p = super().parser()
-        p.add_argument("--yes-pairs", metavar="PATH",
-                       help="confirmed-YES pairs the notes check themselves "
-                            "against")
+        notes.add_yes_pairs(p)
         return p
 
     def check(self, opts) -> None:
-        # --yes-pairs reaches a file only in `note`'s argument list, in the
-        # last subprocess this command runs -- long past the point where the
-        # bundle can be left half-opened by failing.
-        if opts.yes_pairs:
-            fs.raise_if_not_readable(Path(opts.yes_pairs))
+        notes.check_yes_pairs(opts)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
-        yes_pairs = Path(opts.yes_pairs) if opts.yes_pairs else None
-        _make_notes(_split_pairs(pairs, f"/tmp/{pairs.name}"), yes_pairs)
+        notes.make(pairs, opts)
 
 
 class EvalNo(command.Action):
