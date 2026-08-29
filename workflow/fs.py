@@ -2,6 +2,7 @@
 
 import errno
 import fnmatch
+import os
 from pathlib import Path
 
 def not_a_directory_error(path: Path): 
@@ -40,6 +41,18 @@ def raise_if_not_file(path: Path):
     raise_if_not_exists(path)
     if not path.is_file():
         raise not_a_file_error(path)
+
+
+def raise_if_not_readable(path: Path):
+    """A regular file this process can actually open.
+
+    For the caller that is about to hand a path to something else -- a
+    subprocess, a step several moves later -- and wants the miss reported now,
+    where it costs nothing, rather than by whatever finally tries to read it.
+    """
+    raise_if_not_file(path)
+    if not os.access(path, os.R_OK):
+        raise PermissionError(errno.EACCES, "file not readable", path)
     
 
 def raise_if_any_exist(paths: list[Path]):

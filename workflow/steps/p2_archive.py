@@ -3,6 +3,8 @@
 # Move the bundle's input and its manual-review output into done/. The NO set
 # stays put -- publishing it is `advance`'s job.
 
+import shutil
+
 from pathlib import Path
 
 from workflow import bundle, config, fs
@@ -54,3 +56,9 @@ def run_step(ctx) -> None:
     # The .filtered derivative is scratch: the original is what gets archived.
     for scratch in ctx.bundle_dir.glob("*.filtered"):
         scratch.unlink()
+
+    # So is enex.part/, when a fetch that failed part-way was never resumed --
+    # which a forced refetch over a complete enex/ can leave behind. Nothing
+    # archives it, and `bundle.finish` will not close over a bundle still
+    # holding it.
+    shutil.rmtree(p2_retrieve.partial_dir(ctx), ignore_errors=True)

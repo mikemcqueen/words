@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -164,8 +165,10 @@ class P2RecipeTests(unittest.TestCase):
 
     def test_rerunning_after_merge_skips_forward_and_completes(self):
         from workflow import complete, steps as step_runner
+        names_ = [step.NAME for step in complete.P2.steps]
+        through_merge = complete.P2.steps[:names_.index("merge") + 1]
         with mock.patch.object(p2_retrieve.subprocess, "run", self.notes.route):
-            step_runner.run_steps(complete.P2.steps[:5], self.ctx)
+            step_runner.run_steps(through_merge, self.ctx)
 
         self.assertTrue(self.bundle_dir.exists())
         code, _, stderr = self._complete()
@@ -173,6 +176,107 @@ class P2RecipeTests(unittest.TestCase):
         self.assertFalse(self.bundle_dir.exists())
         # retrieve was skipped on the second pass, not repeated
         self.assertEqual(2, len(self.notes.fetched))
+
+    # ---------------------------------------------------------- forced refetch
+
+    def _retrieve(self, force=False):
+        with mock.patch.object(p2_retrieve.subprocess, "run", self.notes.route):
+            p2_retrieve.run_step(replace(self.ctx, force=force))
+
+    def _enex_parts(self):
+        return sorted(p.name for p in p2_retrieve.enex_dir(self.ctx).iterdir())
+
+    def test_force_replaces_a_completed_enex(self):
+        self._retrieve()
+        held = self._enex_parts()
+        self.assertEqual(2, len(self.notes.fetched))
+
+        self._retrieve(force=True)
+        # -f on the one step that caches external state means the held copy is
+        # stale, so every part is fetched again and replaces it.
+        self.assertEqual(4, len(self.notes.fetched))
+        self.assertEqual(held, self._enex_parts())
+        self.assertFalse(p2_retrieve.partial_dir(self.ctx).exists())
+
+    def test_a_forced_refetch_leaves_a_bundle_that_still_completes(self):
+        # The regression: the forced rename used to raise ENOTEMPTY and strand
+        # enex.part/, after which `bundle.finish` refused to close the bundle
+        # ever again.
+        self._retrieve()
+        self._retrieve(force=True)
+
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertFalse(self.bundle_dir.exists())
+
+    def test_a_failed_forced_refetch_keeps_the_copy_it_holds(self):
+        self._retrieve()
+        held = self._enex_parts()
+
+        self.notes.fail_after = 2
+        with self.assertRaises(RuntimeError):
+            self._retrieve(force=True)
+
+        # Nothing was cleared, because nothing had been staged to replace it.
+        self.assertEqual(held, self._enex_parts())
+
+        self.notes.fail_after = None
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertFalse(self.bundle_dir.exists())
+
+    # ----------------------------------------------- contradictory checkboxes
+
+    def _marked_both_ways(self, pair="mid,three"):
+        """Both checkboxes ticked on one row: the parser answers each --type
+        independently, so the pair comes back under both."""
+        parts = {suffix: {kind: list(pairs) for kind, pairs in kinds.items()}
+                 for suffix, kinds in PARTS.items()}
+        parts["ab"]["no"].append(pair)
+        return mock.patch.dict(PARTS, parts, clear=True)
+
+    def _assert_nothing_was_written(self):
+        # Neither set was placed: the check runs on the staged copies, so the
+        # bundle is exactly as `retrieve` left it.
+        self.assertFalse(self.ctx.artifact("p2", "yes").exists())
+        self.assertFalse(self.ctx.artifact("p2", "no").exists())
+        # `init` lays the classified set down empty; nothing folded into it.
+        self.assertEqual("", (self._slot("classified", "yes")
+                              / "yes.pairs").read_text())
+        self.assertFalse((self._slot("p2", "done") / "p2_done.pairs").exists())
+        self.assertEqual([], list(self._slot("p3", "queued").iterdir()))
+        self.assertEqual([], list(self._slot("p2", "done", "in").iterdir()))
+        # The bundle is still open on its source, so the review can be fixed
+        # and the completion re-run.
+        self.assertTrue(bundle.has_source(self.ctx))
+
+    def test_a_pair_marked_both_ways_stops_the_bundle(self):
+        with self._marked_both_ways():
+            with self.assertRaisesRegex(ValueError, "mid,three"):
+                self._complete()
+        self._assert_nothing_was_written()
+
+    def test_force_does_not_wave_a_contradiction_through(self):
+        with self._marked_both_ways():
+            with self.assertRaises(ValueError):
+                self._complete("-f")
+        self._assert_nothing_was_written()
+
+    def test_correcting_the_note_and_re_running_completes(self):
+        # The point of staging: the rejected extract placed nothing, so a
+        # plain re-run redoes it whole and reads the corrected rows. No -f, no
+        # cleaning up after the failure.
+        with self._marked_both_ways():
+            with self.assertRaises(ValueError):
+                self._complete()
+
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertFalse(self.bundle_dir.exists())
+        published = self._slot("p3", "queued") / names.artifact(
+            self.BUNDLE_NAME, "p2", "no")
+        self.assertEqual(["yankee,four", "zeta,one"],
+                         published.read_text().splitlines())
 
 
 if __name__ == "__main__":

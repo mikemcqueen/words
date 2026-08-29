@@ -10,6 +10,7 @@ from workflow import (
 from workflow.best import generate
 from workflow.best.state import (
     check_letter_set, one_target, report, review_locations, targets,
+    yes_pairs_argv,
 )
 
 
@@ -231,7 +232,8 @@ class Review(command.Action):
         if code != 0:
             return code
         code = evaluate.P2.run(
-            "eval p2", opts, ["--no-filter", review_name])
+            "eval p2", opts,
+            ["--no-filter", review_name, *yes_pairs_argv(target)])
         if code == 0:
             report(target)
         return code
@@ -252,9 +254,11 @@ class Complete(command.Action):
         target, _ = parsed
         queued, evaluating, _ = review_locations(target)
         if queued:
+            eval_command = " ".join(["wf", "eval", "p2", queued[0].name,
+                                     *yes_pairs_argv(target)])
             raise ValueError(
                 f"review bundle is queued: {queued[0].name}; "
-                f"run wf eval p2 {queued[0].name}")
+                f"run {eval_command}")
         if not evaluating:
             raise ValueError(f"no review awaiting completion for {target.address}")
 

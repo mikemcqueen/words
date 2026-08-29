@@ -545,3 +545,27 @@ class BundleLifecycleTests(unittest.TestCase):
             bundle_name=bundle_name).bundle_dir
         self.assertEqual([names.artifact(bundle_name, "p1", "yes")],
                          [p.name for p in bundle_dir.iterdir()])
+
+    def test_eval_p2_checks_yes_pairs_before_it_opens_the_bundle(self):
+        # --yes-pairs is not read until the last `note` subprocess, by which
+        # time the queued source has been moved into the bundle -- and there is
+        # no command to move it back, so a bad path has to fail before that.
+        bundle_name = "s6.txt.pairs_third.90.10"
+        queued = (fx.slot(self.opts, ["p2", "queued"])
+                  / names.artifact(bundle_name, "p1", "yes"))
+        fx.write_pairs(queued, ["alpha,two", "mid,three"])
+
+        for bad in [self.root / "no-such.pairs", self.root]:
+            with self.subTest(bad=bad):
+                with mock.patch.object(evaluate, "_split_pairs", return_value=[]), \
+                     mock.patch.object(evaluate, "_make_notes") as make_notes:
+                    with self.assertRaises((OSError, ValueError)):
+                        fx.run_wf("-d", str(self.root), "eval", "p2",
+                                  bundle_name, "--yes-pairs", str(bad))
+
+                make_notes.assert_not_called()
+                # The queue still holds the source a retry needs, and no
+                # half-opened bundle stands in that retry's way.
+                self.assertTrue(queued.is_file())
+                self.assertEqual(
+                    [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))

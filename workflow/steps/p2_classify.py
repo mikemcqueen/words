@@ -28,7 +28,7 @@ def is_done(ctx) -> bool:
     # nothing about this bundle, and union is idempotent -- but see merge, whose
     # answer this mirrors. `archive` relocates this fold's input into
     # p2/done/out, so the input's absence is the record that the fold ran.
-    # Tested directly rather than via bundle.has_source: extract_yes writes this
+    # Tested directly rather than via bundle.has_source: `extract` places this
     # artifact unconditionally, so at this point in the recipe it is present
     # unless archive has taken it.
     return not ctx.artifact("p2", "yes").exists()

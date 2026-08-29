@@ -367,11 +367,28 @@ def review_locations(target: Target) -> tuple[list[Path], list[Path], list[Path]
     return queued, evaluating, archived
 
 
+def yes_pairs_argv(target: Target) -> list[str]:
+    """`eval p2`'s --yes-pairs flag for target, empty until best.pairs exists.
+
+    A first review has no confirmed-YES set to check itself against; every
+    round after one has. Both the command `best review` runs and the one
+    `best status` prints for the operator to run by hand read the answer here,
+    so the two cannot drift apart.
+    """
+    best_pairs = target.artifact("best.pairs")
+    return ["--yes-pairs", str(best_pairs)] if best_pairs.is_file() else []
+
+
+def _eval_p2_command(target: Target, queued_name: str) -> str:
+    return " ".join(["wf", "eval", "p2", queued_name,
+                     *yes_pairs_argv(target)])
+
+
 def _review_state(target: Target, top_segments: Path) -> State | None:
     queued, evaluating, archived = review_locations(target)
     if queued:
         return State(f"review submitted ({queued[0].name})",
-                     next_command=f"wf eval p2 {queued[0].name}")
+                     next_command=_eval_p2_command(target, queued[0].name))
     if evaluating:
         return State(f"review awaiting completion ({evaluating[0].name})",
                      next_command=target.command("complete"))

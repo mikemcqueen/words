@@ -63,13 +63,25 @@ class Eval(command.Action):
                        help="skip filtering already-evaluated pairs")
         return p
 
-    def prepare(self, pairs: Path, ctx) -> None:
+    def check(self, opts) -> None:
+        """Whatever this phase must know is good before the bundle is opened.
+
+        `bundle.begin` moves the queued source out of the queue and nothing
+        moves it back: a failure after that point leaves a retry with no
+        queued artifact to find and an open bundle it refuses to reopen. So
+        anything answerable from the arguments alone is answered here, while
+        failing is still free.
+        """
+
+    def prepare(self, pairs: Path, ctx, opts) -> None:
         """What this phase does with its pairs once the bundle is open."""
 
     def run(self, command, opts, argv) -> int:
         rest = self.parse(opts, argv)
         if not rest:
             return usage.missing_argument(self.format_help(command))
+
+        self.check(opts)
 
         bundle_name, selector = _resolve_queued(opts.dir, self.phase, rest[0])
         ctx = context.Context(root=opts.dir, phase=self.phase,
@@ -80,7 +92,7 @@ class Eval(command.Action):
         if not opts.no_filter:
             pairs = bundle.filter_done(pairs, ctx)
 
-        self.prepare(pairs, ctx)
+        self.prepare(pairs, ctx, opts)
 
         # TODO: (optionally?) copy file to somewhere specified by user
 
@@ -110,11 +122,17 @@ def _split_pairs(pairs_file: Path, split_prefix: str) -> list[Path]:
     return paths
 
 
-def _make_notes(paths: list[Path]) -> None:
+def _make_notes(paths: list[Path], yes_pairs: Path | None = None) -> None:
     log.info(f"Creating {len(paths)} notes...")
+    # One argument list for both shapes: a review that has a confirmed-YES set
+    # to check itself against differs from one that does not by two arguments,
+    # not by a second call.
+    options = ["--text", "--two-checkboxes", "--production"]
+    if yes_pairs is not None:
+        options += ["--yes-pairs", str(yes_pairs)]
     for path in paths:
-        subprocess.run(["note", "-pf.72", "--create", f"{path}", "--text", "--checkbox",
-                        "--production"], stdout=subprocess.DEVNULL, check=True)
+        subprocess.run(["note", "-pf.72", "--create", f"{path}", *options],
+                       stdout=subprocess.DEVNULL, check=True)
 
 
 class EvalYes(Eval):
@@ -126,8 +144,23 @@ class EvalYes(Eval):
         super().__init__(phase="p2", summary="p2      — evaluate pairs for manual review",
                          source_noun="pairs", ready_for="manual filtering")
 
-    def prepare(self, pairs: Path, ctx) -> None:
-        _make_notes(_split_pairs(pairs, f"/tmp/{pairs.name}"))
+    def parser(self):
+        p = super().parser()
+        p.add_argument("--yes-pairs", metavar="PATH",
+                       help="confirmed-YES pairs the notes check themselves "
+                            "against")
+        return p
+
+    def check(self, opts) -> None:
+        # --yes-pairs reaches a file only in `note`'s argument list, in the
+        # last subprocess this command runs -- long past the point where the
+        # bundle can be left half-opened by failing.
+        if opts.yes_pairs:
+            fs.raise_if_not_readable(Path(opts.yes_pairs))
+
+    def prepare(self, pairs: Path, ctx, opts) -> None:
+        yes_pairs = Path(opts.yes_pairs) if opts.yes_pairs else None
+        _make_notes(_split_pairs(pairs, f"/tmp/{pairs.name}"), yes_pairs)
 
 
 class EvalNo(command.Action):
