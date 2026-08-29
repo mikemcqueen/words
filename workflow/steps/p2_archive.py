@@ -1,14 +1,16 @@
 # steps/p2_archive.py
 #
-# Move the bundle's input and its manual-review output into done/. The NO set
-# stays put -- publishing it is `advance`'s job.
+# Move the bundle's input and both halves of its manual-review output into
+# done/. Nothing is left behind: p2 publishes to no downstream queue, because
+# `classify` has already folded both verdicts into the standing classified
+# sets.
 
 import shutil
 
 from pathlib import Path
 
 from workflow import bundle, config, fs
-from workflow.steps import p2_retrieve
+from workflow.steps import p2_classify, p2_retrieve
 
 
 NAME = "archive"
@@ -24,15 +26,19 @@ def enex_archive_dir(ctx) -> Path:
     return _done(ctx, "out", "enex") / ctx.bundle_name
 
 
+def _verdicts(ctx) -> list[Path]:
+    return [ctx.artifact("p2", kind) for kind in p2_classify.KINDS]
+
+
 def inputs(ctx) -> list[Path]:
     return (fs.globs(ctx.bundle_dir, bundle.source_globs(ctx))
-            + [ctx.artifact("p2", "yes"), p2_retrieve.enex_dir(ctx)])
+            + _verdicts(ctx) + [p2_retrieve.enex_dir(ctx)])
 
 
 def outputs(ctx) -> list[Path]:
     return [_done(ctx, "in") / p.name
             for p in fs.globs(ctx.bundle_dir, bundle.source_globs(ctx))] + [
-        _done(ctx, "out") / ctx.artifact("p2", "yes").name,
+        _done(ctx, "out") / p.name for p in _verdicts(ctx)] + [
         enex_archive_dir(ctx)]
 
 
@@ -40,14 +46,15 @@ def is_done(ctx) -> bool:
     # As in p1_archive: emptying the bundle is the job, so the absence of what
     # it moves is the answer, and it stays False until every move has landed.
     return not (bundle.has_source(ctx)
-                or ctx.artifact("p2", "yes").exists()
+                or any(p.exists() for p in _verdicts(ctx))
                 or p2_retrieve.enex_dir(ctx).exists())
 
 
 def run_step(ctx) -> None:
     # Each move is independent, so a retry after a partial move finishes the
     # rest instead of crashing on whichever one already left.
-    fs.move_into_once(ctx.artifact("p2", "yes"), _done(ctx, "out"), ctx.force)
+    for verdict in _verdicts(ctx):
+        fs.move_into_once(verdict, _done(ctx, "out"), ctx.force)
     fs.rename_once(p2_retrieve.enex_dir(ctx), enex_archive_dir(ctx), ctx.force)
 
     for found in fs.globs(ctx.bundle_dir, bundle.source_globs(ctx)):

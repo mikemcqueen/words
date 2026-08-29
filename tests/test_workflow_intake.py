@@ -185,9 +185,9 @@ class NameCharacterTests(unittest.TestCase):
         self.assertIn("contains space", str(caught.exception))
 
     def test_the_names_the_workflow_actually_uses_still_pass(self):
-        for name in ["s1.2.aa_third_p3_juniper.qwen35",
+        for name in ["s1.2.aa-third-p3-juniper.qwen35",
                      "top.s2.m4.g4.u-that.1000",
-                     "s6.txt.pairs_third.90.10",
+                     "s6.txt.pairs-third.90.10",
                      "idx.2.s9.m4.remain"]:
             with self.subTest(name=name):
                 self.assertEqual(name, names.check_name(name, "bundle name"))

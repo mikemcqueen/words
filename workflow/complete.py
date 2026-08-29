@@ -9,7 +9,7 @@
 from workflow import bundle, command, context, fs, log, steps, usage
 from workflow.steps import merge as merge_step
 from workflow.steps import p1_advance, p1_archive, p1_extract
-from workflow.steps import p2_advance, p2_archive, p2_classify, p2_extract
+from workflow.steps import p2_archive, p2_classify, p2_close, p2_extract
 from workflow.steps import p2_retrieve
 
 
@@ -62,8 +62,9 @@ P1 = Complete("p1",
 # both verdicts. The kinds are one step because a row ticked Y and N lands in
 # both sets and only the pair of them shows it -- see p2_extract. `classify`
 # is the first durable write, so everything that could reject the review has
-# happened by the time it runs.
+# happened by the time it runs -- and it records both verdicts, so p2 ends by
+# closing rather than by advancing anything.
 P2 = Complete("p2",
               [p2_retrieve, p2_extract, p2_classify, merge_step,
-               p2_archive, p2_advance],
+               p2_archive, p2_close],
               "p2      — complete a yes file manual review")

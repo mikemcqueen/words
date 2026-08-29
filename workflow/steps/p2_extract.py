@@ -8,8 +8,8 @@
 # row comes back in both sets. Each set is well-formed on its own -- the
 # contradiction exists only in the pair of them -- so no per-kind step can see
 # it, and by the time a later step could, both are already placed: `classify`
-# folds YES into the standing classified verdicts and `advance` publishes NO
-# into p3, in opposite directions, neither undoable by any command here.
+# folds each into its standing classified set, and neither fold is undoable by
+# any command here.
 #
 # So the kinds are merged in /tmp, checked against each other there, and placed
 # into the bundle only once they agree. That is `_place`'s discipline one level
@@ -61,8 +61,14 @@ def _parse_note_files(paths: list[Path], kind: str) -> list[Path]:
     for path in paths:
         out_path = Path(f"/tmp/{path.name}.{kind}.parsed")
         with out_path.open("w") as f:
+            # --two-checkboxes is the parse-side half of what `notes.create`
+            # wrote: it makes a row count only when both boxes are present, so
+            # a NO is a ticked N rather than an unticked Y. Without it a
+            # malformed one-box row reads as NO by default, and NO is now a
+            # standing verdict rather than a queue to look at again.
             subprocess.run(["note", "--parse-file", str(path), "--type", kind,
-                            "--lines"], stdout=f, check=True)
+                            "--lines", "--two-checkboxes"],
+                           stdout=f, check=True)
         parsed.append(out_path)
     return parsed
 

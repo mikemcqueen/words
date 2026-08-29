@@ -266,36 +266,38 @@ class UnifiedFilterTests(unittest.TestCase):
             self._filter([])
 
 
-@fx.requires_native
-class FilterQueuePublishTests(unittest.TestCase):
-    """`wf filter` publishes into p2/queued, which is later fed to `comm -23`."""
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.root = Path(self._tmp.name)
-        self.opts, _ = fx.make_wf(self.root)
-        fx.write_results(
-            fx.slot(self.opts, ["p1", "done", "out"]) / "sample.jsonl",
-            fx.BAND_ROWS)
-
-    def test_queued_output_is_a_sorted_unique_set(self):
-        code, _, stderr = fx.run_wf(
-            "-d", str(self.root), "filter", "sample.jsonl")
-        self.assertEqual(0, code, stderr)
-
-        queued = list(fx.slot(self.opts, ["p2", "queued"]).iterdir())
-        self.assertEqual(1, len(queued), queued)
-        lines = queued[0].read_text().splitlines()
-        # filter_results emits in corpus order; unsorted here would make the
-        # later `comm -23` in eval silently wrong rather than an error.
-        self.assertEqual(sorted(set(lines)), lines)
-
-    def test_no_scratch_file_is_left_behind(self):
-        fx.run_wf("-d", str(self.root), "filter", "sample.jsonl")
-        strays = [p.name for p in fx.slot(self.opts, ["p2", "queued"]).iterdir()
-                  if p.suffix in (".tmp", ".unsorted")]
-        self.assertEqual([], strays)
+# `wf filter` is unregistered until it is brought up to the steps
+# architecture -- see the TODO in workflow/filter_pairs.py.
+# @fx.requires_native
+# class FilterQueuePublishTests(unittest.TestCase):
+#     """`wf filter` publishes into p2/queued, which is later fed to `comm -23`."""
+#
+#     def setUp(self):
+#         self._tmp = tempfile.TemporaryDirectory()
+#         self.addCleanup(self._tmp.cleanup)
+#         self.root = Path(self._tmp.name)
+#         self.opts, _ = fx.make_wf(self.root)
+#         fx.write_results(
+#             fx.slot(self.opts, ["p1", "done", "out"]) / "sample.jsonl",
+#             fx.BAND_ROWS)
+#
+#     def test_queued_output_is_a_sorted_unique_set(self):
+#         code, _, stderr = fx.run_wf(
+#             "-d", str(self.root), "filter", "sample.jsonl")
+#         self.assertEqual(0, code, stderr)
+#
+#         queued = list(fx.slot(self.opts, ["p2", "queued"]).iterdir())
+#         self.assertEqual(1, len(queued), queued)
+#         lines = queued[0].read_text().splitlines()
+#         # filter_results emits in corpus order; unsorted here would make the
+#         # later `comm -23` in eval silently wrong rather than an error.
+#         self.assertEqual(sorted(set(lines)), lines)
+#
+#     def test_no_scratch_file_is_left_behind(self):
+#         fx.run_wf("-d", str(self.root), "filter", "sample.jsonl")
+#         strays = [p.name for p in fx.slot(self.opts, ["p2", "queued"]).iterdir()
+#                   if p.suffix in (".tmp", ".unsorted")]
+#         self.assertEqual([], strays)
 
 
 @fx.requires_native
@@ -303,9 +305,11 @@ class ProducedNameTests(unittest.TestCase):
     """Every artifact a bundle produces is prefixed by its bundle name."""
 
     # As in the real corpus, evalpair appends its own suffixes to the result
-    # name, so the result stem is not the pairs name.
+    # name, so the result stem is not the pairs name -- and nothing the bundle
+    # produces is named after it.
     RESULT = "s6.txt.pairs_third_p3_juniper.qwen35.jsonl"
     PAIRS = "s6.txt.pairs"
+    BUNDLE_NAME = "s6.txt.pairs"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -326,7 +330,7 @@ class ProducedNameTests(unittest.TestCase):
             "-d", str(self.root), "complete", "p1", self.PAIRS)
         self.assertEqual(0, code, stderr)
 
-        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
+        bundle_name = names.bundle_name(self.BUNDLE_NAME, 0.9, 0.1)
         produced = self._produced()
         self.assertEqual(
             [names.artifact(bundle_name, "p1", "no"),
@@ -335,6 +339,9 @@ class ProducedNameTests(unittest.TestCase):
         for name in produced:
             with self.subTest(name=name):
                 self.assertTrue(name.startswith(bundle_name))
+                # The result stem never reaches a published name, so what
+                # evalpair spells with cannot make one the workflow refuses.
+                self.assertEqual(name, names.check_name(name, "artifact"))
 
     def test_complete_reports_pair_and_filter_counts_once(self):
         code, _, stderr = fx.run_wf(
@@ -345,38 +352,28 @@ class ProducedNameTests(unittest.TestCase):
         self.assertIn("filtered 2 NO pairs", stderr)
         self.assertNotIn("loaded 9 pairs", stderr)
 
-    def test_filter_and_complete_agree_on_the_bundle_name(self):
-        # Both derive the bundle name from the p1 result stem, so re-slicing the same
-        # band names the same artifact rather than a near-miss duplicate.
-        fx.write_results(
-            fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT, fx.BAND_ROWS)
-        code, _, stderr = fx.run_wf("-d", str(self.root), "filter", self.RESULT)
-        self.assertEqual(0, code, stderr)
-
-        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
-        self.assertEqual(
-            [names.artifact(bundle_name, "p1", "yes")], self._produced())
-
-    def test_a_different_band_renders_a_different_bundle_name(self):
-        fx.write_results(
-            fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT, fx.BAND_ROWS)
-        fx.run_wf("-d", str(self.root), "filter", self.RESULT)
-        fx.run_wf("-d", str(self.root), "filter", self.RESULT,
-                  "--pm", "0.5", "--pr", "0.3")
-        self.assertEqual(
-            [names.artifact(
-                names.bundle_name(Path(self.RESULT).stem, 0.5, 0.3),
-                "p1", "yes"),
-             names.artifact(
-                 names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1),
-                 "p1", "yes")],
-            self._produced())
+    # `wf filter` is unregistered until it is brought up to the steps
+    # architecture -- see the TODO in workflow/filter_pairs.py.
+#     def test_a_different_band_renders_a_different_bundle_name(self):
+#         fx.write_results(
+#             fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT, fx.BAND_ROWS)
+#         fx.run_wf("-d", str(self.root), "filter", self.RESULT)
+#         fx.run_wf("-d", str(self.root), "filter", self.RESULT,
+#                   "--pm", "0.5", "--pr", "0.3")
+#         self.assertEqual(
+#             [names.artifact(
+#                 names.bundle_name(Path(self.RESULT).stem, 0.5, 0.3),
+#                 "p1", "yes"),
+#              names.artifact(
+#                  names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1),
+#                  "p1", "yes")],
+#             self._produced())
 
 
 class BundleInputSelectionTests(unittest.TestCase):
     """`eval` may filter its input; everything downstream follows that choice."""
 
-    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
+    BUNDLE_NAME = "s6.txt.pairs-third.90.10"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -417,7 +414,7 @@ class BundleLifecycleTests(unittest.TestCase):
 
     BUNDLE = "s6.txt"
     PAIRS = f"{BUNDLE}.pairs"
-    RESULT = "s6.txt.pairs_third_p3_juniper.qwen35.jsonl"
+    RESULT = "s6.txt.pairs-third-p3-juniper.qwen35.jsonl"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -505,27 +502,31 @@ class BundleLifecycleTests(unittest.TestCase):
         evals = fx.slot(self.opts, ["p1", "eval"])
         self.assertEqual([self.BUNDLE], [p.name for p in evals.iterdir()])
 
-    def test_filter_refuses_a_bundle_already_in_flight_in_p2(self):
-        fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
-                         fx.BAND_ROWS)
-        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
-        fx.make_bundle(self.opts, "p2", bundle_name)
+    # `wf filter` is unregistered until it is brought up to the steps
+    # architecture -- see the TODO in workflow/filter_pairs.py.
+#     def test_filter_refuses_a_bundle_already_in_flight_in_p2(self):
+#         fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
+#                          fx.BAND_ROWS)
+#         bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
+#         fx.make_bundle(self.opts, "p2", bundle_name)
+#
+#         with self.assertRaises(ValueError):
+#             fx.run_wf("-d", str(self.root), "filter", self.RESULT)
 
-        with self.assertRaises(ValueError):
-            fx.run_wf("-d", str(self.root), "filter", self.RESULT)
-
-    def test_filter_refuses_a_bundle_already_finished_in_p2(self):
-        fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
-                         fx.BAND_ROWS)
-        bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
-        done_in = fx.slot(self.opts, ["p2", "done", "in"])
-        (done_in / names.artifact(bundle_name, "p1", "yes")).write_text("")
-
-        with self.assertRaises(ValueError):
-            fx.run_wf("-d", str(self.root), "filter", self.RESULT)
+    # `wf filter` is unregistered until it is brought up to the steps
+    # architecture -- see the TODO in workflow/filter_pairs.py.
+#     def test_filter_refuses_a_bundle_already_finished_in_p2(self):
+#         fx.write_results(fx.slot(self.opts, ["p1", "done", "out"]) / self.RESULT,
+#                          fx.BAND_ROWS)
+#         bundle_name = names.bundle_name(Path(self.RESULT).stem, 0.9, 0.1)
+#         done_in = fx.slot(self.opts, ["p2", "done", "in"])
+#         (done_in / names.artifact(bundle_name, "p1", "yes")).write_text("")
+#
+#         with self.assertRaises(ValueError):
+#             fx.run_wf("-d", str(self.root), "filter", self.RESULT)
 
     def test_eval_p2_opens_a_bundle_directory_under_the_bundle_name(self):
-        bundle_name = "s6.txt.pairs_third.90.10"
+        bundle_name = "s6.txt.pairs-third.90.10"
         fx.write_pairs(
             fx.slot(self.opts, ["p2", "queued"])
             / names.artifact(bundle_name, "p1", "yes"),
@@ -549,7 +550,7 @@ class BundleLifecycleTests(unittest.TestCase):
         # --yes-pairs is not read until the last `note` subprocess, by which
         # time the queued source has been moved into the bundle -- and there is
         # no command to move it back, so a bad path has to fail before that.
-        bundle_name = "s6.txt.pairs_third.90.10"
+        bundle_name = "s6.txt.pairs-third.90.10"
         queued = (fx.slot(self.opts, ["p2", "queued"])
                   / names.artifact(bundle_name, "p1", "yes"))
         fx.write_pairs(queued, ["alpha,two", "mid,three"])

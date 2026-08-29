@@ -114,9 +114,25 @@ class BestEndToEndTests(unittest.TestCase):
         self.assertFalse(bundle_dir.exists())
         self.assertTrue(
             (wf_dir / "p2" / "done" / "in" / source.name).is_file())
-        self.assertTrue(
-            (wf_dir / "p3" / "queued"
-             / f"{bundle_name}.p2.no").is_file())
+        self.assertEqual(
+            "rejected,pair\n",
+            config.classified(self.root, "no").read_text())
+        # Completing the review is what grows the hard-NO set, so the seed the
+        # search ran from is now genuinely stale and the report says so.
+        self.assertIn(
+            "s2/u-cdef/m4/g4: dfs.seed out of date (hard-NO set changed)",
+            stdout)
+
+        # Take the operator's decision to accept the seed as it stands, so the
+        # rest of the tail is reachable in one test: date the fold back behind
+        # the artifacts that were derived before it.
+        for kind in ("yes", "no"):
+            os.utime(config.classified(self.root, kind), (25, 25))
+        os.utime(target / "dfs.seed", (30, 30))
+        for path in (target / "top.segments",
+                     state._stamp(target / "top.segments")):
+            os.utime(path, (40, 40))
+        stdout, _ = self._wf("best", "status", "s2/u-cdef/m4/g4")
         self.assertIn("s2/u-cdef/m4/g4: dfs.best missing", stdout)
 
         dfs_best_command, stdout = self._gen(
