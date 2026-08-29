@@ -55,7 +55,7 @@ def check_name(name: str, label: str) -> str:
         spelled = ", ".join("space" if c == " " else repr(c) for c in bad)
         raise ValueError(
             f"{label} {name!r} contains {spelled}; names may use only "
-            f"letters, digits, '.', '_' and '-'. Rename the file and retry.")
+            f"letters, digits, '.' and '-'. Rename the file and retry.")
     return name
 
 

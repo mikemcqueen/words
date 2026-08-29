@@ -27,7 +27,10 @@ COMMANDS = {
     "classify": command.Dispatcher("classify — record a standing verdict (yes|no)",
                                    {"yes": classify.YES, "no": classify.NO}),
     "best":     best.COMMAND,
-    "filter":   filter_pairs.COMMAND,
+    # Unregistered until it is brought up to the steps architecture -- it is
+    # the last pre-`steps/` command and now names its output differently from
+    # `complete p1`. See the TODO at the top of filter_pairs.py.
+#  ,"filter":  filter_pairs.COMMAND
 #  ,"wipe":    wipe
 }
 

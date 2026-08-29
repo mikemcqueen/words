@@ -32,6 +32,7 @@ class FakeNotes:
 
     def __init__(self):
         self.fetched = []
+        self.parsed = []
         self.fail_after = None
 
     def get(self, argv, **kwargs):
@@ -55,6 +56,7 @@ class FakeNotes:
         return _REAL_RUN(argv, **kwargs)
 
     def parse(self, argv, **kwargs):
+        self.parsed.append(argv)
         source = Path(argv[argv.index("--parse-file") + 1])
         kind = argv[argv.index("--type") + 1]
         suffix = source.name.removesuffix(".enex")[-2:]
@@ -64,7 +66,7 @@ class FakeNotes:
 
 
 class P2RecipeTests(unittest.TestCase):
-    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
+    BUNDLE_NAME = "s6.txt.pairs-third.90.10"
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -105,20 +107,23 @@ class P2RecipeTests(unittest.TestCase):
     def test_archives_input_output_and_enex(self):
         self._complete()
         self.assertTrue((self._slot("p2", "done", "in") / self.queued.name).is_file())
-        self.assertTrue((self._slot("p2", "done", "out")
-                         / names.artifact(
-                             self.BUNDLE_NAME, "p2", "yes")).is_file())
+        for kind in ("yes", "no"):
+            self.assertTrue((self._slot("p2", "done", "out")
+                             / names.artifact(
+                                 self.BUNDLE_NAME, "p2", kind)).is_file())
         enex = (self._slot("p2", "done", "out", "enex")
                 / self.BUNDLE_NAME)
         self.assertEqual([f"{self.queued.name}.aa.enex", f"{self.queued.name}.ab.enex"],
                          sorted(p.name for p in enex.iterdir()))
 
-    def test_publishes_the_no_set_into_p3(self):
+    def test_folds_no_into_the_classified_set_and_publishes_nothing(self):
+        # The reviewer ticked N on these, so they are a standing verdict, not
+        # a queue for a second pass: nothing reaches p3.
         self._complete()
-        published = self._slot("p3", "queued") / names.artifact(
-            self.BUNDLE_NAME, "p2", "no")
         self.assertEqual(["yankee,four", "zeta,one"],
-                         published.read_text().splitlines())
+                         (self._slot("classified", "no")
+                          / "no.pairs").read_text().splitlines())
+        self.assertEqual([], list(self._slot("p3", "queued").iterdir()))
 
     def test_folds_yes_into_the_done_set_and_the_classified_set(self):
         self._complete()
@@ -127,6 +132,15 @@ class P2RecipeTests(unittest.TestCase):
                          (self._slot("p2", "done") / "p2_done.pairs").read_text().splitlines())
         self.assertEqual(["alpha,two", "beta,five", "mid,three"],
                          (self._slot("classified", "yes") / "yes.pairs").read_text().splitlines())
+
+    def test_the_notes_are_parsed_requiring_both_checkboxes(self):
+        # Without --two-checkboxes a malformed one-box row parses as NO by
+        # default, and NO is now a verdict that sticks.
+        self._complete()
+        parses = [argv for argv in self.notes.parsed if "--parse-file" in argv]
+        self.assertEqual(4, len(parses))
+        for argv in parses:
+            self.assertIn("--two-checkboxes", argv)
 
     def test_complete_preflights_archive_collisions_before_retrieval(self):
         archived = (self._slot("p2", "done", "out", "enex")
@@ -240,9 +254,10 @@ class P2RecipeTests(unittest.TestCase):
         # bundle is exactly as `retrieve` left it.
         self.assertFalse(self.ctx.artifact("p2", "yes").exists())
         self.assertFalse(self.ctx.artifact("p2", "no").exists())
-        # `init` lays the classified set down empty; nothing folded into it.
-        self.assertEqual("", (self._slot("classified", "yes")
-                              / "yes.pairs").read_text())
+        # `init` lays the classified sets down empty; nothing folded into them.
+        for kind in ("yes", "no"):
+            self.assertEqual("", (self._slot("classified", kind)
+                                  / f"{kind}.pairs").read_text())
         self.assertFalse((self._slot("p2", "done") / "p2_done.pairs").exists())
         self.assertEqual([], list(self._slot("p3", "queued").iterdir()))
         self.assertEqual([], list(self._slot("p2", "done", "in").iterdir()))
@@ -273,17 +288,16 @@ class P2RecipeTests(unittest.TestCase):
         code, _, stderr = self._complete()
         self.assertEqual(0, code, stderr)
         self.assertFalse(self.bundle_dir.exists())
-        published = self._slot("p3", "queued") / names.artifact(
-            self.BUNDLE_NAME, "p2", "no")
         self.assertEqual(["yankee,four", "zeta,one"],
-                         published.read_text().splitlines())
+                         (self._slot("classified", "no")
+                          / "no.pairs").read_text().splitlines())
 
 
 class NoteNamingTests(unittest.TestCase):
     """The one rendering both ends of the note contract read."""
 
     def test_creation_and_retrieval_render_the_same_titles(self):
-        source = Path("/tmp/s6.txt.pairs_third.90.10.p1.yes")
+        source = Path("/tmp/s6.txt.pairs-third.90.10.p1.yes")
         paths = notes.part_paths(Path("/tmp"), source, 3)
         self.assertEqual([f"{source.name}.aa", f"{source.name}.ab",
                           f"{source.name}.ac"],
@@ -306,7 +320,7 @@ class NotesCommandTests(unittest.TestCase):
     that reach them are the assertion.
     """
 
-    BUNDLE_NAME = "s6.txt.pairs_third.90.10"
+    BUNDLE_NAME = "s6.txt.pairs-third.90.10"
     SOURCE = names.artifact(BUNDLE_NAME, "p1", "yes")
     PAIRS = ["alpha,two", "mid,three"]
 

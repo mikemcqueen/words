@@ -1,4 +1,31 @@
 # filter_pairs.py
+#
+# UNREGISTERED. `wf filter` is not reachable from the CLI -- see COMMANDS in
+# wf.py. The code is kept because the errand is still wanted; the
+# implementation is not.
+#
+# TODO: bring `filter` up to the steps architecture.
+#
+# This is the last command written before `workflow/steps/` existed: it
+# predates that refactor (7f03f48, vs ff0e359 which introduced steps) and was
+# never converted. It shares no code with `complete p1` beyond the primitives
+# both are entitled to -- `filter_results`, `setops.merge`, the `names`
+# renderers -- and duplicates the sequencing around them, which is also spelled
+# a third time in steps/filter.py.
+#
+# What retired it: it opens no bundle, so it has no Context and no bundle name.
+# It renders the p2 queue name from the *result stem* instead, which
+# `p1_extract` stopped doing -- evalpair spells that stem with `_`, which
+# `check_name` refuses, so the artifact this command publishes is one
+# `wf eval p2` cannot open. It also hand-rolls the "already submitted?" guard
+# against three known paths, a question `bundle.in_flight` and the queue
+# contract answer everywhere else.
+#
+# Converting it means giving it a bundle: `filter` is the "re-slice a result I
+# already have at a different band" errand, so the bundle name has to come from
+# the caller or from the archived pairs file the result was produced from, not
+# from the jsonl. Once it has one, the naming divergence and the guard both
+# disappear into machinery that already exists.
 
 import argparse
 
