@@ -553,12 +553,12 @@ class BestTests(unittest.TestCase):
             (fx.slot(self.opts, ["p2", "eval"])
              / "top.s2.m4.g4.u-cdef.3.r2").is_dir())
 
-    def test_gen_best_pairs_accumulates_and_preserves_unchanged_mtime(self):
+    def test_gen_best_pairs_accumulates_manual_entries_and_preserves_mtime(self):
         target = self._target()
         self._complete_files(target)
         top = self._write(target / "top.segments", "a,b\nbad,pair\n", 30)
         old_best = self._write(
-            target / "best.pairs", "bad,pair\nx,y\n", 50)
+            target / "best.pairs", "bad,pair\nmanual,entry\nx,y\n", 50)
         self._write(config.classified(self.root, "yes"),
                     "a,b\nbad,pair\nx,y\n", 45)
         self._write(config.classified(self.root, "no"), "bad,pair\n", 10)
@@ -571,9 +571,9 @@ class BestTests(unittest.TestCase):
             "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
             "-g", "4", "best.pairs")
         self.assertEqual(0, code, stderr)
-        self.assertEqual("a,b\nx,y\n", old_best.read_text())
+        self.assertEqual("a,b\nmanual,entry\nx,y\n", old_best.read_text())
         self.assertEqual("a,b\nbad,pair\n", top.read_text())
-        self.assertIn("Generated 2 best pairs (1 added, 1 dropped)", stdout)
+        self.assertIn("Generated 3 best pairs (1 added, 1 dropped)", stdout)
         self.assertIn("dfs.best out of date (best.pairs changed)", stdout)
 
         mtime = old_best.stat().st_mtime_ns
@@ -582,7 +582,7 @@ class BestTests(unittest.TestCase):
             "-g", "4", "best.pairs")
         self.assertEqual(0, code, stderr)
         self.assertEqual(mtime, old_best.stat().st_mtime_ns)
-        self.assertIn("Generated 2 best pairs (0 added, 0 dropped)", stdout)
+        self.assertIn("Generated 3 best pairs (0 added, 0 dropped)", stdout)
 
     # ------------------------------------------------------------ best notes
 

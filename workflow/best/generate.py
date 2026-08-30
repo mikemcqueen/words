@@ -249,12 +249,15 @@ def build_best_pairs(target: Target) -> None:
     with tempfile.TemporaryDirectory(prefix="wf-best-pairs-") as tmp:
         scratch = Path(tmp)
         collated = setops.merge([top_segments], scratch / "top.pairs")
-        candidates = setops.merge(
-            [collated, destination] if destination.exists() else [collated],
-            scratch / "candidates.pairs")
         confirmed = setops.common(
-            candidates, confirmed_yes, scratch / "confirmed.pairs")
-        setops.diff(confirmed, hard_no, destination, stable_mtime=True)
+            collated, confirmed_yes, scratch / "confirmed.pairs")
+        # best.pairs is a sticky accumulator: classified YES gates new frontier
+        # entries, but an operator may add a pair directly before its verdict
+        # is recorded. Only a hard NO retracts an existing entry.
+        candidates = setops.merge(
+            [confirmed, destination] if destination.exists() else [confirmed],
+            scratch / "candidates.pairs")
+        setops.diff(candidates, hard_no, destination, stable_mtime=True)
     mark_generated(destination)
 
     after = set(destination.read_text().splitlines())
