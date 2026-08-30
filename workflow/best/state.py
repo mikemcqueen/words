@@ -1,7 +1,9 @@
 import re
 
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 from workflow import config, fs
@@ -76,15 +78,19 @@ class Target:
     def artifact(self, name: str) -> Path:
         return self.target_dir / name
 
-    def command(self, verb: str, stage: str | None = None,
-                force: bool = False) -> str:
+    def command(self, verb: str, *args: str, force: bool = False) -> str:
+        """How to spell one of this target's own commands, for the operator.
+
+        The trailing args are whatever the verb takes past the address -- a
+        stage, a --source, an -n -- and are rendered in the order given, so
+        one renderer serves gen, prepare and the bare verbs alike.
+        """
         argv = ["wf", "best", verb, self.sentence,
                 f"-{self.letter_form}", self.named_letters,
                 "-g", str(self.segment_count)]
         if self.min_words != 4:
             argv.extend(["-m", str(self.min_words)])
-        if stage is not None:
-            argv.append(stage)
+        argv.extend(args)
         if force:
             argv.append("-f")
         return " ".join(argv)
@@ -286,38 +292,18 @@ def check_letter_set(target: Target) -> None:
                              f"as {sibling.name}")
 
 
-@dataclass(frozen=True)
-class State:
-    message: str
-    next_command: str | None = None
-    place: Path | None = None
+# ----------------------------------------------------------- generation clock
 
+SOURCES = ("seed", "best")
 
-def _missing_artifact(target: Target, name: str) -> State | None:
-    path = target.artifact(name)
-    if path.exists():
-        fs.raise_if_not_file(path)
-        return None
-    detail = ""
-    if path.is_symlink():
-        link = path.readlink()
-        missing = link if link.is_absolute() else path.parent / link
-        detail = f" (dangling symlink: {missing.resolve()})"
-    # dfs.seed is the first artifact derive_state reaches, so it is the only
-    # stage reportable while the target directory is absent -- and the only
-    # one -f is valid on. The offered command is therefore the one that works.
-    return State(f"{name} missing{detail}",
-                 next_command=target.command(
-                     "gen", name, force=not target.target_dir.exists()))
-
-
-def _newer(path: Path, reference: Path) -> bool:
-    fs.raise_if_not_file(path)
-    return path.stat().st_mtime_ns > reference.stat().st_mtime_ns
+# How much a widen adds to the frontier cutoff it already has. One step, not a
+# multiplier: the operator reads the rendered -n and edits it if they want
+# more.
+WIDEN_STEP = 1000
 
 
 def _stamp(path: Path) -> Path:
-    """The generation marker beside an artifact, touched by every gen."""
+    """The generation marker beside an artifact, written by every gen."""
     return path.with_name(f".{path.name}.gen")
 
 
@@ -341,13 +327,52 @@ def _generated(path: Path) -> Path:
     return stamp if stamp.exists() else path
 
 
-def mark_generated(path: Path) -> None:
-    _stamp(path).touch()
+def mark_generated(path: Path, text: str = "") -> None:
+    """Record a successful generation, optionally with what it was made from.
+
+    write_text rather than touch: a marker that also carries contents has to
+    advance its mtime whether or not those contents changed, or the generation
+    clock would stall exactly where stable_mtime stalls the content clock.
+    """
+    _stamp(path).write_text(text)
 
 
-def _out_of_date(name: str, reasons: list[str], command_text: str) -> State:
-    return State(f"{name} out of date ({', '.join(reasons)})",
-                 next_command=command_text)
+def top_segments_source(target: Target) -> str:
+    """Which DFS artifact the current top.segments was generated from.
+
+    A missing or empty marker means seed: that is what every tree built before
+    the frontier had a choice of source was generated from. Anything else is
+    rejected rather than guessed at -- the value selects an input to hours of
+    search, and a wrong guess spends them on the wrong one.
+    """
+    marker = _stamp(target.artifact("top.segments"))
+    if not marker.exists():
+        return "seed"
+    recorded = marker.read_text().strip()
+    if not recorded:
+        return "seed"
+    if recorded not in SOURCES:
+        raise ValueError(
+            f"{marker}: unrecognised top.segments source {recorded!r}; "
+            f"expected {' or '.join(SOURCES)}")
+    return recorded
+
+
+def _newer(path: Path, reference: Path) -> bool:
+    fs.raise_if_not_file(path)
+    return path.stat().st_mtime_ns > reference.stat().st_mtime_ns
+
+
+def _dangling(path: Path) -> str:
+    """How to name a symlink with nothing under it, or "" for anything else."""
+    if path.exists() or not path.is_symlink():
+        return ""
+    link = path.readlink()
+    missing = link if link.is_absolute() else path.parent / link
+    return f" (dangling symlink: {missing.resolve()})"
+
+
+# ------------------------------------------------------------------- review
 
 
 def review_locations(target: Target) -> tuple[list[Path], list[Path], list[Path]]:
@@ -370,10 +395,12 @@ def review_locations(target: Target) -> tuple[list[Path], list[Path], list[Path]
 def yes_pairs_argv(target: Target) -> list[str]:
     """`eval p2`'s --yes-pairs flag for target, empty until best.pairs exists.
 
-    A first review has no confirmed-YES set to check itself against; every
-    round after one has. Both the command `best review` runs and the one
-    `best status` prints for the operator to run by hand read the answer here,
-    so the two cannot drift apart.
+    Nothing under `wf best` calls this. The bundle `best review` builds now
+    excludes the confirmed-YES set outright, so there is nothing left in it for
+    the flag to mark, and no `wf best` command types or prints it. The
+    rendering stays here, unused, because `wf eval p2 --yes-pairs` and
+    `wf notes p2 --yes-pairs` remain hand-typeable and a later revival of the
+    marked-in-place bundle would want exactly this.
     """
     best_pairs = target.artifact("best.pairs")
     return ["--yes-pairs", str(best_pairs)] if best_pairs.is_file() else []
@@ -386,8 +413,7 @@ def eval_p2_command(target: Target, queued_name: str) -> str:
     `complete` and `notes` raise -- renders it here, so the flags cannot drift
     between the message the operator reads and the command they then type.
     """
-    return " ".join(["wf", "eval", "p2", queued_name,
-                     *yes_pairs_argv(target)])
+    return " ".join(["wf", "eval", "p2", queued_name])
 
 
 def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
@@ -403,6 +429,10 @@ def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
     touched by anything. A sibling the pattern does not admit is rejected
     rather than guessed at: it is either a name nothing here rendered, or a
     prefix collision, and both are worth stopping for.
+
+    One sequence serves the whole target. Which DFS artifact the frontier came
+    from does not split it: the source is informational, and two frontiers of
+    one target are two rounds of one review, not two reviews.
     """
     pattern = re.compile(
         re.escape(target.review_prefix) + r"\d+\.r([1-9]\d*)\.pairs")
@@ -421,95 +451,519 @@ def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
     return rounds
 
 
-def _review_state(target: Target, top_segments: Path) -> State | None:
-    queued, evaluating, archived = review_locations(target)
-    if queued:
-        return State(f"review submitted ({queued[0].name})",
-                     next_command=eval_p2_command(target, queued[0].name))
-    if evaluating:
-        return State(f"review awaiting completion ({evaluating[0].name})",
-                     next_command=target.command("complete"))
+# -------------------------------------------------------------------- state
 
-    newest = max((path.stat().st_mtime_ns for path in archived), default=0)
-    if newest > top_segments.stat().st_mtime_ns:
+
+@dataclass(frozen=True)
+class Choice:
+    """One command the operator may run next, under the label it answers to."""
+    label: str
+    command: str
+
+
+@dataclass(frozen=True)
+class State:
+    message: str
+    choices: tuple[Choice, ...] = ()
+    place: Path | None = None
+    # A parenthetical under the message, for a row whose numbers are what make
+    # the message actionable, and prose after the choices, for a way forward
+    # that is not a command anything renders.
+    detail: str | None = None
+    note: tuple[str, ...] = ()
+
+
+def render_choices(choices: tuple[Choice, ...]) -> list[str]:
+    """The lines presenting one or several alternatives, indented for report.
+
+    One choice is a line of its own under its label -- `next:` for the ordinary
+    single way forward, `widen:` or `refine:` where the label is what says what
+    kind of step it is. Several go under `choose next:`, with the labels padded
+    so the commands line up and can be read down.
+    """
+    if not choices:
+        return []
+    if len(choices) == 1:
+        return [f"  {choices[0].label}: {choices[0].command}"]
+    width = max(len(choice.label) for choice in choices) + 1
+    return ["  choose next:",
+            *(f"    {(choice.label + ':').ljust(width)} {choice.command}"
+              for choice in choices)]
+
+
+@dataclass
+class Inputs:
+    """Everything a row may read, resolved once per target.
+
+    Rows are not independent: row N runs only because rows 1..N-1 returned
+    None, and reads files their absence would have reported. Split into
+    functions, that guard stops being the preceding line and becomes invisible,
+    so the accessors raise on an absent file rather than dating against one --
+    a row reaching one out of order fails loudly instead of quietly.
+
+    The conditions and the command strings live here rather than in the rows
+    because several rows share them: `_best_pairs_empty` and `_next_search`
+    both offer a reseed, `_no_frontier` and `_top_segments_behind_dfs` both
+    offer a top.segments generation. Two renderings of one command is the drift
+    `eval_p2_command` exists to prevent.
+    """
+
+    target: Target
+
+    # ---------------------------------------------------------- resolved paths
+
+    def _present(self, name: str) -> Path:
+        path = self.target.artifact(name)
+        fs.raise_if_not_file(path)
+        return path
+
+    def dfs(self, source: str) -> Path:
+        return self.target.artifact(f"dfs.{source}")
+
+    @cached_property
+    def hard_no(self) -> Path:
+        return config.classified(self.target.root, "no")
+
+    @cached_property
+    def confirmed_yes(self) -> Path:
+        return config.classified(self.target.root, "yes")
+
+    @cached_property
+    def seed(self) -> Path | None:
+        return self.target.seed()
+
+    @cached_property
+    def top_segments(self) -> Path:
+        return self._present("top.segments")
+
+    @cached_property
+    def best_pairs(self) -> Path:
+        return self._present("best.pairs")
+
+    @cached_property
+    def review(self) -> tuple[list[Path], list[Path], list[Path]]:
+        return review_locations(self.target)
+
+    @cached_property
+    def source(self) -> str:
+        return top_segments_source(self.target)
+
+    @cached_property
+    def dfs_present(self) -> tuple[str, ...]:
+        return tuple(source for source in SOURCES
+                     if self.dfs(source).exists())
+
+    # ------------------------------------------------------------- conditions
+
+    @cached_property
+    def seed_search_needed(self) -> list[str]:
+        if self.seed is None:
+            raise FileNotFoundError(f"seed missing: {self.target.seed_glob}")
+        dfs_seed = self.dfs("seed")
+        if not dfs_seed.exists():
+            return ["missing"]
+        reasons = []
+        if _newer(self.seed, dfs_seed):
+            reasons.append("seed changed")
+        if _newer(self.hard_no, dfs_seed):
+            reasons.append("hard-NO set changed")
+        return reasons
+
+    @cached_property
+    def best_search_needed(self) -> list[str]:
+        # An empty best.pairs makes dfs.best a strictly worse dfs.seed, so
+        # there is no such search to offer and no reason to date one.
+        best_pairs = self.target.artifact("best.pairs")
+        if not best_pairs.is_file() or fs.line_count(best_pairs) == 0:
+            return []
+        dfs_best = self.dfs("best")
+        if not dfs_best.exists():
+            return ["missing"]
+        reasons = []
+        if _newer(best_pairs, dfs_best):
+            reasons.append("best.pairs changed")
+        if _newer(self.hard_no, dfs_best):
+            reasons.append("hard-NO set changed")
+        return reasons
+
+    def search_needed(self, source: str) -> list[str]:
+        return (self.seed_search_needed if source == "seed"
+                else self.best_search_needed)
+
+    def top_segments_behind(self, source: str) -> bool:
+        """Has a finished search landed that the frontier was never made from?
+
+        The search has to be current: a DFS file that is itself out of date
+        wants re-running, not reading, and offering to read it would spend the
+        frontier on results the next row is about to call stale.
+        """
+        dfs = self.dfs(source)
+        if not dfs.exists() or self.search_needed(source):
+            return False
+        return _newer(dfs, _generated(self.top_segments))
+
+    # -------------------------------------------------------------- renderers
+
+    def prepare_command(self, source: str) -> str:
+        # -f is the seed search's alone: it is what creates the levels below
+        # the sentence, and only a seed search may create them.
+        force = source == "seed" and not self.target.target_dir.exists()
+        return self.target.command("prepare", "--source", source, force=force)
+
+    def gen_top_command(self, source: str, count: int | None = None) -> str:
+        argv = ["top.segments", "--source", source]
+        if count is not None:
+            argv.extend(["-n", str(count)])
+        return self.target.command("gen", *argv)
+
+    def gen_best_pairs_command(self) -> str:
+        return self.target.command("gen", "best.pairs")
+
+    def review_command(self) -> str:
+        return self.target.command("review")
+
+    def search_choices(self) -> tuple[Choice, ...]:
+        """The searches worth running now, cheapest first."""
+        choices = []
+        if self.seed_search_needed:
+            choices.append(Choice("reseed", self.prepare_command("seed")))
+        if self.best_search_needed:
+            choices.append(Choice("refine", self.prepare_command("best")))
+        return tuple(choices)
+
+
+def _search_message(name: str, reasons: list[str]) -> str:
+    if reasons == ["missing"]:
+        return f"{name} missing"
+    return f"{name} out of date ({', '.join(reasons)})"
+
+
+# ---------------------------------------------------------------------- rows
+#
+# Each returns a State when its condition holds and None otherwise. ROWS is
+# evaluated in order and the first State wins, so a row may assume every row
+# above it declined -- which is what lets it read files their absence would
+# have reported.
+
+
+def _letters_missing(inputs: Inputs) -> State | None:
+    letters = inputs.target.letters
+    if letters.exists():
+        # Present but not a regular file is an error, not a state: reporting
+        # it as missing would send the operator to place a file that is there.
+        fs.raise_if_not_file(letters)
         return None
-    return State("review needed", next_command=target.command("review"))
+    return State("letters missing", place=letters)
+
+
+def _seed_missing(inputs: Inputs) -> State | None:
+    if inputs.seed is not None:
+        return None
+    return State("seed missing", place=inputs.target.seed_glob)
+
+
+def _review_queued(inputs: Inputs) -> State | None:
+    queued, _, _ = inputs.review
+    if not queued:
+        return None
+    command_text = eval_p2_command(inputs.target, queued[0].name)
+    return State(f"review submitted ({queued[0].name})",
+                 choices=(Choice("next", command_text),))
+
+
+def _review_evaluating(inputs: Inputs) -> State | None:
+    _, evaluating, _ = inputs.review
+    if not evaluating:
+        return None
+    return State(f"review awaiting completion ({evaluating[0].name})",
+                 choices=(Choice("next", inputs.target.command("complete")),))
+
+
+def _top_segments_choices(inputs: Inputs,
+                          sources: tuple[str, ...]) -> tuple[Choice, ...]:
+    if len(sources) == 1:
+        return (Choice("next", inputs.gen_top_command(sources[0])),)
+    return tuple(Choice(source, inputs.gen_top_command(source))
+                 for source in sources)
+
+
+def _no_frontier(inputs: Inputs) -> State | None:
+    top_segments = inputs.target.artifact("top.segments")
+    if top_segments.exists():
+        fs.raise_if_not_file(top_segments)
+        return None
+    detail = _dangling(top_segments)
+    present = inputs.dfs_present
+    if not present:
+        # The one bootstrap gate, and deliberately narrower than "dfs.seed is
+        # missing": after the first round dfs.seed is an input to the seed
+        # search and nothing else, so a cleaned results/ must not force a fresh
+        # seed DFS while best.pairs and dfs.best are alive.
+        detail += "".join(_dangling(inputs.dfs(source)) for source in SOURCES)
+        return State(f"no search results yet{detail}",
+                     choices=(Choice("next", inputs.prepare_command("seed")),))
+    return State(f"top.segments missing{detail}",
+                 choices=_top_segments_choices(inputs, present))
+
+
+def _review_needed(inputs: Inputs) -> State | None:
+    _, _, archived = inputs.review
+    newest = max((path.stat().st_mtime_ns for path in archived), default=0)
+    if newest > inputs.top_segments.stat().st_mtime_ns:
+        return None
+    return State(f"review needed (frontier from {inputs.source})",
+                 choices=(Choice("next", inputs.review_command()),))
+
+
+def _best_pairs_missing(inputs: Inputs) -> State | None:
+    best_pairs = inputs.target.artifact("best.pairs")
+    if best_pairs.exists():
+        fs.raise_if_not_file(best_pairs)
+        return None
+    return State(f"best.pairs missing{_dangling(best_pairs)}",
+                 choices=(Choice("next", inputs.gen_best_pairs_command()),))
+
+
+def _best_pairs_out_of_date(inputs: Inputs) -> State | None:
+    generated = _generated(inputs.best_pairs)
+    reasons = []
+    if _newer(inputs.top_segments, generated):
+        reasons.append("top.segments changed")
+    if _newer(inputs.confirmed_yes, generated):
+        reasons.append("confirmed-YES set changed")
+    if _newer(inputs.hard_no, generated):
+        reasons.append("hard-NO set changed")
+    if not reasons:
+        return None
+    return State(f"best.pairs out of date ({', '.join(reasons)})",
+                 choices=(Choice("next", inputs.gen_best_pairs_command()),))
+
+
+def _best_pairs_empty(inputs: Inputs) -> State | None:
+    """best.pairs is present and current and holds nothing.
+
+    Fires whenever the set is empty, not only at a dead end: widening the
+    frontier is orders of magnitude cheaper than either search, and the
+    operator should see it before reaching for hours of DFS.
+    """
+    if fs.line_count(inputs.best_pairs) != 0:
+        return None
+    frontier = fs.line_count(inputs.top_segments)
+    choices = [Choice("widen", inputs.gen_top_command(
+        inputs.source, frontier + WIDEN_STEP))]
+    if inputs.seed_search_needed:
+        choices.append(Choice("reseed", inputs.prepare_command("seed")))
+    # No refine: gen dfs.best and prepare --source best both refuse an empty
+    # best.pairs. And no command retracts a verdict -- classify is union-only
+    # -- so the way back is prose. A hand-edit of the hard-NO set does not
+    # reopen the review either, which is why the review is named with it.
+    return State(
+        "review confirmed no pairs",
+        detail=f"({frontier} frontier pairs, 0 in classified/yes)",
+        choices=tuple(choices),
+        note=(f"or retract NO verdicts in {inputs.hard_no}",
+              f"   and run: {inputs.review_command()}"))
+
+
+def _top_segments_behind_dfs(inputs: Inputs) -> State | None:
+    behind = tuple(source for source in SOURCES
+                   if inputs.top_segments_behind(source))
+    if not behind:
+        return None
+    names = " and ".join(f"dfs.{source}" for source in behind)
+    return State(f"{names} generated after top.segments",
+                 choices=_top_segments_choices(inputs, behind))
+
+
+def _next_search(inputs: Inputs) -> State | None:
+    messages = []
+    if inputs.seed_search_needed:
+        messages.append(_search_message("dfs.seed", inputs.seed_search_needed))
+    if inputs.best_search_needed:
+        messages.append(_search_message("dfs.best", inputs.best_search_needed))
+    choices = inputs.search_choices()
+    if not choices:
+        return None
+    return State("; ".join(messages), choices=choices)
+
+
+@dataclass(frozen=True)
+class Row:
+    """One entry in the precedence table, with what it reads and what it settles.
+
+    `requires` names the files a row's `Inputs` accessors raise without, and
+    `provides` the one a row establishes by declining: `_no_frontier` returning
+    None is what says there is a top.segments to read. In `derive_state` both
+    are inert -- a row runs only because every row above it declined, which is
+    exactly what establishes them, and the group comments below said so in
+    prose. `walk` reports every row rather than stopping at the first, so it
+    needs the same statement as data: which rows the winner leaves
+    unanswerable, and must not call.
+    """
+
+    check: Callable[["Inputs"], State | None]
+    requires: tuple[str, ...] = ()
+    provides: str | None = None
+
+    @property
+    def name(self) -> str:
+        return self.check.__name__
+
+
+ROWS = (
+    # G0 -- hand-placed inputs
+    Row(_letters_missing),
+    Row(_seed_missing, provides="seed"),
+    # G1 -- open review: the frontier is being read and must not be rewritten
+    Row(_review_queued),
+    Row(_review_evaluating),
+    # G2 -- no frontier; everything below has a top.segments
+    Row(_no_frontier, provides="top.segments"),
+    # G3 -- frontier not yet reviewed
+    Row(_review_needed, requires=("top.segments",)),
+    # G4 -- derived set; everything below has a current best.pairs
+    Row(_best_pairs_missing, provides="best.pairs"),
+    Row(_best_pairs_out_of_date, requires=("best.pairs", "top.segments")),
+    Row(_best_pairs_empty, requires=("best.pairs", "top.segments", "seed")),
+    # G5 -- a finished search whose frontier was never generated
+    Row(_top_segments_behind_dfs, requires=("top.segments", "seed")),
+    # G6 -- start the next search
+    Row(_next_search, requires=("seed",)),
+)
 
 
 def derive_state(target: Target) -> State:
     """Return the first missing, stale, or human-gated stage for target."""
-    if not target.letters.exists():
-        return State("letters missing", place=target.letters)
-    fs.raise_if_not_file(target.letters)
-
-    seed = target.seed()
-    if seed is None:
-        return State("seed missing", place=target.seed_glob)
-
-    missing = _missing_artifact(target, "dfs.seed")
-    if missing is not None:
-        return missing
-    dfs_seed = target.artifact("dfs.seed")
-    hard_no = config.classified(target.root, "no")
-    reasons = []
-    if _newer(seed, dfs_seed):
-        reasons.append("seed changed")
-    if _newer(hard_no, dfs_seed):
-        reasons.append("hard-NO set changed")
-    if reasons:
-        return _out_of_date(
-            "dfs.seed", reasons, target.command("gen", "dfs.seed"))
-
-    missing = _missing_artifact(target, "top.segments")
-    if missing is not None:
-        return missing
-    top_segments = target.artifact("top.segments")
-    if _newer(dfs_seed, _generated(top_segments)):
-        return _out_of_date(
-            "top.segments", ["dfs.seed changed"],
-            target.command("gen", "top.segments"))
-
-    review = _review_state(target, top_segments)
-    if review is not None:
-        return review
-
-    missing = _missing_artifact(target, "best.pairs")
-    if missing is not None:
-        return missing
-    best_pairs = target.artifact("best.pairs")
-    confirmed_yes = config.classified(target.root, "yes")
-    generated = _generated(best_pairs)
-    reasons = []
-    if _newer(top_segments, generated):
-        reasons.append("top.segments changed")
-    if _newer(confirmed_yes, generated):
-        reasons.append("confirmed-YES set changed")
-    if _newer(hard_no, generated):
-        reasons.append("hard-NO set changed")
-    if reasons:
-        return _out_of_date(
-            "best.pairs", reasons, target.command("gen", "best.pairs"))
-
-    missing = _missing_artifact(target, "dfs.best")
-    if missing is not None:
-        return missing
-    dfs_best = target.artifact("dfs.best")
-    reasons = []
-    if _newer(best_pairs, dfs_best):
-        reasons.append("best.pairs changed")
-    if _newer(hard_no, dfs_best):
-        reasons.append("hard-NO set changed")
-    if reasons:
-        return _out_of_date(
-            "dfs.best", reasons, target.command("gen", "dfs.best"))
-    return State("up to date")
+    inputs = Inputs(target)
+    for row in ROWS:
+        state = row.check(inputs)
+        if state is not None:
+            return state
+    # Not "up to date", which would read as a lost write: a completed round
+    # contributed nothing new to either classified set and best.pairs did not
+    # move, so re-running either search reproduces what is already there.
+    return State("converged")
 
 
-def report(target: Target) -> State:
+# ------------------------------------------------------------- every row
+#
+# What `status --all` reports: the whole table rather than its first firing
+# row. This is a diagnostic for the precedence itself -- which rows were
+# asked, what each answered, and which the winner left unanswerable -- and
+# not a second opinion about what to run next. derive_state stays the one
+# authority for that, which is why report calls it either way.
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """One row's answer: fired, declined, or never asked."""
+
+    row: Row
+    state: State | None = None
+    # The files the row would have read that no row above it established. Set
+    # only when the row was skipped, and a skipped row has no state.
+    unmet: tuple[str, ...] = ()
+
+    @property
+    def fired(self) -> bool:
+        return self.state is not None
+
+
+def walk_rows(target: Target) -> list[Verdict]:
+    """Ask every row, skipping the ones the answers above it made unreadable.
+
+    A row is asked only when the rows providing its `requires` declined, so
+    the accessors keep raising on an absent file rather than being taught to
+    return None for one. Up to and including the row derive_state returns
+    this asks exactly what derive_state asked and gets the same answers: every
+    row above the winner declined, and declining is what establishes a file.
+    Past the winner the answers are real but partial -- a row reads the tree
+    as it stands, and the winner's own fix is what moves the files the rows
+    below it date against, so an `also` there is a prediction of the next
+    round at best.
+    """
+    inputs = Inputs(target)
+    established: set[str] = set()
+    verdicts = []
+    for row in ROWS:
+        unmet = tuple(name for name in row.requires if name not in established)
+        if unmet:
+            verdicts.append(Verdict(row, unmet=unmet))
+            continue
+        state = row.check(inputs)
+        if state is None and row.provides is not None:
+            established.add(row.provides)
+        verdicts.append(Verdict(row, state=state))
+    return verdicts
+
+
+def _row_labels(verdicts: list[Verdict]) -> list[str]:
+    """What each verdict is called in the table.
+
+    The first row to fire is the one derive_state returned, and every row
+    below it that fires is reading a tree the winner's own fix will move --
+    so the two are named apart. `also` is a symptom, not an alternative: the
+    command that clears it is the winner's.
+    """
+    labels = []
+    won = False
+    for verdict in verdicts:
+        if verdict.unmet:
+            labels.append("n/a")
+        elif not verdict.fired:
+            labels.append("no")
+        else:
+            labels.append("also" if won else "won")
+            won = True
+    return labels
+
+
+def render_rows(verdicts: list[Verdict]) -> list[str]:
+    """The table under the report, one line per row, in precedence order.
+
+    The row's own function name, not a prose label: the operator reading this
+    is asking why the table chose what it chose, and the answer is in
+    state.py under that name.
+
+    Under a row that fired, the commands it offers, through the same renderer
+    report uses so the table cannot drift from the report above it. Only the
+    winner's are safe to run: an `also` row reads the tree as it stands, and
+    the winner's own fix is what moves the files it dates against, so its
+    commands are indented under the row that offers them rather than left to
+    read as a second recommendation.
+    """
+    labels = _row_labels(verdicts)
+    label_width = max(len(label) for label in labels) + 1
+    name_width = max(len(verdict.row.name) for verdict in verdicts)
+    lines = ["  rows:"]
+    for verdict, label in zip(verdicts, labels):
+        label = (label + ":").ljust(label_width)
+        if verdict.unmet:
+            trailer = f"not asked (needs {', '.join(verdict.unmet)})"
+        elif verdict.state is None:
+            trailer = ""
+        else:
+            trailer = verdict.state.message
+        name = verdict.row.name.ljust(name_width)
+        lines.append(f"    {label} {name}  {trailer}".rstrip())
+        if verdict.state is not None:
+            lines.extend(f"    {line}"
+                         for line in render_choices(verdict.state.choices))
+    return lines
+
+
+def report(target: Target, rows: bool = False) -> State:
     state = derive_state(target)
     print(f"{target.address}: {state.message}")
+    if state.detail is not None:
+        print(f"  {state.detail}")
     if state.place is not None:
         print(f"  place: {state.place}")
-    if state.next_command is not None:
-        print(f"  next: {state.next_command}")
+    for line in render_choices(state.choices):
+        print(line)
+    for line in state.note:
+        print(f"  {line}")
+    if rows:
+        for line in render_rows(walk_rows(target)):
+            print(line)
     return state
