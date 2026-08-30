@@ -134,7 +134,8 @@ class Gen(command.Action):
                               "(provisional DFS results), top.segments "
                               "(frequent pairs from the DFS results named by "
                               "--source), best.pairs (confirmed reviewed "
-                              "pairs), or dfs.best (DFS results weighted by "
+                              "pairs plus retained manual entries), or "
+                              "dfs.best (DFS results weighted by "
                               "best.pairs)"),
                          ))
 
@@ -380,9 +381,9 @@ class Review(command.Action):
             # Both standing sets come out, not just the hard-NO one. Under
             # --source best the frontier is weighted toward pairs already
             # confirmed, and re-confirming them buys nothing: build_best_pairs
-            # intersects against classified/yes globally, so a pair confirmed
-            # in round 1 reaches best.pairs in round 5 whether or not round 5
-            # asked about it.
+            # admits classified YES pairs from the frontier and retains them,
+            # so a pair confirmed in round 1 reaches best.pairs in round 5
+            # whether or not round 5 asked about it.
             remaining = setops.diff(
                 collated, hard_no, scratch / "remaining.pairs")
             review_file = setops.diff(
