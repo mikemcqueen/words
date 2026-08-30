@@ -1,8 +1,10 @@
+import io
 import os
 import re
 import tempfile
 import unittest
 
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -65,6 +67,10 @@ class BestTests(unittest.TestCase):
         self._write(target / "best.pairs", "a,b\n", 50)
         dfs_best = self._write(results / "dfs.best.out", "1 a b\n", 60)
         (target / "dfs.best").symlink_to(dfs_best)
+        # The frontier was last generated from dfs.best, after it landed: the
+        # content clock stays at 30 because the regeneration was a no-op, and
+        # the generation clock is what says the finished search was read.
+        self._write(state._stamp(target / "top.segments"), "best\n", 65)
 
     def test_gen_help_describes_options_and_positionals(self):
         code, stdout, stderr = fx.run_wf(
@@ -115,7 +121,45 @@ class BestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected m<N>"):
             fx.run_wf("-d", str(self.root), "best", "status", "s2/u-cdef/g4")
 
-    def test_status_reports_dangling_and_stale_dfs_seed(self):
+    def test_status_all_reports_every_row_and_leaves_the_verdict_alone(self):
+        self._target()
+        plain_code, plain, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "status", "--all",
+            "s2/u-cdef/m4/g4")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(plain_code, code)
+        # The report is unchanged; the table is added under it.
+        self.assertTrue(stdout.startswith(plain), stdout)
+        self.assertNotIn("rows:", plain)
+
+        table = stdout[len(plain):].splitlines()
+        self.assertEqual("  rows:", table[0])
+        rows = [line for line in table[1:]
+                if any(line.startswith(f"    {label}:")
+                       for label in ("won", "also", "no", "n/a"))]
+        self.assertEqual(len(state.ROWS), len(rows))
+        # Nothing is placed, so the first row wins and the rows reading files
+        # it reported missing are named rather than run.
+        self.assertIn("won:", table[1])
+        self.assertIn("_letters_missing", table[1])
+        self.assertIn("not asked (needs top.segments)",
+                      next(line for line in table if "_review_needed" in line))
+        # A fired row carries the command it offers, under it.
+        frontier = next(i for i, line in enumerate(table)
+                        if "_no_frontier" in line)
+        self.assertIn("also:", table[frontier])
+        self.assertEqual("      next: wf best prepare s2 -u cdef -g 4 "
+                         "--source seed", table[frontier + 1])
+
+        # -a is the same switch.
+        self.assertEqual(
+            stdout,
+            fx.run_wf("-d", str(self.root), "best", "status", "-a",
+                      "s2/u-cdef/m4/g4")[1])
+
+    def test_status_reports_no_search_results_and_a_dangling_link(self):
         target = self._target()
         self._write(target.parents[2] / "letters", "abcdef\n", 10)
         self._write(target.parents[2] / "seed.m4.idx2.85.15.pairs",
@@ -126,17 +170,35 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn(f"dfs.seed missing (dangling symlink: {missing})", stdout)
+        self.assertIn(
+            f"no search results yet (dangling symlink: {missing})", stdout)
+        self.assertIn(
+            "next: wf best prepare s2 -u cdef -g 4 --source seed", stdout)
 
+        # One search result and no frontier is a generation, not a search:
+        # the bootstrap gate is "no results at all", not "no dfs.seed".
         (target / "dfs.seed").unlink()
         self._write(target / "dfs.seed", "1 a b\n", 20)
-        hard_no = config.classified(self.root, "no")
-        self._write(hard_no, "a,b\n", 30)
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn("dfs.seed out of date (hard-NO set changed)", stdout)
-        self.assertIn("next: wf best gen s2 -u cdef -g 4 dfs.seed", stdout)
+        self.assertIn("s2/u-cdef/m4/g4: top.segments missing", stdout)
+        self.assertIn(
+            "next: wf best gen s2 -u cdef -g 4 top.segments --source seed",
+            stdout)
+
+        # Two, and the operator picks which frontier to review.
+        self._write(target / "dfs.best", "1 a b\n", 20)
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("choose next:", stdout)
+        self.assertIn(
+            "seed: wf best gen s2 -u cdef -g 4 top.segments --source seed",
+            stdout)
+        self.assertIn(
+            "best: wf best gen s2 -u cdef -g 4 top.segments --source best",
+            stdout)
 
     def test_status_derives_review_gate_and_fully_fresh_state(self):
         target = self._target()
@@ -145,12 +207,12 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn("s2/u-cdef/m4/g4: up to date", stdout)
+        self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
 
-        os.utime(target / "dfs.seed", (35, 35))
+        os.utime(target / "dfs.seed", (70, 70))
         _, stdout, _ = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
-        self.assertIn("top.segments out of date (dfs.seed changed)", stdout)
+        self.assertIn("dfs.seed generated after top.segments", stdout)
         os.utime(target / "dfs.seed", (20, 20))
 
         confirmed_yes = config.classified(self.root, "yes")
@@ -172,7 +234,8 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn("s2/u-cdef/m4/g4: review needed", stdout)
+        self.assertIn(
+            "s2/u-cdef/m4/g4: review needed (frontier from best)", stdout)
         self.assertIn("next: wf best review s2 -u cdef -g 4", stdout)
 
         queued = fx.slot(self.opts, ["p2", "queued"])
@@ -277,12 +340,12 @@ class BestTests(unittest.TestCase):
                 mock.patch.object(generate.subprocess, "run", side_effect=run):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-                "-g", "4", "top.segments")
+                "-g", "4", "--source", "seed", "top.segments")
             top = target / "top.segments"
             os.utime(top, (30, 30))
             code2, stdout2, stderr2 = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-                "-g", "4", "-n", "2", "top.segments")
+                "-g", "4", "-n", "2", "--source", "seed", "top.segments")
 
         self.assertEqual((0, 0), (code, code2), stderr + stderr2)
         self.assertEqual(
@@ -291,43 +354,46 @@ class BestTests(unittest.TestCase):
             ["top-segments", "--pairs", "-n", "2", str(dfs_seed)], calls[1])
         self.assertEqual(30, int(top.stat().st_mtime))
         self.assertIn("Generated 2 top segments", stdout + stdout2)
-        self.assertIn("s2/u-cdef/m4/g4: review needed", stdout2)
+        self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from seed)",
+                      stdout2)
         self.assertIn(
             f"top-segments --pairs -n 2 {dfs_seed}", stderr2)
+        # The marker records the source and advances even where the stable
+        # placement left top.segments untouched.
+        self.assertEqual("seed\n", state._stamp(top).read_text())
+        self.assertGreater(state._stamp(top).stat().st_mtime_ns,
+                           top.stat().st_mtime_ns)
 
     def test_no_op_top_segments_gen_clears_a_reran_dfs_seed(self):
         target = self._target()
-        self._shared_inputs(target.parent)
-        dfs_seed = self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        self._complete_files(target)
         top = target / "top.segments"
 
         def run(argv, **kwargs):
-            kwargs["stdout"].write("alpha,beta\n")
+            kwargs["stdout"].write("a,b\n")
             return mock.Mock(returncode=0)
+
+        # A dfs.seed rerun that exhausts the search renames its target fresh,
+        # so a finished search sits ahead of the frontier on identical input.
+        os.utime(target / "dfs.seed", (70, 70))
+        _, stdout, _ = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
+        self.assertIn("dfs.seed generated after top.segments", stdout)
+        self.assertIn(
+            "next: wf best gen s2 -u cdef -g 4 top.segments --source seed",
+            stdout)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
                 mock.patch.object(generate.subprocess, "run", side_effect=run):
-            code, _, stderr = fx.run_wf(
-                "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-                "-g", "4", "top.segments")
-            self.assertEqual(0, code, stderr)
-            # A dfs.seed rerun that exhausts the search renames its target
-            # fresh, so top.segments goes stale on an identical input.
-            for path in (top, state._stamp(top)):
-                os.utime(path, (30, 30))
-            os.utime(dfs_seed, (35, 35))
-            _, stdout, _ = fx.run_wf(
-                "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
-            self.assertIn("top.segments out of date (dfs.seed changed)", stdout)
-
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-                "-g", "4", "top.segments")
+                "-g", "4", "--source", "seed", "top.segments")
 
         self.assertEqual(0, code, stderr)
         self.assertEqual(30, int(top.stat().st_mtime))
-        self.assertNotIn("top.segments out of date", stdout)
-        self.assertIn("s2/u-cdef/m4/g4: review needed", stdout)
+        self.assertEqual("seed\n", state._stamp(top).read_text())
+        self.assertNotIn("generated after top.segments", stdout)
+        self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
 
     def test_no_op_best_pairs_gen_clears_changed_top_segments(self):
         target = self._target()
@@ -351,7 +417,7 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertIn("(0 added, 0 dropped)", stdout)
         self.assertEqual(50, int(best_pairs.stat().st_mtime))
-        self.assertIn("s2/u-cdef/m4/g4: up to date", stdout)
+        self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
 
     def test_status_reports_a_malformed_target_and_keeps_listing(self):
         universe = self._target().parent
@@ -397,7 +463,13 @@ class BestTests(unittest.TestCase):
         self.assertEqual("25", calls[0][calls[0].index("-n") + 1])
         self.assertIn(f"--pairs {pairs}", stderr)
         self.assertIn("Generated 2 results in 3s", stdout)
-        self.assertIn("s2/u-cdef/m4/g4: up to date", stdout)
+        # A finished search whose frontier was never generated: seconds of
+        # work, and status offers it before the hours of another search.
+        self.assertIn(
+            "s2/u-cdef/m4/g4: dfs.best generated after top.segments", stdout)
+        self.assertIn(
+            "next: wf best gen s2 -u cdef -g 4 top.segments --source best",
+            stdout)
 
         with mock.patch.object(generate.shutil, "which") as which:
             with self.assertRaisesRegex(ValueError,
@@ -413,7 +485,8 @@ class BestTests(unittest.TestCase):
         with mock.patch.object(generate.shutil, "which") as which:
             with self.assertRaisesRegex(ValueError, "only valid for gen dfs.seed"):
                 fx.run_wf("-d", str(self.root), "-f", "best", "gen", "s2",
-                          "-u", "cdef", "-g", "4", "top.segments")
+                          "-u", "cdef", "-g", "4", "--source", "seed",
+                          "top.segments")
         which.assert_not_called()
 
     def test_exclude_classifies_hard_no_and_reports_target_status(self):
@@ -429,7 +502,9 @@ class BestTests(unittest.TestCase):
         self.assertEqual(
             "hard,no\n", config.classified(self.root, "no").read_text())
         self.assertIn("Classified NO: 1 new, 1 total", stdout)
-        self.assertIn("dfs.seed out of date (hard-NO set changed)", stdout)
+        # The derived set comes first: rebuilding it costs seconds, and
+        # running either search off a stale one costs hours.
+        self.assertIn("best.pairs out of date (hard-NO set changed)", stdout)
 
     def test_review_subtracts_hard_no_and_opens_unfiltered_round(self):
         target = self._target()
@@ -532,14 +607,13 @@ class BestTests(unittest.TestCase):
         evaluating.mkdir()
         self._write(evaluating / f"{evaluating.name}.pairs", "a,b\n")
 
+        # The bundle no longer holds confirmed-YES pairs -- best review
+        # subtracts them -- so there is nothing left for --yes-pairs to mark
+        # and no wf best command types it.
         argv, stdout = self._run_notes()
-        self.assertEqual(
-            [evaluating.name, "--yes-pairs", str(target / "best.pairs")],
-            argv)
+        self.assertEqual([evaluating.name], argv)
         self.assertIn("review awaiting completion", stdout)
 
-        # A first round has nothing to check itself against, and the flag then
-        # has no value to carry.
         (target / "best.pairs").unlink()
         argv, _ = self._run_notes()
         self.assertEqual([evaluating.name], argv)
@@ -581,11 +655,9 @@ class BestTests(unittest.TestCase):
             fx.slot(self.opts, ["p2", "queued"])
             / "top.s2.m4.g4.u-cdef.1000.r2.pairs", "a,b\n")
 
-        # Both refusals render the eval the same way, --yes-pairs included, so
-        # what the operator is told to type is what best review would have run.
-        expected = re.escape(
-            f"wf eval p2 {queued.name} --yes-pairs "
-            f"{target / 'best.pairs'}")
+        # Both refusals render the eval the same way, so what the operator is
+        # told to type is what best review would have run.
+        expected = re.escape(f"wf eval p2 {queued.name}") + "$"
         for verb in ("notes", "complete"):
             with self.subTest(verb=verb):
                 with self.assertRaisesRegex(ValueError, expected):
@@ -691,7 +763,7 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn("dfs.seed missing", stdout)
+        self.assertIn("no search results yet", stdout)
 
     def test_status_synthesizes_a_fully_qualified_absent_target(self):
         self._shared_inputs(self.best / "s2" / "u-cdef" / "m4")
@@ -699,8 +771,9 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertEqual(0, code, stderr)
-        self.assertIn("s2/u-cdef/m4/g4: dfs.seed missing", stdout)
-        self.assertIn("next: wf best gen s2 -u cdef -g 4 dfs.seed -f", stdout)
+        self.assertIn("s2/u-cdef/m4/g4: no search results yet", stdout)
+        self.assertIn(
+            "next: wf best prepare s2 -u cdef -g 4 --source seed -f", stdout)
 
         # Which is where a duplicate label is found out, before any DFS.
         (self.best / "s2" / "u-cdef").mkdir()
@@ -729,6 +802,382 @@ class BestTests(unittest.TestCase):
         code, stdout, stderr = fx.run_wf("-d", str(self.root), "best", "status")
         self.assertEqual(0, code, stderr)
         self.assertIn("no BEST PAIRS targets", stdout)
+
+    # ---------------------------------------------------------- search source
+
+    def _run_producers(self, outputs, *argv):
+        """Drive a wf best command, standing in for its external producers."""
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            kwargs["stdout"].write(outputs[len(calls) - 1])
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run):
+            code, stdout, stderr = fx.run_wf("-d", str(self.root), *argv)
+        return code, calls, stdout, stderr
+
+    def test_source_is_required_by_top_segments_and_refused_elsewhere(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+
+        # One parser serves all four stages, so --source parses everywhere and
+        # is refused where it means nothing.
+        for stage in ("dfs.seed", "dfs.best", "best.pairs"):
+            with self.subTest(stage=stage):
+                with self.assertRaisesRegex(
+                        ValueError, "only valid for gen top.segments"):
+                    fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                              "-u", "cdef", "-g", "4", "--source", "seed",
+                              stage)
+
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef", "-g", "4",
+            "top.segments")
+        self.assertEqual(2, code)
+        self.assertIn("missing required argument", stderr)
+
+        with self.assertRaisesRegex(ValueError, "expected seed or best"):
+            fx.run_wf("-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
+                      "-g", "4", "--source", "dfs.best", "top.segments")
+
+    def test_gen_top_segments_reads_the_source_it_is_given(self):
+        target = self._target()
+        self._complete_files(target)
+
+        for source in ("best", "seed"):
+            with self.subTest(source=source):
+                code, calls, stdout, _ = self._run_producers(
+                    ["a,b\n"], "best", "gen", "s2", "-u", "cdef", "-g", "4",
+                    "--source", source, "top.segments")
+                self.assertEqual(0, code)
+                self.assertEqual(
+                    ["top-segments", "--pairs", str(target / f"dfs.{source}")],
+                    calls[0])
+                self.assertEqual(
+                    f"{source}\n",
+                    state._stamp(target / "top.segments").read_text())
+
+    def test_gen_top_segments_warns_when_the_dfs_file_is_exhausted(self):
+        target = self._target()
+        self._complete_files(target)
+
+        code, calls, _, stderr = self._run_producers(
+            ["a,b\nc,d\n"], "best", "gen", "s2", "-u", "cdef", "-g", "4",
+            "-n", "5", "--source", "seed", "top.segments")
+
+        self.assertEqual(0, code)
+        self.assertEqual(["-n", "5"], calls[0][2:4])
+        self.assertIn("top.segments holds 2 of the 5 requested", stderr)
+        self.assertIn("exhausted at this cutoff", stderr)
+
+    # --------------------------------------------------------------- prepare
+
+    def test_prepare_help_names_the_source_and_the_two_cutoffs(self):
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "prepare", "help")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("--source SOURCE", stdout)
+        self.assertIn("--dfs-count COUNT", stdout)
+        self.assertIn("--top-count COUNT", stdout)
+        rendered = "".join(line.strip() for line in stdout.splitlines())
+        self.assertIn("maximum dfs-anagrams results (default: 1000000)",
+                      rendered)
+        self.assertIn("maximum top.segments pairs (default: 1000)", rendered)
+
+        code, stdout, stderr = fx.run_wf("-d", str(self.root), "best", "help")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("prepare  — run a DFS search and generate the frontier",
+                      stdout)
+
+    def test_prepare_seed_runs_both_legs_with_the_default_cutoffs(self):
+        universe = self.best / "s2" / "u-cdef" / "m4"
+        _, _, seed = self._shared_inputs(universe)
+        results = self.root / "results"
+        results.mkdir()
+        target = universe / "g4"
+
+        code, calls, stdout, stderr = self._run_producers(
+            ["9 alpha,beta\n8 gamma,delta\n", "alpha,beta\ngamma,delta\n"],
+            "-f", "best", "prepare", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "--source", "seed")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["dfs-anagrams", "top-segments"],
+                         [call[0] for call in calls])
+        # Neither default changes what runs today: DFS_LIMIT is what
+        # gen dfs.seed already used, and 1000 is top-segments' own default.
+        self.assertEqual(str(seed), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual("1000000", calls[0][calls[0].index("-n") + 1])
+        self.assertEqual(
+            ["top-segments", "--pairs", "-n", "1000",
+             str(target / "dfs.seed")], calls[1])
+        rendered = results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.1000000.u-cdef"
+        self.assertEqual(rendered, (target / "dfs.seed").resolve())
+        self.assertEqual("alpha,beta\ngamma,delta\n",
+                         (target / "top.segments").read_text())
+        self.assertEqual("seed\n",
+                         state._stamp(target / "top.segments").read_text())
+        self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from seed)",
+                      stdout)
+
+    def test_prepare_takes_the_two_cutoffs_independently(self):
+        universe = self.best / "s2" / "u-cdef" / "m4"
+        self._shared_inputs(universe)
+        results = self.root / "results"
+        results.mkdir()
+
+        code, calls, _, stderr = self._run_producers(
+            ["9 alpha,beta\n", "alpha,beta\n"],
+            "-f", "best", "prepare", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "--source", "seed",
+            "--dfs-count", "7", "--top-count", "3")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("7", calls[0][calls[0].index("-n") + 1])
+        self.assertEqual(["-n", "3"], calls[1][2:4])
+        self.assertTrue(
+            (results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.7.u-cdef").is_file())
+
+        with self.assertRaisesRegex(ValueError, "non-negative integers"):
+            fx.run_wf("-d", str(self.root), "-f", "best", "prepare", "s2",
+                      "-u", "cdef", "-g", "4", "--source", "seed",
+                      "--top-count", "-1")
+
+    def test_prepare_best_weights_the_search_and_refuses_force(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        pairs = self._write(target / "best.pairs", "alpha,beta\n", 50)
+        results = self.root / "results"
+
+        code, calls, stdout, stderr = self._run_producers(
+            ["9 alpha,beta\n", "alpha,beta\n"],
+            "best", "prepare", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "--source", "best", "--dfs-count", "1",
+            "--top-count", "1")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(str(pairs), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual(str(target / "dfs.best"), calls[1][-1])
+        self.assertEqual(
+            results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.best.1.u-cdef",
+            (target / "dfs.best").resolve())
+        self.assertEqual("best\n",
+                         state._stamp(target / "top.segments").read_text())
+
+        # -f is what creates the levels below the sentence, and only a seed
+        # search may create them.
+        with mock.patch.object(generate.shutil, "which") as which:
+            with self.assertRaisesRegex(
+                    ValueError, "only valid for prepare --source seed"):
+                fx.run_wf("-d", str(self.root), "-f", "best", "prepare", "s2",
+                          "-u", "cdef", "-g", "4", "-r", str(results),
+                          "--source", "best")
+        which.assert_not_called()
+
+    def test_prepare_seed_creates_the_target_tree_only_under_force(self):
+        universe = self.best / "s2" / "u-cdef" / "m4"
+        self._shared_inputs(universe)
+        results = self.root / "results"
+        results.mkdir()
+
+        with mock.patch.object(generate.shutil, "which") as which:
+            with self.assertRaisesRegex(FileNotFoundError, "use -f to force"):
+                fx.run_wf("-d", str(self.root), "best", "prepare", "s2",
+                          "-u", "cdef", "-g", "4", "-r", str(results),
+                          "--source", "seed")
+        which.assert_not_called()
+        self.assertFalse((universe / "g4").exists())
+
+        code, _, _, stderr = self._run_producers(
+            ["9 alpha,beta\n", "alpha,beta\n"],
+            "-f", "best", "prepare", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "--source", "seed")
+        self.assertEqual(0, code, stderr)
+        self.assertTrue((universe / "g4" / "top.segments").is_file())
+
+    def test_an_empty_best_pairs_refuses_both_final_searches(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        self._write(target / "best.pairs", "", 50)
+        results = self.root / "results"
+        before = sorted((results).iterdir())
+
+        for argv in (["gen", "s2", "-u", "cdef", "-g", "4",
+                      "-r", str(results), "dfs.best"],
+                     ["prepare", "s2", "-u", "cdef", "-g", "4",
+                      "-r", str(results), "--source", "best"]):
+            with self.subTest(command=argv[0]):
+                with mock.patch.object(generate.shutil, "which",
+                                       return_value="/bin/fake"), \
+                        mock.patch.object(generate.subprocess, "run") as run:
+                    with self.assertRaisesRegex(
+                            ValueError, "best.pairs is empty"):
+                        fx.run_wf("-d", str(self.root), "best", *argv)
+                run.assert_not_called()
+        self.assertEqual(before, sorted((results).iterdir()))
+
+    # -------------------------------------------------------- review gating
+
+    def test_a_review_in_flight_blocks_the_frontier_but_not_a_search(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        results = self.root / "results"
+        queued = self._write(
+            fx.slot(self.opts, ["p2", "queued"])
+            / "top.s2.m4.g4.u-cdef.1000.r2.pairs", "a,b\n")
+
+        blocked = (
+            ["gen", "s2", "-u", "cdef", "-g", "4", "--source", "seed",
+             "top.segments"],
+            ["prepare", "s2", "-u", "cdef", "-g", "4", "-r", str(results),
+             "--source", "seed"],
+            ["prepare", "s2", "-u", "cdef", "-g", "4", "-r", str(results),
+             "--source", "best"],
+        )
+        for argv in blocked:
+            with self.subTest(command=" ".join(argv[:1] + argv[-2:])):
+                with mock.patch.object(generate.shutil, "which") as which:
+                    with self.assertRaisesRegex(
+                            ValueError, "review bundle in flight"):
+                        fx.run_wf("-d", str(self.root), "best", *argv)
+                which.assert_not_called()
+
+        # A DFS run does not overwrite the frontier, so it stays allowed --
+        # status simply never advertises it, because completing the round
+        # would date it stale the moment it landed.
+        code, calls, _, stderr = self._run_producers(
+            ["9 alpha,beta\n"], "best", "gen", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "dfs.seed")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("dfs-anagrams", calls[0][0])
+        self.assertTrue(queued.is_file())
+
+    def test_a_failed_frontier_keeps_the_search_and_names_the_recovery(self):
+        target_dir = self._target()
+        self._complete_files(target_dir)
+        self._shared_inputs(target_dir.parent)
+        results = self.root / "results"
+        target = state.one_target(self.opts.dir, "s2", "u-cdef", 4, 4)
+        marker = state._stamp(target_dir / "top.segments")
+        before = (target_dir / "top.segments").read_text()
+
+        def run(command, **kwargs):
+            if command[0] == "dfs-anagrams":
+                kwargs["stdout"].write("9 alpha,beta\n")
+                return mock.Mock(returncode=0)
+            raise generate.subprocess.CalledProcessError(1, command)
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), \
+                mock.patch.object(generate.shutil, "which",
+                                  return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run", side_effect=run):
+            with self.assertRaises(generate.subprocess.CalledProcessError):
+                generate.prepare(target, source="seed", force=False,
+                                 results_dir=results, dfs_count=1,
+                                 top_count=2)
+
+        self.assertEqual(
+            results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.1.u-cdef",
+            (target_dir / "dfs.seed").resolve())
+        self.assertEqual(before, (target_dir / "top.segments").read_text())
+        self.assertEqual("best\n", marker.read_text())
+        self.assertEqual(65, int(marker.stat().st_mtime))
+        self.assertIn(
+            "rerun: wf best gen s2 -u cdef -g 4 top.segments --source seed "
+            "-n 2", stderr.getvalue())
+
+    # -------------------------------------------------- review bundle contents
+
+    def test_review_excludes_both_standing_sets(self):
+        target = self._target()
+        self._complete_files(target)
+        self._write(target / "top.segments",
+                    "hard,no\nkeep,new\nyes,known\n", 30)
+        self._write(config.classified(self.root, "no"), "hard,no\n", 10)
+        self._write(config.classified(self.root, "yes"), "yes,known\n", 10)
+
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4")
+
+        self.assertEqual(0, code, stderr)
+        prepare.assert_called_once()
+        bundle_name = "top.s2.m4.g4.u-cdef.3.r2"
+        source = (fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+                  / f"{bundle_name}.pairs")
+        # Re-confirming a standing YES buys nothing: build_best_pairs
+        # intersects against classified/yes globally, round by round.
+        self.assertEqual("keep,new\n", source.read_text())
+
+    def test_an_empty_review_bundle_converges_instead_of_raising(self):
+        target = self._target()
+        self._complete_files(target)
+        self._write(target / "top.segments", "hard,no\nyes,known\n", 30)
+        self._write(config.classified(self.root, "no"), "hard,no\n", 90)
+        self._write(config.classified(self.root, "yes"), "yes,known\n", 10)
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "review", "s2", "-u", "cdef", "-g", "4")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("s2/u-cdef/m4/g4: no review candidates remain "
+                      "(2 frontier pairs, all already classified)", stdout)
+        # Status cannot detect this -- neither clock moved -- so the searches
+        # worth running are named here instead.
+        self.assertIn("choose next:", stdout)
+        self.assertIn("reseed: wf best prepare s2 -u cdef -g 4 --source seed",
+                      stdout)
+        self.assertIn("refine: wf best prepare s2 -u cdef -g 4 --source best",
+                      stdout)
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+
+    def test_no_best_command_types_yes_pairs_but_the_primitives_still_do(self):
+        target = self._target()
+        self._complete_files(target)
+        self._write(target / "top.segments", "keep,new\n", 30)
+
+        with mock.patch.object(commands.evaluate.P2, "run",
+                               return_value=0) as run:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertNotIn("--yes-pairs", run.call_args.args[2])
+        self.assertNotIn("--yes-pairs", stdout + stderr)
+
+        # The plumbing stays wired for a later revival of the marked bundle.
+        for command_text in (("eval", "p2"), ("notes", "p2")):
+            with self.subTest(command=command_text):
+                code, stdout, stderr = fx.run_wf(
+                    "-d", str(self.root), *command_text, "help")
+                self.assertEqual(0, code, stderr)
+                self.assertIn("--yes-pairs", stdout)
+        self.assertEqual(
+            ["--yes-pairs", str(target / "best.pairs")],
+            state.yes_pairs_argv(
+                state.one_target(self.opts.dir, "s2", "u-cdef", 4, 4)))
+
+    def test_the_best_pairs_marker_stays_empty_and_unparsed(self):
+        target = self._target()
+        self._complete_files(target)
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef", "-g", "4",
+            "best.pairs")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("", state._stamp(target / "best.pairs").read_text())
 
     def test_letter_set_flag_is_required_and_singular(self):
         self._target()
