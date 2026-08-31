@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 
 from workflow import config, fs, log, setops
-from workflow.best.state import Target, mark_generated
+from workflow.best.state import (
+    Target, mark_generated, review_locations,
+)
 
 
 DFS_LIMIT = 1_000_000
@@ -239,16 +241,31 @@ def build_best_pairs(target: Target) -> None:
     top_segments = target.artifact("top.segments")
     confirmed_yes = config.classified(target.root, "yes")
     hard_no = config.classified(target.root, "no")
-    fs.raise_if_not_file(top_segments)
     fs.raise_if_not_file(confirmed_yes)
     fs.raise_if_not_file(hard_no)
+
+    _, _, archived = review_locations(target)
+    oneoffs = sorted(
+        (round_.path for round_ in archived if round_.kind == "oneoff"),
+        key=lambda path: path.name)
+    eligible_sources = []
+    if top_segments.exists():
+        fs.raise_if_not_file(top_segments)
+        eligible_sources.append(top_segments)
+    elif top_segments.is_symlink():
+        fs.raise_if_not_file(top_segments)
+    eligible_sources.extend(oneoffs)
+    if not eligible_sources:
+        # Preserve the existing missing-frontier diagnostic when no alternative
+        # completed source can supply the eligible universe.
+        fs.raise_if_not_file(top_segments)
 
     destination = target.artifact("best.pairs")
     before = set(destination.read_text().splitlines()) \
         if destination.exists() else set()
     with tempfile.TemporaryDirectory(prefix="wf-best-pairs-") as tmp:
         scratch = Path(tmp)
-        collated = setops.merge([top_segments], scratch / "top.pairs")
+        collated = setops.merge(eligible_sources, scratch / "eligible.pairs")
         confirmed = setops.common(
             collated, confirmed_yes, scratch / "confirmed.pairs")
         # best.pairs is a sticky accumulator: classified YES gates new frontier
@@ -258,7 +275,8 @@ def build_best_pairs(target: Target) -> None:
             [confirmed, destination] if destination.exists() else [confirmed],
             scratch / "candidates.pairs")
         setops.diff(candidates, hard_no, destination, stable_mtime=True)
-    mark_generated(destination)
+    manifest = "".join(f"{path.name}\n" for path in oneoffs)
+    mark_generated(destination, manifest)
 
     after = set(destination.read_text().splitlines())
     log.success(f"Generated {len(after)} best pairs "

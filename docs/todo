@@ -43,6 +43,15 @@ HIGH PRIORITY >>
     layout_args, which is a different kind of argument; probably leave it.
   * see ../nutrimatic/plans/integrate-best-pairs.md for the design.
 
+* workflow: how practical would it be for `wf best review` and `wf best complete`
+  to accept an arbitrary input file instead of the implied `top.segments`?
+  * the existing machinery should otherwise remain the same: subtract already
+    classified YES/NO pairs, split the remaining pairs, and create notes.
+  * validate that the input pairs fit within either `letters - used-letters` or
+    `only-letters`, as applicable.
+  * `wf best complete` would download, merge, and classify the results, then update
+    `best.pairs`.
+
 * workflow: move "done" files to //dump? (or just do it manually, or have "manual" command
   to execute (e.g. archive p1)
 

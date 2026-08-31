@@ -68,7 +68,7 @@ def _check_target_dirs(target, may_create: bool, force: bool) -> None:
 
 
 def _preflight_top_segments(target) -> None:
-    """Refuse to rewrite the frontier a review is still reading.
+    """Refuse to rewrite the frontier a top review is still reading.
 
     top.segments is the bundle in flight -- the notes were derived from it and
     `complete` folds its verdicts back against it -- so regenerating it under
@@ -77,7 +77,8 @@ def _preflight_top_segments(target) -> None:
     status refuses and what the command refuses are the same condition.
     """
     queued, evaluating, _ = review_locations(target)
-    in_flight = [*queued, *evaluating]
+    in_flight = [round_ for round_ in (*queued, *evaluating)
+                 if round_.kind == "top"]
     if not in_flight:
         return
     location = in_flight[0]
@@ -296,14 +297,16 @@ def _target_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _action_target(action, command_text, opts, argv, positionals: int):
+def _action_target(action, command_text, opts, argv, positionals: int,
+                   maximum: int | None = None):
     rest = action.parse(opts, argv)
     letter_set = _letter_set(opts)
     if len(rest) < positionals or opts.g is None or letter_set is None:
         return usage.missing_argument(action.format_help(command_text))
-    if len(rest) > positionals:
+    maximum = positionals if maximum is None else maximum
+    if len(rest) > maximum:
         return usage.invalid_argument(
-            rest[positionals], action.format_help(command_text))
+            rest[maximum], action.format_help(command_text))
     if opts.m < 1 or opts.g < 1:
         raise ValueError("-m and -g require positive integers")
     target = one_target(opts.dir, rest[0], letter_set, opts.m, opts.g)
@@ -335,18 +338,42 @@ class Exclude(command.Action):
 class Review(command.Action):
     def __init__(self):
         super().__init__(summary="review   — submit a target for P2 review",
-                         positional="SENTENCE")
+                         positional="SENTENCE [PAIRS-FILE]",
+                         positional_help=(
+                             ("SENTENCE", "sentence identifier under .wf/best"),
+                             ("PAIRS-FILE", "optional one-off pairs file; "
+                              "omit it to review top.segments", "?"),
+                         ))
 
     def parser(self):
         return _target_parser()
 
     def run(self, command_text, opts, argv) -> int:
-        parsed = _action_target(self, command_text, opts, argv, 1)
+        parsed = _action_target(self, command_text, opts, argv, 1, maximum=2)
         if isinstance(parsed, int):
             return parsed
-        target, _ = parsed
+        target, rest = parsed
         if opts.force:
             raise ValueError("-f/--force is not valid for best review")
+
+        supplied = Path(rest[1]).resolve() if len(rest) == 2 else None
+        if supplied is not None:
+            fs.raise_if_not_readable(supplied)
+            return self._oneoff(target, supplied, opts)
+        return self._top(target, opts)
+
+    @staticmethod
+    def _in_flight(target, queued, evaluating) -> None:
+        in_flight = [*queued, *evaluating]
+        if in_flight:
+            location = in_flight[0]
+            raise ValueError(
+                f"review bundle already in flight: {location.name} in "
+                f"{location.parent}")
+
+    def _top(self, target, opts) -> int:
+        queued, evaluating, archived = review_locations(target)
+        self._in_flight(target, queued, evaluating)
 
         top_segments = target.artifact("top.segments")
         fs.raise_if_not_file(top_segments)
@@ -357,19 +384,11 @@ class Review(command.Action):
                 f"top.segments is empty; regenerate "
                 f"{target.artifact(f'dfs.{source}')}")
 
-        queued, evaluating, archived = review_locations(target)
-        in_flight = [*queued, *evaluating]
-        if in_flight:
-            location = in_flight[0]
-            raise ValueError(
-                f"review bundle already in flight: {location.name} in "
-                f"{location.parent}")
-
         # max + 1, not count + 1: an archive with a gap in it -- a round
         # deleted, or never archived -- would otherwise render a name that
         # already exists.
-        round_number = max(review_rounds(target, archived), default=0) + 1
-        review_name = (f"{target.review_prefix}{cutoff}."
+        round_number = max(review_rounds(target, archived, "top"), default=0) + 1
+        review_name = (f"{target.review_prefix('top')}{cutoff}."
                        f"r{round_number}.pairs")
         hard_no = config.classified(target.root, "no")
         confirmed_yes = config.classified(target.root, "yes")
@@ -395,6 +414,43 @@ class Review(command.Action):
             return code
         code = evaluate.P2.run(
             "eval p2", opts, ["--no-filter", review_name])
+        if code == 0:
+            report(target)
+        return code
+
+    def _oneoff(self, target, supplied: Path, opts) -> int:
+        hard_no = config.classified(target.root, "no")
+        confirmed_yes = config.classified(target.root, "yes")
+        fs.raise_if_not_file(hard_no)
+        fs.raise_if_not_file(confirmed_yes)
+
+        with tempfile.TemporaryDirectory(prefix="wf-best-oneoff-") as tmp:
+            scratch = Path(tmp)
+            canonical = setops.merge([supplied], scratch / "canonical.pairs")
+            cutoff = fs.line_count(canonical)
+            remaining = setops.diff(
+                canonical, hard_no, scratch / "remaining.pairs")
+            reviewed = setops.diff(
+                remaining, confirmed_yes, scratch / "reviewed.pairs")
+            if fs.line_count(reviewed) == 0:
+                raise ValueError(
+                    f"one-off review has no candidates: all {cutoff} pairs "
+                    "are already classified")
+
+            queued, evaluating, archived = review_locations(target)
+            self._in_flight(target, queued, evaluating)
+            round_number = max(
+                review_rounds(target, archived, "oneoff"), default=0) + 1
+            review_name = (f"{target.review_prefix('oneoff')}{cutoff}."
+                           f"r{round_number}.pairs")
+            managed = canonical.with_name(review_name)
+            canonical.rename(managed)
+            code = submit.P2.run("submit p2", opts, [str(managed)])
+            if code != 0:
+                return code
+            code = evaluate.P2.run_prepared(
+                "eval p2", opts, [review_name], reviewed)
+
         if code == 0:
             report(target)
         return code
@@ -450,15 +506,22 @@ class Notes(command.Action):
         if evaluating:
             bundle_name = evaluating[0].name
         else:
-            rounds = review_rounds(target, archived)
-            if not rounds:
+            if not archived:
                 raise ValueError(
                     f"no review to recreate notes for {target.address}")
-            # -f is the primitive's gate, not this one's: it is what says
-            # "work from the archived round", and the primitive owns both the
-            # refusal and the caveats that come with it.
-            bundle_name = names.queue_stem(
-                "p2", rounds[max(rounds)].name)
+            # Preserve top-only selection by highest ordinal. Across separate
+            # kind sequences there is no comparable ordinal, so archive time
+            # identifies the last completed round instead.
+            kinds = {round_.kind for round_ in archived}
+            key = ((lambda round_: round_.ordinal) if len(kinds) == 1 else
+                   (lambda round_: (round_.path.stat().st_mtime_ns,
+                                    round_.ordinal, round_.kind)))
+            latest = max(archived, key=key)
+            if latest.kind == "oneoff" and opts.force:
+                raise ValueError(
+                    "cannot recreate notes for archived one-off source: "
+                    f"{latest.path}")
+            bundle_name = names.queue_stem("p2", latest.name)
         code = notes.P2.run("notes p2", opts, [bundle_name])
         if code == 0:
             report(target)

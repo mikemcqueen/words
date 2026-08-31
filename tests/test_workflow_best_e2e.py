@@ -223,6 +223,56 @@ class BestEndToEndTests(unittest.TestCase):
              "dfs.s2.idx2.85.15.m4.x2.g4.best.3.u-cdef"],
             sorted(path.name for path in (self.results / "s2").iterdir()))
 
+    def test_oneoff_lifecycle_archives_full_source_and_promotes_yes_pairs(self):
+        self._wf("init")
+        wf_dir = self.root / ".wf"
+        target = wf_dir / "best" / "s2" / "u-cdef" / "m4" / "g4"
+        target.mkdir(parents=True)
+        (target / "top.segments").write_text("frontier,unknown\n")
+        supplied = self.root / "arbitrary-input"
+        supplied.write_text(
+            "known,yes\nnew,yes\nknown,no\nnew,no\nknown,yes\n")
+        config.classified(self.root, "yes").write_text("known,yes\n")
+        config.classified(self.root, "no").write_text("known,no\n")
+
+        with mock.patch.object(commands.evaluate.P2, "prepare"):
+            stdout, _ = self._wf(
+                "best", "review", "s2", "-u", "cdef", "-g", "4",
+                str(supplied))
+        self.assertIn("one-off review in flight", stdout)
+        supplied.unlink()
+
+        bundle_name = "oneoff.s2.m4.g4.u-cdef.4.r1"
+        bundle = wf_dir / "p2" / "eval" / bundle_name
+        source = bundle / f"{bundle_name}.pairs"
+        filtered = source.with_name(source.name + ".filtered")
+        self.assertEqual(
+            "known,no\nknown,yes\nnew,no\nnew,yes\n", source.read_text())
+        self.assertEqual("new,no\nnew,yes\n", filtered.read_text())
+
+        (bundle / "enex").mkdir()
+        (bundle / f"{bundle_name}.p2.yes").write_text("new,yes\n")
+        (bundle / f"{bundle_name}.p2.no").write_text("new,no\n")
+        self._wf("best", "complete", "s2", "-u", "cdef", "-g", "4")
+
+        archived = wf_dir / "p2" / "done" / "in" / source.name
+        self.assertEqual(
+            "known,no\nknown,yes\nnew,no\nnew,yes\n", archived.read_text())
+        self.assertEqual("known,yes\nnew,yes\n",
+                         (target / "best.pairs").read_text())
+        self.assertEqual("known,no\nnew,no\n",
+                         config.classified(self.root, "no").read_text())
+        self.assertEqual("new,no\nnew,yes\n",
+                         (wf_dir / "p2" / "done" / "p2_done.pairs").read_text())
+        self.assertFalse(filtered.exists())
+        self.assertEqual(
+            f"{archived.name}\n",
+            state._stamp(target / "best.pairs").read_text())
+        target_state = state.one_target(self.root, "s2", "u-cdef", 4, 4)
+        self.assertEqual(
+            "review needed (frontier from seed)",
+            state._review_needed(state.Inputs(target_state)).message)
+
 
 if __name__ == "__main__":
     unittest.main()

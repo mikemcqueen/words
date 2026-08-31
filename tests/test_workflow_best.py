@@ -89,6 +89,14 @@ class BestTests(unittest.TestCase):
         rendered = "".join(line.strip() for line in stdout.splitlines())
         self.assertIn("dfs-anagrams and top-segments", rendered)
 
+    def test_review_help_describes_the_optional_pairs_file(self):
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "review", "help")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("SENTENCE [PAIRS-FILE]", stdout)
+        self.assertRegex(stdout, r"PAIRS-FILE\s+optional one-off pairs file")
+
     def test_init_builds_static_crown_and_show_points_to_status(self):
         self.assertTrue((self.best / "idx").is_dir())
         self.assertTrue((self.best / "dict").is_dir())
@@ -553,6 +561,97 @@ class BestTests(unittest.TestCase):
             (fx.slot(self.opts, ["p2", "eval"])
              / "top.s2.m4.g4.u-cdef.3.r2").is_dir())
 
+    def test_oneoff_review_keeps_the_full_source_and_evaluates_only_unknowns(self):
+        self._target()
+        supplied = self._write(
+            self.root / "outside-name.txt",
+            "yes,known\nunknown,pair\nno,known\nyes,known\n")
+        self._write(config.classified(self.root, "yes"), "yes,known\n")
+        self._write(config.classified(self.root, "no"), "no,known\n")
+
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4", str(supplied))
+
+        self.assertEqual(0, code, stderr)
+        bundle_name = "oneoff.s2.m4.g4.u-cdef.3.r1"
+        bundle = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        source = bundle / f"{bundle_name}.pairs"
+        filtered = source.with_name(source.name + ".filtered")
+        self.assertEqual(
+            "no,known\nunknown,pair\nyes,known\n", source.read_text())
+
+        with self.assertRaisesRegex(ValueError, "already in flight"):
+            fx.run_wf("-d", str(self.root), "best", "review", "s2",
+                      "-u", "cdef", "-g", "4")
+        self.assertEqual("unknown,pair\n", filtered.read_text())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+        self.assertIn("one-off review in flight", stdout)
+
+        supplied.unlink()
+        self.assertEqual(
+            "no,known\nunknown,pair\nyes,known\n", source.read_text())
+
+    def test_review_kinds_have_independent_round_sequences(self):
+        target_dir = self._target()
+        self._write(target_dir / "top.segments", "top,new\n")
+        done = fx.slot(self.opts, ["p2", "done", "in"])
+        self._write(done / "top.s2.m4.g4.u-cdef.1.r7.pairs", "old,top\n")
+        self._write(
+            done / "oneoff.s2.m4.g4.u-cdef.1.r1.pairs", "old,oneoff\n")
+        supplied = self._write(self.root / "supplied.pairs", "oneoff,new\n")
+
+        with mock.patch.object(commands.evaluate.P2, "prepare"):
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4", str(supplied))
+        self.assertEqual(0, code, stderr)
+        oneoff = (fx.slot(self.opts, ["p2", "eval"])
+                  / "oneoff.s2.m4.g4.u-cdef.1.r2")
+        self.assertTrue(oneoff.is_dir())
+
+        for child in oneoff.iterdir():
+            child.unlink()
+        oneoff.rmdir()
+        with mock.patch.object(commands.evaluate.P2, "prepare"):
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertTrue((fx.slot(self.opts, ["p2", "eval"])
+                         / "top.s2.m4.g4.u-cdef.1.r8").is_dir())
+
+    def test_round_discovery_is_typed_and_rejects_duplicates_within_a_kind(self):
+        self._target()
+        done = fx.slot(self.opts, ["p2", "done", "in"])
+        top = self._write(done / "top.s2.m4.g4.u-cdef.2.r1.pairs", "a,b\n")
+        oneoff = self._write(
+            done / "oneoff.s2.m4.g4.u-cdef.2.r1.pairs", "c,d\n")
+        target = state.one_target(self.root, "s2", "u-cdef", 4, 4)
+
+        _, _, rounds = state.review_locations(target)
+        self.assertEqual(
+            [(oneoff, "oneoff", 1), (top, "top", 1)],
+            [(round_.path, round_.kind, round_.ordinal) for round_ in rounds])
+
+        self._write(done / "top.s2.m4.g4.u-cdef.3.r1.pairs", "e,f\n")
+        with self.assertRaisesRegex(ValueError, "two top review rounds"):
+            state.review_locations(target)
+
+    def test_oneoff_review_rejects_empty_subset_without_moving_state(self):
+        self._target()
+        supplied = self._write(
+            self.root / "classified.pairs", "yes,known\nno,known\n")
+        self._write(config.classified(self.root, "yes"), "yes,known\n")
+        self._write(config.classified(self.root, "no"), "no,known\n")
+
+        with self.assertRaisesRegex(ValueError, "all 2 pairs"):
+            fx.run_wf("-d", str(self.root), "best", "review", "s2",
+                      "-u", "cdef", "-g", "4", str(supplied))
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
+        self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+
     def test_gen_best_pairs_accumulates_manual_entries_and_preserves_mtime(self):
         target = self._target()
         self._complete_files(target)
@@ -583,6 +682,60 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertEqual(mtime, old_best.stat().st_mtime_ns)
         self.assertIn("Generated 3 best pairs (0 added, 0 dropped)", stdout)
+
+    def test_gen_best_pairs_uses_target_oneoffs_without_a_frontier(self):
+        target = self._target()
+        done = fx.slot(self.opts, ["p2", "done", "in"])
+        first = self._write(
+            done / "oneoff.s2.m4.g4.u-cdef.4.r1.pairs",
+            "known,yes\nhard,no\nmanual,entry\nnew,yes\n")
+        second = self._write(
+            done / "oneoff.s2.m4.g4.u-cdef.1.r2.pairs", "later,yes\n")
+        self._write(
+            done / "oneoff.s3.m4.g4.u-cdef.1.r1.pairs", "other,target\n")
+        self._write(config.classified(self.root, "yes"),
+                    "known,yes\nlater,yes\nnew,yes\nother,target\n")
+        self._write(config.classified(self.root, "no"), "hard,no\n")
+        self._write(target / "best.pairs", "hard,no\nmanual,entry\n")
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
+            "-g", "4", "best.pairs")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(
+            "known,yes\nlater,yes\nmanual,entry\nnew,yes\n",
+            (target / "best.pairs").read_text())
+        self.assertEqual(
+            f"{second.name}\n{first.name}\n",
+            state._stamp(target / "best.pairs").read_text())
+        self.assertNotIn("other,target", (target / "best.pairs").read_text())
+        self.assertIn("Generated 4 best pairs", stdout)
+
+    def test_best_pairs_write_before_manifest_is_reoffered_and_heals(self):
+        target_dir = self._target()
+        self._complete_files(target_dir)
+        oneoff = self._write(
+            fx.slot(self.opts, ["p2", "done", "in"])
+            / "oneoff.s2.m4.g4.u-cdef.1.r1.pairs", "new,yes\n", 45)
+        self._write(config.classified(self.root, "yes"), "a,b\nnew,yes\n", 10)
+        target = state.one_target(self.root, "s2", "u-cdef", 4, 4)
+
+        with mock.patch.object(
+                generate, "mark_generated", side_effect=RuntimeError("stop")):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                generate.build_best_pairs(target)
+
+        self.assertEqual("a,b\nnew,yes\n",
+                         (target_dir / "best.pairs").read_text())
+        self.assertFalse(state._stamp(target_dir / "best.pairs").exists())
+        result = state._best_pairs_out_of_date(state.Inputs(target))
+        self.assertIn("completed one-off review", result.message)
+
+        generate.build_best_pairs(target)
+        self.assertEqual(f"{oneoff.name}\n",
+                         state._stamp(target_dir / "best.pairs").read_text())
+        self.assertIsNone(state._best_pairs_out_of_date(state.Inputs(target)))
 
     # ------------------------------------------------------------ best notes
 
@@ -617,6 +770,32 @@ class BestTests(unittest.TestCase):
         (target / "best.pairs").unlink()
         argv, _ = self._run_notes()
         self.assertEqual([evaluating.name], argv)
+
+    def test_oneoff_notes_use_filtered_input_and_archived_recreation_is_refused(self):
+        self._target()
+        bundle_name = "oneoff.s2.m4.g4.u-cdef.2.r1"
+        evaluating = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        evaluating.mkdir()
+        source = self._write(evaluating / f"{bundle_name}.pairs", "a,b\nc,d\n")
+        filtered = self._write(
+            source.with_name(source.name + ".filtered"), "c,d\n")
+
+        with mock.patch.object(commands.notes, "make", return_value=[]) as make:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "notes", "s2", "-u", "cdef",
+                "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(filtered, make.call_args.args[0])
+        self.assertEqual(f"{filtered.name}.aa", commands.notes.title(filtered, 0))
+
+        filtered.unlink()
+        archived = fx.slot(self.opts, ["p2", "done", "in"]) / source.name
+        source.rename(archived)
+        evaluating.rmdir()
+        with self.assertRaisesRegex(
+                ValueError, re.escape(f"archived one-off source: {archived}")):
+            fx.run_wf("-d", str(self.root), "-f", "best", "notes", "s2",
+                      "-u", "cdef", "-g", "4")
 
     def test_notes_selects_the_highest_round_across_a_gapped_archive(self):
         target = self._target()
@@ -1059,6 +1238,25 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertEqual("dfs-anagrams", calls[0][0])
         self.assertTrue(queued.is_file())
+
+    def test_an_open_oneoff_allows_frontier_generation_and_is_a_status_footnote(self):
+        target = self._target()
+        self._complete_files(target)
+        bundle = (fx.slot(self.opts, ["p2", "eval"])
+                  / "oneoff.s2.m4.g4.u-cdef.1.r1")
+        bundle.mkdir()
+        self._write(bundle / f"{bundle.name}.pairs", "one,off\n")
+        self._write(bundle / f"{bundle.name}.pairs.filtered", "one,off\n")
+
+        code, calls, stdout, stderr = self._run_producers(
+            ["new,frontier\n"], "best", "gen", "s2", "-u", "cdef",
+            "-g", "4", "--source", "seed", "top.segments")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("top-segments", calls[0][0])
+        self.assertIn("review needed (frontier from seed)", stdout)
+        self.assertIn("next: wf best complete s2 -u cdef -g 4", stdout)
+        self.assertIn(f"one-off review in flight ({bundle.name})", stdout)
 
     def test_a_failed_frontier_keeps_the_search_and_names_the_recovery(self):
         target_dir = self._target()

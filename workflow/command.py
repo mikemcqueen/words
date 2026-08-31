@@ -59,7 +59,7 @@ class Action(Command):
     """Does the work itself:  wf submit p1 FILE"""
 
     def __init__(self, summary: str, positional: str | None = None,
-                 positional_help: tuple[tuple[str, str], ...] = ()):
+                 positional_help: tuple[tuple, ...] = ()):
         super().__init__(summary)
         self.positional = positional
         self.positional_help = positional_help
