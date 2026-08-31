@@ -180,6 +180,39 @@ class RowTests(unittest.TestCase):
         self.assertEqual("review needed (frontier from best)",
                          state._review_needed(self._inputs()).message)
 
+    def test_an_open_oneoff_declines_top_rows_and_redirects_review_needed(self):
+        self._steady()
+        os.utime(self.dir / "top.segments", (45, 45))
+        bundle = (fx.slot(self.opts, ["p2", "eval"])
+                  / "oneoff.s2.m4.g4.u-cdef.1.r1")
+        bundle.mkdir()
+        self._write(bundle / f"{bundle.name}.pairs", "one,off\n")
+        self._write(bundle / f"{bundle.name}.pairs.filtered", "one,off\n")
+
+        inputs = self._inputs()
+        self.assertIsNone(state._review_queued(inputs))
+        self.assertIsNone(state._review_evaluating(inputs))
+        result = state._review_needed(inputs)
+        self.assertEqual("review needed (frontier from seed)", result.message)
+        self.assertEqual(
+            {"next": "wf best complete s2 -u cdef -g 4"},
+            self._commands(result))
+
+    def test_an_open_oneoff_does_not_hide_a_search_row(self):
+        self._steady()
+        bundle = (fx.slot(self.opts, ["p2", "eval"])
+                  / "oneoff.s2.m4.g4.u-cdef.1.r1")
+        bundle.mkdir()
+        self._write(bundle / f"{bundle.name}.pairs", "one,off\n")
+        self._write(bundle / f"{bundle.name}.pairs.filtered", "one,off\n")
+        (self.dir / "dfs.best").unlink()
+
+        result = self._state()
+        self.assertEqual("dfs.best missing", result.message)
+        self.assertEqual(
+            {"refine": "wf best prepare s2 -u cdef -g 4 --source best"},
+            self._commands(result))
+
     def test_best_pairs_empty_offers_a_widen_before_either_search(self):
         self._steady()
         self._top("a,b\nc,d\n", mtime=30, source="best", marker=70)
@@ -332,6 +365,23 @@ class RowTests(unittest.TestCase):
         os.utime(self.results / "dfs.seed.out", (80, 80))
         self.assertEqual("best.pairs out of date (hard-NO set changed)",
                          self._state().message)
+
+    def test_an_unincorporated_oneoff_is_a_best_pairs_staleness_reason(self):
+        self._steady()
+        oneoff = self._write(
+            fx.slot(self.opts, ["p2", "done", "in"])
+            / "oneoff.s2.m4.g4.u-cdef.1.r1.pairs", "new,pair\n", 45)
+
+        result = state._best_pairs_out_of_date(self._inputs())
+        self.assertEqual(
+            "best.pairs out of date (completed one-off review)",
+            result.message)
+        state.mark_generated(self.dir / "best.pairs", f"{oneoff.name}\n")
+        self.assertIsNone(state._best_pairs_out_of_date(self._inputs()))
+
+        state.mark_generated(self.dir / "best.pairs", "oneoff.not-this-target\n")
+        with self.assertRaisesRegex(ValueError, "not a oneoff review round"):
+            state._best_pairs_out_of_date(self._inputs())
 
     def test_an_empty_best_pairs_outranks_an_available_reseed(self):
         self._steady()

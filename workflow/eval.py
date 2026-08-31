@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 
 from workflow import (
-    bundle, command, config, context, fs, log, names, notes, usage,
+    bundle, command, config, context, fs, log, names, notes, setops, usage,
 )
 
 
@@ -76,12 +76,14 @@ class Eval(command.Action):
     def prepare(self, pairs: Path, ctx, opts) -> None:
         """What this phase does with its pairs once the bundle is open."""
 
-    def run(self, command, opts, argv) -> int:
+    def _run(self, command, opts, argv, prepared: Path | None = None) -> int:
         rest = self.parse(opts, argv)
         if not rest:
             return usage.missing_argument(self.format_help(command))
 
         self.check(opts)
+        if prepared is not None:
+            fs.raise_if_not_readable(prepared)
 
         bundle_name, selector = _resolve_queued(opts.dir, self.phase, rest[0])
         ctx = context.Context(root=opts.dir, phase=self.phase,
@@ -89,7 +91,10 @@ class Eval(command.Action):
                               selector=selector)
         pairs = bundle.begin(ctx)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
-        if not opts.no_filter:
+        if prepared is not None:
+            pairs = setops.merge([prepared], bundle.filtered(pairs))
+            log.info(f"{fs.line_count(pairs)} filtered pairs")
+        elif not opts.no_filter:
             pairs = bundle.filter_done(pairs, ctx)
 
         self.prepare(pairs, ctx, opts)
@@ -99,6 +104,19 @@ class Eval(command.Action):
         log.success(f"{fs.line_count(pairs)} pairs ready for {self.ready_for}: "
                     f"{pairs.name}")
         return 0
+
+    def run(self, command, opts, argv) -> int:
+        return self._run(command, opts, argv)
+
+    def run_prepared(self, command, opts, argv, prepared: Path) -> int:
+        """Open a bundle and install a caller-prepared evaluated subset.
+
+        This is an internal composite-command seam, not a CLI mode. The queued
+        source remains the full artifact that completion archives, while the
+        ordinary `.filtered` derivative drives note titles and every downstream
+        P2 step.
+        """
+        return self._run(command, opts, argv, prepared)
 
 
 class EvalYes(Eval):

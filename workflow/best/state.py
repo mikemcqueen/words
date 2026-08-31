@@ -95,13 +95,14 @@ class Target:
             argv.append("-f")
         return " ".join(argv)
 
-    @property
-    def review_prefix(self) -> str:
+    def review_prefix(self, kind: str) -> str:
         # The letter set sits before the cutoff and the round ordinal, so the
         # bundle name stays a true prefix of everything derived under it. The
         # final dot prevents g4 from matching g45, and u-that from matching
         # u-thatandmore.
-        return (f"top.{self.sentence}.m{self.min_words}."
+        if kind not in REVIEW_KINDS:
+            raise ValueError(f"unknown review kind: {kind!r}")
+        return (f"{kind}.{self.sentence}.m{self.min_words}."
                 f"g{self.segment_count}.{self.letter_set}.")
 
     @property
@@ -375,20 +376,79 @@ def _dangling(path: Path) -> str:
 # ------------------------------------------------------------------- review
 
 
-def review_locations(target: Target) -> tuple[list[Path], list[Path], list[Path]]:
-    prefix = target.review_prefix
+REVIEW_KINDS = ("top", "oneoff")
+
+
+@dataclass(frozen=True)
+class ReviewRound:
+    path: Path
+    kind: str
+    ordinal: int
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def parent(self) -> Path:
+        return self.path.parent
+
+
+def _review_round(target: Target, path: Path, kind: str,
+                  evaluating: bool = False) -> ReviewRound:
+    suffix = "" if evaluating else r"\.pairs"
+    pattern = re.compile(
+        re.escape(target.review_prefix(kind))
+        + r"[1-9]\d*\.r([1-9]\d*)" + suffix)
+    match = pattern.fullmatch(path.name)
+    if match is None:
+        raise ValueError(
+            f"{path.name} is not a {kind} review round of {target.address}")
+    return ReviewRound(path, kind, int(match.group(1)))
+
+
+def _rounds_in(directory: Path, target: Target, *, files: bool) \
+        -> list[ReviewRound]:
+    rounds = []
+    for kind in REVIEW_KINDS:
+        prefix = target.review_prefix(kind)
+        if files:
+            paths = fs.globs(directory, f"{prefix}*.pairs")
+        else:
+            paths = sorted(path for path in directory.glob(f"{prefix}*")
+                           if path.is_dir())
+        rounds.extend(_review_round(target, path, kind, not files)
+                      for path in paths)
+    return sorted(rounds, key=lambda round_: round_.name)
+
+
+def _check_round_ordinals(target: Target, rounds: list[ReviewRound]) -> None:
+    found: dict[tuple[str, int], ReviewRound] = {}
+    for round_ in rounds:
+        key = (round_.kind, round_.ordinal)
+        if key in found:
+            earlier = found[key]
+            raise ValueError(
+                f"two {round_.kind} review rounds numbered r{round_.ordinal} "
+                f"for {target.address}: {earlier.name}, {round_.name}")
+        found[key] = round_
+
+
+def review_locations(target: Target) \
+        -> tuple[list[ReviewRound], list[ReviewRound], list[ReviewRound]]:
+    """Queued, evaluating, and archived rounds belonging to one target."""
     queued_dir = config.path(target.root, ["p2", "queued"])
-    queued = fs.globs(queued_dir, f"{prefix}*.pairs")
+    queued = _rounds_in(queued_dir, target, files=True)
     eval_dir = config.path(target.root, ["p2", "eval"])
-    evaluating = sorted(path for path in eval_dir.glob(f"{prefix}*")
-                        if path.is_dir())
+    evaluating = _rounds_in(eval_dir, target, files=False)
 
     in_flight = [*queued, *evaluating]
     if len(in_flight) > 1:
         found = ", ".join(path.name for path in in_flight)
         raise ValueError(f"multiple review bundles for {target.address}: {found}")
     done_dir = config.path(target.root, ["p2", "done", "in"])
-    archived = fs.globs(done_dir, f"{prefix}*.pairs")
+    archived = _rounds_in(done_dir, target, files=True)
+    _check_round_ordinals(target, [*in_flight, *archived])
     return queued, evaluating, archived
 
 
@@ -416,8 +476,9 @@ def eval_p2_command(target: Target, queued_name: str) -> str:
     return " ".join(["wf", "eval", "p2", queued_name])
 
 
-def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
-    """The target's completed review rounds, by ordinal.
+def review_rounds(target: Target, discovered: list[ReviewRound],
+                  kind: str) -> dict[int, ReviewRound]:
+    """One kind of the target's completed review rounds, by ordinal.
 
     Takes the list `review_locations` already returned, so no second scan.
 
@@ -430,25 +491,37 @@ def review_rounds(target: Target, archived: list[Path]) -> dict[int, Path]:
     rather than guessed at: it is either a name nothing here rendered, or a
     prefix collision, and both are worth stopping for.
 
-    One sequence serves the whole target. Which DFS artifact the frontier came
-    from does not split it: the source is informational, and two frontiers of
-    one target are two rounds of one review, not two reviews.
+    Top-frontier and supplied-file rounds have separate sequences. Within the
+    top sequence, which DFS artifact supplied the frontier remains
+    informational: seed and best are two rounds of one top review kind.
     """
-    pattern = re.compile(
-        re.escape(target.review_prefix) + r"\d+\.r([1-9]\d*)\.pairs")
-    rounds: dict[int, Path] = {}
-    for path in archived:
-        match = pattern.fullmatch(path.name)
-        if match is None:
+    if kind not in REVIEW_KINDS:
+        raise ValueError(f"unknown review kind: {kind!r}")
+    rounds: dict[int, ReviewRound] = {}
+    for round_ in discovered:
+        if round_.kind != kind:
+            continue
+        if round_.ordinal in rounds:
             raise ValueError(
-                f"{path.name} is not a review round of {target.address}")
-        ordinal = int(match.group(1))
-        if ordinal in rounds:
-            raise ValueError(
-                f"two review rounds numbered r{ordinal} for "
-                f"{target.address}: {rounds[ordinal].name}, {path.name}")
-        rounds[ordinal] = path
+                f"two {kind} review rounds numbered r{round_.ordinal} for "
+                f"{target.address}: {rounds[round_.ordinal].name}, "
+                f"{round_.name}")
+        rounds[round_.ordinal] = round_
     return rounds
+
+
+def best_pairs_manifest(target: Target) -> tuple[str, ...]:
+    """Completed one-off sources incorporated into the current best.pairs."""
+    marker = _stamp(target.artifact("best.pairs"))
+    if not marker.exists():
+        return ()
+    text = marker.read_text()
+    if text == "":
+        return ()
+    names = text.splitlines()
+    for name in names:
+        _review_round(target, marker.with_name(name), "oneoff")
+    return tuple(names)
 
 
 # -------------------------------------------------------------------- state
@@ -541,8 +614,15 @@ class Inputs:
         return self._present("best.pairs")
 
     @cached_property
-    def review(self) -> tuple[list[Path], list[Path], list[Path]]:
+    def review(self) -> tuple[list[ReviewRound], list[ReviewRound],
+                              list[ReviewRound]]:
         return review_locations(self.target)
+
+    @cached_property
+    def oneoff_in_flight(self) -> ReviewRound | None:
+        queued, evaluating, _ = self.review
+        return next((round_ for round_ in (*queued, *evaluating)
+                     if round_.kind == "oneoff"), None)
 
     @cached_property
     def source(self) -> str:
@@ -664,6 +744,7 @@ def _seed_missing(inputs: Inputs) -> State | None:
 
 def _review_queued(inputs: Inputs) -> State | None:
     queued, _, _ = inputs.review
+    queued = [round_ for round_ in queued if round_.kind == "top"]
     if not queued:
         return None
     command_text = eval_p2_command(inputs.target, queued[0].name)
@@ -673,6 +754,7 @@ def _review_queued(inputs: Inputs) -> State | None:
 
 def _review_evaluating(inputs: Inputs) -> State | None:
     _, evaluating, _ = inputs.review
+    evaluating = [round_ for round_ in evaluating if round_.kind == "top"]
     if not evaluating:
         return None
     return State(f"review awaiting completion ({evaluating[0].name})",
@@ -708,11 +790,16 @@ def _no_frontier(inputs: Inputs) -> State | None:
 
 def _review_needed(inputs: Inputs) -> State | None:
     _, _, archived = inputs.review
-    newest = max((path.stat().st_mtime_ns for path in archived), default=0)
+    top_rounds = [round_ for round_ in archived if round_.kind == "top"]
+    newest = max((round_.path.stat().st_mtime_ns for round_ in top_rounds),
+                 default=0)
     if newest > inputs.top_segments.stat().st_mtime_ns:
         return None
+    command = (inputs.target.command("complete")
+               if inputs.oneoff_in_flight is not None
+               else inputs.review_command())
     return State(f"review needed (frontier from {inputs.source})",
-                 choices=(Choice("next", inputs.review_command()),))
+                 choices=(Choice("next", command),))
 
 
 def _best_pairs_missing(inputs: Inputs) -> State | None:
@@ -733,6 +820,12 @@ def _best_pairs_out_of_date(inputs: Inputs) -> State | None:
         reasons.append("confirmed-YES set changed")
     if _newer(inputs.hard_no, generated):
         reasons.append("hard-NO set changed")
+    _, _, archived = inputs.review
+    completed_oneoffs = {
+        round_.name for round_ in archived if round_.kind == "oneoff"}
+    incorporated = set(best_pairs_manifest(inputs.target))
+    if completed_oneoffs - incorporated:
+        reasons.append("completed one-off review")
     if not reasons:
         return None
     return State(f"best.pairs out of date ({', '.join(reasons)})",
@@ -963,6 +1056,10 @@ def report(target: Target, rows: bool = False) -> State:
         print(line)
     for line in state.note:
         print(f"  {line}")
+    oneoff = Inputs(target).oneoff_in_flight
+    if oneoff is not None:
+        print(f"  one-off review in flight ({oneoff.name}); close with: "
+              f"{target.command('complete')}")
     if rows:
         for line in render_rows(walk_rows(target)):
             print(line)
