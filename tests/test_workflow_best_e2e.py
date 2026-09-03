@@ -10,6 +10,9 @@ from workflow import config
 from workflow.best import commands, generate, state
 
 
+PRODUCERS = ("dfs-anagrams", "top-segments")
+
+
 class BestEndToEndTests(unittest.TestCase):
     """Drive the CLI and durable state, stubbing only external producers."""
 
@@ -19,6 +22,10 @@ class BestEndToEndTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.results = self.root / "results"
         self.results.mkdir()
+        # What each stubbed dfs-anagrams was handed as --pairs. The final leg
+        # builds that file in a temp directory that does not outlive the run,
+        # so it is read while the run holds it.
+        self.pairs_seen: list[str] = []
 
     def _wf(self, *argv: str) -> tuple[str, str]:
         code, stdout, stderr = fx.run_wf("-d", str(self.root), *argv)
@@ -29,13 +36,22 @@ class BestEndToEndTests(unittest.TestCase):
                        *argv: str) -> tuple[list[list[str]], str]:
         """Drive a wf best command, standing in for its external producers.
 
-        Each output is what the next subprocess writes to stdout, in the order
-        the command runs them -- one for a gen, two for a prepare.
+        Each output is what the next producer writes to stdout, in the order
+        the command runs them -- one for a gen, two for a prepare. The set
+        primitives share this module's subprocess, and the final leg now runs
+        several of them inside the command, so anything that is not a producer
+        is passed straight through.
         """
         calls = []
+        real_run = generate.subprocess.run
 
         def run(command, **kwargs):
+            if command[0] not in PRODUCERS:
+                return real_run(command, **kwargs)
             calls.append(command)
+            if command[0] == "dfs-anagrams":
+                self.pairs_seen.append(
+                    Path(command[command.index("--pairs") + 1]).read_text())
             kwargs["stdout"].write(outputs[len(calls) - 1])
             return mock.Mock(returncode=0)
 
@@ -61,7 +77,12 @@ class BestEndToEndTests(unittest.TestCase):
 
         sentence_dir = best_dir / "s2"
         sentence_dir.mkdir()
-        (sentence_dir / "letters").write_text("abcdef\n")
+        # The bag has to spell every pair this test confirms, because the
+        # final leg now filters the confirmed-YES union down to what the bag
+        # can reach. Under u-cdef the working bag is what is left once cdef
+        # comes out, which is exactly the four pairs' own letters.
+        (sentence_dir / "letters").write_text(
+            "goodonetwofinalanswersecondlookcdef\n")
         seed = sentence_dir / "seed.m4.idx2.85.15.pairs"
         seed.write_text("seed,pair\n")
         universe = sentence_dir / "u-cdef" / "m4"
@@ -81,6 +102,12 @@ class BestEndToEndTests(unittest.TestCase):
             "s2", "-u", "cdef", "-g", "4", "-n", "3", "--source", "seed",
             "top.segments")
         self.assertEqual("top-segments", top_command[0])
+        # The frontier is filtered against both classified sets, so it holds
+        # candidates with no standing verdict rather than rows already
+        # answered.
+        self.assertEqual(
+            [str(self.root), "-y", str(universe / "g4" / "dfs.seed")],
+            top_command[top_command.index("--wfroot") + 1:])
         self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from seed)",
                       stdout)
 
@@ -118,8 +145,9 @@ class BestEndToEndTests(unittest.TestCase):
 
         stdout, _ = self._wf("best", "complete", "s2", "-u", "cdef", "-g", "4")
         target = universe / "g4"
-        self.assertEqual("good,one\ngood,two\n",
-                         (target / "best.pairs").read_text())
+        # Nothing derives a per-target set any more: the verdicts land in the
+        # classified sets and reach --pairs from there.
+        self.assertFalse((target / "best.pairs").exists())
         self.assertEqual(
             "good,one\ngood,two\n",
             config.classified(self.root, "yes").read_text())
@@ -129,15 +157,17 @@ class BestEndToEndTests(unittest.TestCase):
         self.assertEqual(
             "rejected,pair\n",
             config.classified(self.root, "no").read_text())
-        # Completing the review is what grows the hard-NO set, so the seed the
-        # search ran from is now genuinely stale and the report says so.
+        # Completing the review moves both classified sets past the marker
+        # that dates the frontier, so the same DFS file refills 1000 fresh
+        # candidates -- seconds, offered before any search.
         self.assertIn(
-            "s2/u-cdef/m4/g4: dfs.seed out of date (hard-NO set changed)",
+            "s2/u-cdef/m4/g4: top.segments behind the classified sets "
+            "(confirmed-YES set changed, hard-NO set changed)",
             stdout)
 
-        # Take the operator's decision to accept the seed as it stands, so the
-        # rest of the tail is reachable in one test: date the fold back behind
-        # the artifacts that were derived before it.
+        # Take the operator's decision to accept the frontier as it stands, so
+        # the rest of the tail is reachable in one test: date the fold back
+        # behind the artifacts that were derived before it.
         for kind in ("yes", "no"):
             os.utime(config.classified(self.root, kind), (25, 25))
         os.utime(target / "dfs.seed", (30, 30))
@@ -152,9 +182,12 @@ class BestEndToEndTests(unittest.TestCase):
             "s2", "-u", "cdef", "-g", "4", "-r", str(self.results),
             "-n", "1", "dfs.best")
         self.assertEqual("dfs-anagrams", dfs_best_command[0])
-        self.assertEqual(
-            str(target / "best.pairs"),
-            dfs_best_command[dfs_best_command.index("--pairs") + 1])
+        # The bag-filtered union, and the record of it published beside the
+        # results so status can tell a classify that changed something here
+        # from one that did not.
+        self.assertEqual("good,one\ngood,two\n", self.pairs_seen[-1])
+        self.assertEqual("good,one\ngood,two\n",
+                         (target / "dfs.best.pairs").read_text())
         # A finished search the frontier was never generated from.
         self.assertIn(
             "s2/u-cdef/m4/g4: dfs.best generated after top.segments", stdout)
@@ -170,11 +203,10 @@ class BestEndToEndTests(unittest.TestCase):
             "--source", "best", "--dfs-count", "3", "--top-count", "3")
         self.assertEqual(["dfs-anagrams", "top-segments"],
                          [call[0] for call in commands_run])
+        self.assertEqual("good,one\ngood,two\n", self.pairs_seen[-1])
         self.assertEqual(
-            str(target / "best.pairs"),
-            commands_run[0][commands_run[0].index("--pairs") + 1])
-        self.assertEqual(
-            str(target / "dfs.best"), commands_run[1][-1])
+            [str(self.root), "-y", str(target / "dfs.best")],
+            commands_run[1][commands_run[1].index("--wfroot") + 1:])
         self.assertEqual("best\n",
                          state._stamp(target / "top.segments").read_text())
         self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from best)",
@@ -207,13 +239,20 @@ class BestEndToEndTests(unittest.TestCase):
 
         stdout, _ = self._wf("best", "complete", "s2", "-u", "cdef", "-g", "4")
         # good,two is not in this round's frontier and was never re-reviewed,
-        # and it is still here: best.pairs accumulates across rounds.
+        # and it is still here: the confirmed-YES set accumulates across
+        # rounds, and every target reads the same one.
         self.assertEqual("final,answer\ngood,one\ngood,two\nsecond,look\n",
-                         (target / "best.pairs").read_text())
-        self.assertIn("s2/u-cdef/m4/g4: dfs.best out of date "
-                      "(best.pairs changed)", stdout)
+                         config.classified(self.root, "yes").read_text())
+        # The frontier is behind the round that just landed, which is the
+        # cheap thing to fix and outranks the hours below it.
         self.assertIn(
-            "refine: wf best prepare s2 -u cdef -g 4 --source best", stdout)
+            "s2/u-cdef/m4/g4: top.segments behind the classified sets", stdout)
+        # And the search itself is behind, because two of the four pairs it
+        # would now weight by are ones it never saw.
+        target_state = state.one_target(self.root, "s2", "u-cdef", 4, 4)
+        self.assertEqual(
+            ["usable pair set changed"],
+            state.Inputs(target_state).best_search_needed)
 
         # The DFS output names carry no generation or review ordinal: two
         # rounds of one target write the one path their cutoff names.
@@ -223,7 +262,7 @@ class BestEndToEndTests(unittest.TestCase):
              "dfs.s2.idx2.85.15.m4.x2.g4.best.3.u-cdef"],
             sorted(path.name for path in (self.results / "s2").iterdir()))
 
-    def test_oneoff_lifecycle_archives_full_source_and_promotes_yes_pairs(self):
+    def test_oneoff_lifecycle_archives_source_and_records_yes_globally(self):
         self._wf("init")
         wf_dir = self.root / ".wf"
         target = wf_dir / "best" / "s2" / "u-cdef" / "m4" / "g4"
@@ -258,16 +297,16 @@ class BestEndToEndTests(unittest.TestCase):
         archived = wf_dir / "p2" / "done" / "in" / source.name
         self.assertEqual(
             "known,no\nknown,yes\nnew,no\nnew,yes\n", archived.read_text())
+        # The verdicts land in the classified sets and nowhere else: a one-off
+        # no longer accumulates into a per-target file.
         self.assertEqual("known,yes\nnew,yes\n",
-                         (target / "best.pairs").read_text())
+                         config.classified(self.root, "yes").read_text())
         self.assertEqual("known,no\nnew,no\n",
                          config.classified(self.root, "no").read_text())
         self.assertEqual("new,no\nnew,yes\n",
                          (wf_dir / "p2" / "done" / "p2_done.pairs").read_text())
         self.assertFalse(filtered.exists())
-        self.assertEqual(
-            f"{archived.name}\n",
-            state._stamp(target / "best.pairs").read_text())
+        self.assertFalse((target / "best.pairs").exists())
         target_state = state.one_target(self.root, "s2", "u-cdef", 4, 4)
         self.assertEqual(
             "review needed (frontier from seed)",

@@ -13,6 +13,26 @@ from workflow import config
 from workflow.best import commands, generate, state
 
 
+PRODUCERS = ("dfs-anagrams", "top-segments")
+
+
+def only_producers(stub):
+    """Wrap a subprocess.run stub so only the external producers are stubbed.
+
+    setops shares this module's subprocess, and the final DFS leg runs sort
+    and comm inside the command to build its --pairs -- as does every status
+    report printed after one. Anything that is not a producer runs for real.
+    """
+    real = generate.subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] not in PRODUCERS:
+            return real(command, **kwargs)
+        return stub(command, **kwargs)
+
+    return run
+
+
 class BestTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -49,8 +69,11 @@ class BestTests(unittest.TestCase):
         universe_dir = target.parent
         letter_set_dir = universe_dir.parent
         sentence_dir = letter_set_dir.parent
-        for kind in ("yes", "no"):
-            os.utime(config.classified(self.root, kind), (10, 10))
+        # The bag under u-cdef is `ab`, and `a,b` is a confirmed pair it can
+        # spell: the union dfs.best searches with is non-empty without any
+        # best.pairs, which nothing generates and need not be there.
+        self._write(config.classified(self.root, "yes"), "a,b\n", 10)
+        os.utime(config.classified(self.root, "no"), (10, 10))
         self._write(sentence_dir / "letters", "abcdef\n", 10)
         self._write(
             sentence_dir / f"seed.{universe_dir.name}.idx2.85.15.pairs",
@@ -64,9 +87,10 @@ class BestTests(unittest.TestCase):
                   f"{target.name}.{letter_set_dir.name}.1000.r1.pairs")
         self._write(fx.slot(self.opts, ["p2", "done", "in"]) / prefix,
                     "a,b\n", 40)
-        self._write(target / "best.pairs", "a,b\n", 50)
         dfs_best = self._write(results / "dfs.best.out", "1 a b\n", 60)
         (target / "dfs.best").symlink_to(dfs_best)
+        # What that search was weighted by, published beside its results.
+        self._write(target / "dfs.best.pairs", "a,b\n", 60)
         # The frontier was last generated from dfs.best, after it landed: the
         # content clock stays at 30 because the regeneration was a no-op, and
         # the generation clock is what says the finished search was read.
@@ -224,18 +248,21 @@ class BestTests(unittest.TestCase):
         os.utime(target / "dfs.seed", (20, 20))
 
         confirmed_yes = config.classified(self.root, "yes")
-        os.utime(confirmed_yes, (55, 55))
+        os.utime(confirmed_yes, (70, 70))
         _, stdout, _ = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertIn(
-            "best.pairs out of date (confirmed-YES set changed)", stdout)
+            "top.segments behind the classified sets "
+            "(confirmed-YES set changed)", stdout)
         os.utime(confirmed_yes, (10, 10))
 
-        os.utime(target / "best.pairs", (65, 65))
+        # A hand-added pair the bag can spell is one dfs.best never saw, and
+        # the published list is what says so.
+        best_pairs = self._write(target / "best.pairs", "b,a\n", 65)
         _, stdout, _ = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
-        self.assertIn("dfs.best out of date (best.pairs changed)", stdout)
-        os.utime(target / "best.pairs", (50, 50))
+        self.assertIn("dfs.best out of date (usable pair set changed)", stdout)
+        best_pairs.unlink()
 
         done = fx.slot(self.opts, ["p2", "done", "in"])
         next(done.iterdir()).unlink()
@@ -296,7 +323,8 @@ class BestTests(unittest.TestCase):
 
         self._write(self.best / "idx" / generate.INDEX_NAME, "index\n")
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run), \
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)), \
                 mock.patch.object(generate.time, "monotonic", side_effect=[0, 2]):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "-f", "best", "gen", "s2", "-u", "cdef",
@@ -321,7 +349,8 @@ class BestTests(unittest.TestCase):
             raise generate.subprocess.CalledProcessError(1, argv)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=fail):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(fail)):
             with self.assertRaises(generate.subprocess.CalledProcessError):
                 fx.run_wf("-d", str(self.root), "best", "gen", "s2",
                           "-u", "cdef", "-g", "4", "-r", str(results),
@@ -345,7 +374,8 @@ class BestTests(unittest.TestCase):
             return mock.Mock(returncode=0)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
                 "-g", "4", "--source", "seed", "top.segments")
@@ -356,16 +386,22 @@ class BestTests(unittest.TestCase):
                 "-g", "4", "-n", "2", "--source", "seed", "top.segments")
 
         self.assertEqual((0, 0), (code, code2), stderr + stderr2)
+        # --wfroot rejects the hard-NO lines whole and -y stops the standing
+        # YES pairs from being counted, so the frontier holds candidates with
+        # no verdict rather than rows already answered.
         self.assertEqual(
-            ["top-segments", "--pairs", str(dfs_seed)], calls[0])
+            ["top-segments", "--pairs", "--wfroot", str(self.root), "-y",
+             str(dfs_seed)], calls[0])
         self.assertEqual(
-            ["top-segments", "--pairs", "-n", "2", str(dfs_seed)], calls[1])
+            ["top-segments", "--pairs", "-n", "2", "--wfroot", str(self.root),
+             "-y", str(dfs_seed)], calls[1])
         self.assertEqual(30, int(top.stat().st_mtime))
         self.assertIn("Generated 2 top segments", stdout + stdout2)
         self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from seed)",
                       stdout2)
         self.assertIn(
-            f"top-segments --pairs -n 2 {dfs_seed}", stderr2)
+            f"top-segments --pairs -n 2 --wfroot {self.root} -y {dfs_seed}",
+            stderr2)
         # The marker records the source and advances even where the stable
         # placement left top.segments untouched.
         self.assertEqual("seed\n", state._stamp(top).read_text())
@@ -392,7 +428,8 @@ class BestTests(unittest.TestCase):
             stdout)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
                 "-g", "4", "--source", "seed", "top.segments")
@@ -403,29 +440,23 @@ class BestTests(unittest.TestCase):
         self.assertNotIn("generated after top.segments", stdout)
         self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
 
-    def test_no_op_best_pairs_gen_clears_changed_top_segments(self):
+    def test_best_pairs_is_no_longer_a_stage_and_needs_no_generation(self):
         target = self._target()
         self._complete_files(target)
-        best_pairs = target / "best.pairs"
-        # top.segments regenerated with new content, its review round came
-        # back confirming nothing new, so best.pairs recomputes identical.
-        self._write(config.classified(self.root, "yes"), "a,b\n", 10)
-        os.utime(target / "top.segments", (70, 70))
-        os.utime(next(fx.slot(self.opts, ["p2", "done", "in"]).iterdir()),
-                 (80, 80))
 
-        _, stdout, _ = fx.run_wf(
-            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
-        self.assertIn("best.pairs out of date (top.segments changed)", stdout)
-
-        code, stdout, stderr = fx.run_wf(
+        code, _, stderr = fx.run_wf(
             "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
             "-g", "4", "best.pairs")
+        self.assertEqual(2, code)
+        self.assertIn("invalid argument: 'best.pairs'", stderr)
 
-        self.assertEqual(0, code, stderr)
-        self.assertIn("(0 added, 0 dropped)", stdout)
-        self.assertEqual(50, int(best_pairs.stat().st_mtime))
+        # Absent is the ordinary shape, and a hand-edit is read straight into
+        # the union without anything generating or dating it.
+        self.assertFalse((target / "best.pairs").exists())
+        _, stdout, _ = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
+        self.assertNotIn("best.pairs", stdout)
 
     def test_status_reports_a_malformed_target_and_keeps_listing(self):
         universe = self._target().parent
@@ -440,21 +471,30 @@ class BestTests(unittest.TestCase):
         self.assertIn("s2/u-cdef/m4/g4: multiple seeds in", stderr)
         self.assertIn("s3/u-cdef/m4/g4: letters missing", stdout)
 
-    def test_gen_dfs_best_uses_best_pairs_and_final_name(self):
+    def test_gen_dfs_best_searches_with_the_bag_filtered_union(self):
         target = self._target()
         self._complete_files(target)
         self._shared_inputs(target.parent)
-        pairs = self._write(target / "best.pairs", "alpha,beta\n", 50)
+        # A hand-edited best.pairs joins classified/yes in the union, and a
+        # standing NO comes back out of it. `alpha,beta` the bag cannot spell,
+        # so it is filtered out and never reaches the search -- where it could
+        # not have changed a score either, enumeration being bag-bounded.
+        self._write(target / "best.pairs", "b,a\nalpha,beta\nbad,pair\n", 50)
+        self._write(config.classified(self.root, "no"), "bad,pair\n", 10)
         results = self.root / "results"
         calls = []
+        pairs_seen = []
 
         def run(argv, **kwargs):
             calls.append(argv)
+            pairs_seen.append(
+                Path(argv[argv.index("--pairs") + 1]).read_text())
             kwargs["stdout"].write("9 alpha,beta\n8 gamma,delta\n")
             return mock.Mock(returncode=0)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run), \
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)), \
                 mock.patch.object(generate.time, "monotonic", side_effect=[0, 3]):
             code, stdout, stderr = fx.run_wf(
                 "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
@@ -467,9 +507,12 @@ class BestTests(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(rendered, link.resolve())
         self.assertEqual("9 alpha,beta\n8 gamma,delta\n", rendered.read_text())
-        self.assertEqual(str(pairs), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual(["a,b\nb,a\n"], pairs_seen)
+        # The same list, published beside the results so a later status can
+        # tell a classify that changed something here from one that did not.
+        self.assertEqual("a,b\nb,a\n", (target / "dfs.best.pairs").read_text())
         self.assertEqual("25", calls[0][calls[0].index("-n") + 1])
-        self.assertIn(f"--pairs {pairs}", stderr)
+        self.assertIn("Searched with 2 of 3 confirmed pairs", stdout)
         self.assertIn("Generated 2 results in 3s", stdout)
         # A finished search whose frontier was never generated: seconds of
         # work, and status offers it before the hours of another search.
@@ -510,9 +553,11 @@ class BestTests(unittest.TestCase):
         self.assertEqual(
             "hard,no\n", config.classified(self.root, "no").read_text())
         self.assertIn("Classified NO: 1 new, 1 total", stdout)
-        # The derived set comes first: rebuilding it costs seconds, and
-        # running either search off a stale one costs hours.
-        self.assertIn("best.pairs out of date (hard-NO set changed)", stdout)
+        # The frontier comes first: refilling it costs seconds, and running
+        # either search off one that is behind the verdicts costs hours.
+        self.assertIn(
+            "top.segments behind the classified sets (hard-NO set changed)",
+            stdout)
 
     def test_review_subtracts_hard_no_and_opens_unfiltered_round(self):
         target = self._target()
@@ -652,91 +697,6 @@ class BestTests(unittest.TestCase):
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
 
-    def test_gen_best_pairs_accumulates_manual_entries_and_preserves_mtime(self):
-        target = self._target()
-        self._complete_files(target)
-        top = self._write(target / "top.segments", "a,b\nbad,pair\n", 30)
-        old_best = self._write(
-            target / "best.pairs", "bad,pair\nmanual,entry\nx,y\n", 50)
-        self._write(config.classified(self.root, "yes"),
-                    "a,b\nbad,pair\nx,y\n", 45)
-        self._write(config.classified(self.root, "no"), "bad,pair\n", 10)
-
-        with self.assertRaisesRegex(ValueError, "-n is not valid"):
-            fx.run_wf("-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-                      "-g", "4", "-n", "2", "best.pairs")
-
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-            "-g", "4", "best.pairs")
-        self.assertEqual(0, code, stderr)
-        self.assertEqual("a,b\nmanual,entry\nx,y\n", old_best.read_text())
-        self.assertEqual("a,b\nbad,pair\n", top.read_text())
-        self.assertIn("Generated 3 best pairs (1 added, 1 dropped)", stdout)
-        self.assertIn("dfs.best out of date (best.pairs changed)", stdout)
-
-        mtime = old_best.stat().st_mtime_ns
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-            "-g", "4", "best.pairs")
-        self.assertEqual(0, code, stderr)
-        self.assertEqual(mtime, old_best.stat().st_mtime_ns)
-        self.assertIn("Generated 3 best pairs (0 added, 0 dropped)", stdout)
-
-    def test_gen_best_pairs_uses_target_oneoffs_without_a_frontier(self):
-        target = self._target()
-        done = fx.slot(self.opts, ["p2", "done", "in"])
-        first = self._write(
-            done / "oneoff.s2.m4.g4.u-cdef.4.r1.pairs",
-            "known,yes\nhard,no\nmanual,entry\nnew,yes\n")
-        second = self._write(
-            done / "oneoff.s2.m4.g4.u-cdef.1.r2.pairs", "later,yes\n")
-        self._write(
-            done / "oneoff.s3.m4.g4.u-cdef.1.r1.pairs", "other,target\n")
-        self._write(config.classified(self.root, "yes"),
-                    "known,yes\nlater,yes\nnew,yes\nother,target\n")
-        self._write(config.classified(self.root, "no"), "hard,no\n")
-        self._write(target / "best.pairs", "hard,no\nmanual,entry\n")
-
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
-            "-g", "4", "best.pairs")
-
-        self.assertEqual(0, code, stderr)
-        self.assertEqual(
-            "known,yes\nlater,yes\nmanual,entry\nnew,yes\n",
-            (target / "best.pairs").read_text())
-        self.assertEqual(
-            f"{second.name}\n{first.name}\n",
-            state._stamp(target / "best.pairs").read_text())
-        self.assertNotIn("other,target", (target / "best.pairs").read_text())
-        self.assertIn("Generated 4 best pairs", stdout)
-
-    def test_best_pairs_write_before_manifest_is_reoffered_and_heals(self):
-        target_dir = self._target()
-        self._complete_files(target_dir)
-        oneoff = self._write(
-            fx.slot(self.opts, ["p2", "done", "in"])
-            / "oneoff.s2.m4.g4.u-cdef.1.r1.pairs", "new,yes\n", 45)
-        self._write(config.classified(self.root, "yes"), "a,b\nnew,yes\n", 10)
-        target = state.one_target(self.root, "s2", "u-cdef", 4, 4)
-
-        with mock.patch.object(
-                generate, "mark_generated", side_effect=RuntimeError("stop")):
-            with self.assertRaisesRegex(RuntimeError, "stop"):
-                generate.build_best_pairs(target)
-
-        self.assertEqual("a,b\nnew,yes\n",
-                         (target_dir / "best.pairs").read_text())
-        self.assertFalse(state._stamp(target_dir / "best.pairs").exists())
-        result = state._best_pairs_out_of_date(state.Inputs(target))
-        self.assertIn("completed one-off review", result.message)
-
-        generate.build_best_pairs(target)
-        self.assertEqual(f"{oneoff.name}\n",
-                         state._stamp(target_dir / "best.pairs").read_text())
-        self.assertIsNone(state._best_pairs_out_of_date(state.Inputs(target)))
-
     # ------------------------------------------------------------ best notes
 
     ROUND_1 = "top.s2.m4.g4.u-cdef.1000.r1"
@@ -752,7 +712,7 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         return run.call_args.args[2], stdout
 
-    def test_notes_re_notes_the_in_flight_round_against_best_pairs(self):
+    def test_notes_re_notes_the_in_flight_round(self):
         target = self._target()
         self._complete_files(target)
         evaluating = (fx.slot(self.opts, ["p2", "eval"])
@@ -767,7 +727,7 @@ class BestTests(unittest.TestCase):
         self.assertEqual([evaluating.name], argv)
         self.assertIn("review awaiting completion", stdout)
 
-        (target / "best.pairs").unlink()
+        self._write(target / "best.pairs", "b,a\n")
         argv, _ = self._run_notes()
         self.assertEqual([evaluating.name], argv)
 
@@ -844,7 +804,7 @@ class BestTests(unittest.TestCase):
                               "-u", "cdef", "-g", "4")
         self.assertTrue(queued.is_file())
 
-    def test_complete_selects_target_bundle_and_generates_best_pairs(self):
+    def test_complete_selects_the_target_bundle_and_reports_what_moved(self):
         target = self._target()
         universe = target.parent
         self._shared_inputs(universe)
@@ -872,9 +832,9 @@ class BestTests(unittest.TestCase):
 
         self.assertEqual(0, code, stderr)
         run.assert_called_once()
-        self.assertEqual("a,b\nnew,pair\n",
-                         (target / "best.pairs").read_text())
-        self.assertIn("Generated 2 best pairs (2 added, 0 dropped)", stdout)
+        # Nothing derives a per-target set: the round's verdicts are already
+        # in the classified sets and reach --pairs from there.
+        self.assertFalse((target / "best.pairs").exists())
         self.assertIn("s2/u-cdef/m4/g4: dfs.best missing", stdout)
 
     def test_gen_dfs_seed_passes_the_letter_set_both_ways(self):
@@ -889,7 +849,8 @@ class BestTests(unittest.TestCase):
             return mock.Mock(returncode=0)
 
         with mock.patch.object(generate.shutil, "which", return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
             code, _, used = fx.run_wf(
                 "-d", str(self.root), "-f", "best", "gen", "s2", "-u", "cdef",
                 "-g", "4", "-r", str(results), "dfs.seed")
@@ -995,7 +956,8 @@ class BestTests(unittest.TestCase):
 
         with mock.patch.object(generate.shutil, "which",
                                return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
             code, stdout, stderr = fx.run_wf("-d", str(self.root), *argv)
         return code, calls, stdout, stderr
 
@@ -1004,9 +966,9 @@ class BestTests(unittest.TestCase):
         self._complete_files(target)
         self._shared_inputs(target.parent)
 
-        # One parser serves all four stages, so --source parses everywhere and
-        # is refused where it means nothing.
-        for stage in ("dfs.seed", "dfs.best", "best.pairs"):
+        # One parser serves every stage, so --source parses everywhere and is
+        # refused where it means nothing.
+        for stage in ("dfs.seed", "dfs.best"):
             with self.subTest(stage=stage):
                 with self.assertRaisesRegex(
                         ValueError, "only valid for gen top.segments"):
@@ -1035,7 +997,8 @@ class BestTests(unittest.TestCase):
                     "--source", source, "top.segments")
                 self.assertEqual(0, code)
                 self.assertEqual(
-                    ["top-segments", "--pairs", str(target / f"dfs.{source}")],
+                    ["top-segments", "--pairs", "--wfroot", str(self.root),
+                     "-y", str(target / f"dfs.{source}")],
                     calls[0])
                 self.assertEqual(
                     f"{source}\n",
@@ -1093,8 +1056,8 @@ class BestTests(unittest.TestCase):
         self.assertEqual(str(seed), calls[0][calls[0].index("--pairs") + 1])
         self.assertEqual("1000000", calls[0][calls[0].index("-n") + 1])
         self.assertEqual(
-            ["top-segments", "--pairs", "-n", "1000",
-             str(target / "dfs.seed")], calls[1])
+            ["top-segments", "--pairs", "-n", "1000", "--wfroot",
+             str(self.root), "-y", str(target / "dfs.seed")], calls[1])
         rendered = results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.1000000.u-cdef"
         self.assertEqual(rendered, (target / "dfs.seed").resolve())
         self.assertEqual("alpha,beta\ngamma,delta\n",
@@ -1131,7 +1094,6 @@ class BestTests(unittest.TestCase):
         target = self._target()
         self._complete_files(target)
         self._shared_inputs(target.parent)
-        pairs = self._write(target / "best.pairs", "alpha,beta\n", 50)
         results = self.root / "results"
 
         code, calls, stdout, stderr = self._run_producers(
@@ -1141,7 +1103,7 @@ class BestTests(unittest.TestCase):
             "--top-count", "1")
 
         self.assertEqual(0, code, stderr)
-        self.assertEqual(str(pairs), calls[0][calls[0].index("--pairs") + 1])
+        self.assertEqual("a,b\n", (target / "dfs.best.pairs").read_text())
         self.assertEqual(str(target / "dfs.best"), calls[1][-1])
         self.assertEqual(
             results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.best.1.u-cdef",
@@ -1180,13 +1142,16 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertTrue((universe / "g4" / "top.segments").is_file())
 
-    def test_an_empty_best_pairs_refuses_both_final_searches(self):
+    def test_a_union_this_bag_cannot_spell_refuses_both_final_searches(self):
         target = self._target()
         self._complete_files(target)
         self._shared_inputs(target.parent)
-        self._write(target / "best.pairs", "", 50)
+        # Confirmed pairs exist; none of them fits the `ab` bag, so dfs.best
+        # would be a strictly worse dfs.seed and must not cost the hours.
+        self._write(config.classified(self.root, "yes"), "x,y\nz,z\n", 10)
         results = self.root / "results"
         before = sorted((results).iterdir())
+        started = []
 
         for argv in (["gen", "s2", "-u", "cdef", "-g", "4",
                       "-r", str(results), "dfs.best"],
@@ -1195,12 +1160,17 @@ class BestTests(unittest.TestCase):
             with self.subTest(command=argv[0]):
                 with mock.patch.object(generate.shutil, "which",
                                        return_value="/bin/fake"), \
-                        mock.patch.object(generate.subprocess, "run") as run:
+                        mock.patch.object(
+                            generate.subprocess, "run",
+                            side_effect=only_producers(started.append)):
                     with self.assertRaisesRegex(
-                            ValueError, "best.pairs is empty"):
+                            ValueError, "fits s2/u-cdef/m4/g4's letters"):
                         fx.run_wf("-d", str(self.root), "best", *argv)
-                run.assert_not_called()
+        self.assertEqual([], started)
         self.assertEqual(before, sorted((results).iterdir()))
+        # And the record of what the last finished search used is untouched:
+        # only a run that finished writes it.
+        self.assertEqual("a,b\n", (target / "dfs.best.pairs").read_text())
 
     # -------------------------------------------------------- review gating
 
@@ -1277,7 +1247,8 @@ class BestTests(unittest.TestCase):
         with redirect_stderr(stderr), \
                 mock.patch.object(generate.shutil, "which",
                                   return_value="/bin/fake"), \
-                mock.patch.object(generate.subprocess, "run", side_effect=run):
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
             with self.assertRaises(generate.subprocess.CalledProcessError):
                 generate.prepare(target, source="seed", force=False,
                                  results_dir=results, dfs_count=1,
@@ -1313,8 +1284,8 @@ class BestTests(unittest.TestCase):
         bundle_name = "top.s2.m4.g4.u-cdef.3.r2"
         source = (fx.slot(self.opts, ["p2", "eval"]) / bundle_name
                   / f"{bundle_name}.pairs")
-        # Re-confirming a standing YES buys nothing: build_best_pairs
-        # intersects against classified/yes globally, round by round.
+        # Re-confirming a standing YES buys nothing: the verdict is global
+        # and reaches --pairs straight out of classified/yes.
         self.assertEqual("keep,new\n", source.read_text())
 
     def test_an_empty_review_bundle_converges_instead_of_raising(self):
@@ -1322,7 +1293,7 @@ class BestTests(unittest.TestCase):
         self._complete_files(target)
         self._write(target / "top.segments", "hard,no\nyes,known\n", 30)
         self._write(config.classified(self.root, "no"), "hard,no\n", 90)
-        self._write(config.classified(self.root, "yes"), "yes,known\n", 10)
+        self._write(config.classified(self.root, "yes"), "a,b\nyes,known\n", 10)
 
         code, stdout, stderr = fx.run_wf(
             "-d", str(self.root), "best", "review", "s2", "-u", "cdef", "-g", "4")
@@ -1330,12 +1301,16 @@ class BestTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertIn("s2/u-cdef/m4/g4: no review candidates remain "
                       "(2 frontier pairs, all already classified)", stdout)
-        # Status cannot detect this -- neither clock moved -- so the searches
-        # worth running are named here instead.
+        # The classify that produced those verdicts moved a classified set
+        # past the frontier's marker, so refilling it is the cheap way out and
+        # is named ahead of the hours.
         self.assertIn("choose next:", stdout)
-        self.assertIn("reseed: wf best prepare s2 -u cdef -g 4 --source seed",
+        self.assertIn(
+            "refresh: wf best gen s2 -u cdef -g 4 top.segments --source best",
+            stdout)
+        self.assertIn("reseed:  wf best prepare s2 -u cdef -g 4 --source seed",
                       stdout)
-        self.assertIn("refine: wf best prepare s2 -u cdef -g 4 --source best",
+        self.assertIn("refine:  wf best prepare s2 -u cdef -g 4 --source best",
                       stdout)
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
@@ -1361,21 +1336,6 @@ class BestTests(unittest.TestCase):
                     "-d", str(self.root), *command_text, "help")
                 self.assertEqual(0, code, stderr)
                 self.assertIn("--yes-pairs", stdout)
-        self.assertEqual(
-            ["--yes-pairs", str(target / "best.pairs")],
-            state.yes_pairs_argv(
-                state.one_target(self.opts.dir, "s2", "u-cdef", 4, 4)))
-
-    def test_the_best_pairs_marker_stays_empty_and_unparsed(self):
-        target = self._target()
-        self._complete_files(target)
-
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "s2", "-u", "cdef", "-g", "4",
-            "best.pairs")
-
-        self.assertEqual(0, code, stderr)
-        self.assertEqual("", state._stamp(target / "best.pairs").read_text())
 
     def test_letter_set_flag_is_required_and_singular(self):
         self._target()

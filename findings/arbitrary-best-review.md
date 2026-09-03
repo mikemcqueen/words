@@ -46,20 +46,21 @@ completion recipe.
 
 ### 1. `best.pairs` currently only admits new entries from `top.segments`
 
-`build_best_pairs()` in `workflow/best/generate.py` computes roughly:
+~~so build_best_pairs() should change to take a src_segments file, which can
+either be top.segments or the supplied file.~~
 
-```text
-prior best.pairs
-union (top.segments intersection classified/yes)
-minus classified/no
-```
+**Dissolved, not solved** (2026-09-02, `plans/manual-best-pairs.md`).
+`build_best_pairs()` is gone. `best.pairs` is no longer derived from anything:
+it is an optional hand-edited file that nothing generates, and `gen dfs.best`
+unions it with `classified/yes` at run time, filtered down to what the target's
+letter bag can spell.
 
-so build_best_pairs() should change to take a src_segments file, which can
-either be top.segments or the supplied file.
-
-The full supplied input must be retained, not merely the unknown subset sent to
-notes. Already-known YES pairs are removed from the review candidates but
-should still be admitted to this target's `best.pairs`.
+A one-off round's YES verdicts land in `classified/yes` like every other
+round's, and reach `--pairs` from there for every target whose bag can spell
+them. So there is no per-target set left for a supplied file to feed, and no
+`src_segments` parameter to add. The requirement this issue was protecting --
+that already-known YES pairs are removed from the review candidates but still
+weight the search -- now holds for free.
 
 ### 2. The current frontier lock becomes conditionally wrong
 

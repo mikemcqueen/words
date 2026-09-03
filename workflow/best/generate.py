@@ -9,7 +9,7 @@ from pathlib import Path
 
 from workflow import config, fs, log, setops
 from workflow.best.state import (
-    Target, mark_generated, review_locations,
+    Target, build_search_pairs, mark_generated, search_pair_sources,
 )
 
 
@@ -88,7 +88,7 @@ def _publish_link(link: Path, destination: Path) -> None:
 
 
 def _dfs_inputs(target: Target, results_dir: Path,
-                final: bool) -> tuple[Path, Path, Path, Path]:
+                final: bool) -> tuple[Path, Path, Path, list[Path]]:
     """Everything a DFS run reads, checked before anything is created."""
     _require_command("dfs-anagrams")
     index = target.best_dir / "idx" / INDEX_NAME
@@ -101,17 +101,14 @@ def _dfs_inputs(target: Target, results_dir: Path,
         raise FileNotFoundError(f"seed missing: {target.seed_glob}")
     fs.raise_if_not_file(config.classified(target.root, "no"))
     fs.raise_if_not_dir(results_dir)
-    pairs = target.artifact("best.pairs") if final else seed
-    fs.raise_if_not_file(pairs)
-    if final and fs.line_count(pairs) == 0:
-        # dfs-anagrams given an empty --pairs is a strictly worse dfs.seed:
-        # the same search with the pair bonuses switched off. There is no case
-        # where spending hours on it is right, so the refusal lands here with
-        # the other input checks, before anything is created.
-        raise ValueError(
-            f"best.pairs is empty: {pairs}; dfs.best would search without "
-            f"pair bonuses. Widen top.segments or reseed instead")
-    return index, dictionary, seed, pairs
+    # The final leg unions its --pairs out of several files rather than
+    # reading one, so what the run reads is a list either way.
+    if final:
+        sources = search_pair_sources(target)
+    else:
+        fs.raise_if_not_file(seed)
+        sources = [seed]
+    return index, dictionary, seed, sources
 
 
 def gen_dfs(target: Target, *, final: bool, force: bool,
@@ -125,10 +122,36 @@ def gen_dfs(target: Target, *, final: bool, force: bool,
     layer's to say.
     """
     results_dir = Path(results_dir or "results").resolve()
-    index, dictionary, seed, pairs = _dfs_inputs(target, results_dir, final)
+    # The scratch directory wraps the whole run so the union outlives input
+    # validation and the search that reads it.
+    with tempfile.TemporaryDirectory(prefix="wf-dfs-pairs-") as tmp:
+        _run_dfs(target, Path(tmp), final=final, force=force,
+                 results_dir=results_dir, count=count)
+
+
+def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
+             results_dir: Path, count: int | None) -> None:
+    index, dictionary, seed, sources = _dfs_inputs(target, results_dir, final)
     sentence_results = results_dir / target.sentence
     if sentence_results.exists():
         fs.raise_if_not_dir(sentence_results)
+
+    if final:
+        pairs, standing = build_search_pairs(target, scratch_dir)
+        if fs.line_count(pairs) == 0:
+            # dfs-anagrams given a --pairs nothing in it can spell is a
+            # strictly worse dfs.seed: the same search with the pair bonuses
+            # switched off. There is no case where spending hours on it is
+            # right, so the refusal lands here with the other input checks,
+            # before anything is created.
+            named = " or ".join(str(source) for source in sources)
+            raise ValueError(
+                f"no pair in {named} fits {target.address}'s letters "
+                f"({standing} confirmed pairs); dfs.best would search without "
+                f"pair bonuses. Review more of top.segments, or add pairs to "
+                f"{target.artifact('best.pairs')}")
+    else:
+        pairs = seed
 
     if not target.target_dir.exists():
         if not force:
@@ -171,6 +194,18 @@ def gen_dfs(target: Target, *, final: bool, force: bool,
     elapsed = _format_duration(time.monotonic() - started)
     log.success(f"Generated {fs.line_count(rendered)} results in {elapsed} "
                 f"→ {rendered}")
+    if final:
+        # After the search, not before. Written first, an interrupted run
+        # would leave a dfs.best.pairs describing a search that never
+        # finished, matching whatever Inputs recomputes, and status would call
+        # the previous dfs.best current. Written last, a crash between the two
+        # leaves the record behind, status re-offers the search, and the state
+        # heals -- the ordering gen_top_segments spells out for its own marker.
+        # merge over an already-sorted file, taken for its atomic write-aside
+        # and rename rather than for the sort.
+        published = setops.merge([pairs], target.artifact("dfs.best.pairs"))
+        log.success(f"Searched with {fs.line_count(published)} of {standing} "
+                    f"confirmed pairs → {target.address}/dfs.best.pairs")
 
 
 def gen_top_segments(target: Target, *, source: str,
@@ -185,9 +220,21 @@ def gen_top_segments(target: Target, *, source: str,
     _require_command("top-segments")
     dfs = target.artifact(f"dfs.{source}")
     fs.raise_if_not_file(dfs)
+    # pair-exclusions only warns on a missing classified file, and a warning
+    # would produce an unfiltered frontier the state machine then believes is
+    # filtered. Both are checked here so it cannot.
+    fs.raise_if_not_file(config.classified(target.root, "yes"))
+    fs.raise_if_not_file(config.classified(target.root, "no"))
     argv = ["top-segments", "--pairs"]
     if count is not None:
         argv.extend(["-n", str(count)])
+    # The two flags are not symmetric and both are wanted. -y ignores: a YES
+    # pair is not counted, but its line still contributes every other segment
+    # on it. --wfroot rejects: a line holding a NO pair is dropped whole, so
+    # it stops contributing counts for its other segments -- the same
+    # semantics --exclude-pairs applies at search time, so a regenerated
+    # frontier stays consistent with a re-run search.
+    argv.extend(["--wfroot", str(target.root), "-y"])
     argv.append(str(dfs))
     _display_command(argv)
     top_segments = target.artifact("top.segments")
@@ -235,52 +282,3 @@ def prepare(target: Target, *, source: str, force: bool,
         log.error(f"dfs.{source} is in place but top.segments was not "
                   f"generated; rerun: {recovery}")
         raise
-
-
-def build_best_pairs(target: Target) -> None:
-    top_segments = target.artifact("top.segments")
-    confirmed_yes = config.classified(target.root, "yes")
-    hard_no = config.classified(target.root, "no")
-    fs.raise_if_not_file(confirmed_yes)
-    fs.raise_if_not_file(hard_no)
-
-    _, _, archived = review_locations(target)
-    oneoffs = sorted(
-        (round_.path for round_ in archived if round_.kind == "oneoff"),
-        key=lambda path: path.name)
-    eligible_sources = []
-    if top_segments.exists():
-        fs.raise_if_not_file(top_segments)
-        eligible_sources.append(top_segments)
-    elif top_segments.is_symlink():
-        fs.raise_if_not_file(top_segments)
-    eligible_sources.extend(oneoffs)
-    if not eligible_sources:
-        # Preserve the existing missing-frontier diagnostic when no alternative
-        # completed source can supply the eligible universe.
-        fs.raise_if_not_file(top_segments)
-
-    destination = target.artifact("best.pairs")
-    before = set(destination.read_text().splitlines()) \
-        if destination.exists() else set()
-    with tempfile.TemporaryDirectory(prefix="wf-best-pairs-") as tmp:
-        scratch = Path(tmp)
-        collated = setops.merge(eligible_sources, scratch / "eligible.pairs")
-        confirmed = setops.common(
-            collated, confirmed_yes, scratch / "confirmed.pairs")
-        # best.pairs is a sticky accumulator: classified YES gates new frontier
-        # entries, but an operator may add a pair directly before its verdict
-        # is recorded. Only a hard NO retracts an existing entry.
-        candidates = setops.merge(
-            [confirmed, destination] if destination.exists() else [confirmed],
-            scratch / "candidates.pairs")
-        setops.diff(candidates, hard_no, destination, stable_mtime=True)
-    manifest = "".join(f"{path.name}\n" for path in oneoffs)
-    mark_generated(destination, manifest)
-
-    after = set(destination.read_text().splitlines())
-    log.success(f"Generated {len(after)} best pairs "
-                f"({len(after - before)} added, {len(before - after)} dropped) "
-                f"→ {target.address}/best.pairs")
-    if not after:
-        log.warn("BEST PAIRS is empty; dfs.best would run without pair bonuses")

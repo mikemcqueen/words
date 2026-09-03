@@ -9,7 +9,7 @@ from workflow import (
 )
 from workflow.best import generate
 from workflow.best.state import (
-    SOURCES, Inputs, check_letter_set, eval_p2_command, one_target,
+    SOURCES, Choice, Inputs, check_letter_set, eval_p2_command, one_target,
     render_choices, report, review_locations, review_rounds, targets,
     top_segments_source,
 )
@@ -123,7 +123,7 @@ class Status(command.Action):
 
 
 class Gen(command.Action):
-    STAGES = ("dfs.seed", "top.segments", "best.pairs", "dfs.best")
+    STAGES = ("dfs.seed", "top.segments", "dfs.best")
 
     def __init__(self):
         super().__init__(summary="gen      — generate one BEST PAIRS artifact",
@@ -134,10 +134,9 @@ class Gen(command.Action):
                              ("STAGE", "artifact to generate: dfs.seed "
                               "(provisional DFS results), top.segments "
                               "(frequent pairs from the DFS results named by "
-                              "--source), best.pairs (confirmed reviewed "
-                              "pairs plus retained manual entries), or "
-                              "dfs.best (DFS results weighted by "
-                              "best.pairs)"),
+                              "--source), or dfs.best (DFS results weighted "
+                              "by the confirmed-YES pairs this target's "
+                              "letters can spell)"),
                          ))
 
     def parser(self):
@@ -174,14 +173,9 @@ class Gen(command.Action):
             raise ValueError("-f/--force is only valid for gen dfs.seed")
         if opts.results_dir is not None:
             raise ValueError("-r/--results-dir is only valid for DFS stages")
-        if stage == "top.segments":
-            _preflight_top_segments(target)
-            generate.gen_top_segments(target, source=opts.source,
-                                      count=opts.count)
-            return
-        if opts.count is not None:
-            raise ValueError("-n is not valid for gen best.pairs")
-        generate.build_best_pairs(target)
+        _preflight_top_segments(target)
+        generate.gen_top_segments(target, source=opts.source,
+                                  count=opts.count)
 
     def run(self, command_text, opts, argv) -> int:
         rest = self.parse(opts, argv)
@@ -397,12 +391,12 @@ class Review(command.Action):
         with tempfile.TemporaryDirectory(prefix="wf-best-review-") as tmp:
             scratch = Path(tmp)
             collated = setops.merge([top_segments], scratch / "top.pairs")
-            # Both standing sets come out, not just the hard-NO one. Under
-            # --source best the frontier is weighted toward pairs already
-            # confirmed, and re-confirming them buys nothing: build_best_pairs
-            # admits classified YES pairs from the frontier and retains them,
-            # so a pair confirmed in round 1 reaches best.pairs in round 5
-            # whether or not round 5 asked about it.
+            # Both standing sets come out, not just the hard-NO one. A YES
+            # verdict is global and reaches --pairs directly from
+            # classified/yes, so re-asking about a pair that already has one
+            # buys nothing. It is a no-op against a -y-filtered frontier and
+            # still load-bearing for _oneoff, whose supplied file has been
+            # through no filter at all.
             remaining = setops.diff(
                 collated, hard_no, scratch / "remaining.pairs")
             review_file = setops.diff(
@@ -459,13 +453,20 @@ class Review(command.Action):
     def _converged(target, cutoff: int) -> int:
         """Every frontier pair already has a verdict: ordinary, not an error.
 
-        Status cannot report this -- row 6 is an mtime comparison and neither
-        clock moved -- so the detection point has to be the guidance point, and
-        the searches worth running are named here.
+        `_frontier_behind_classified` reports this in status too -- the
+        classify that produced those verdicts moved a classified set past the
+        frontier's marker -- but this is reached in the window between a
+        classify and the next frontier regen, so the detection point is still
+        a guidance point. The cheap regeneration goes ahead of the searches,
+        under the same condition and the same renderers the row uses.
         """
         print(f"{target.address}: no review candidates remain "
               f"({cutoff} frontier pairs, all already classified)")
-        choices = Inputs(target).search_choices()
+        inputs = Inputs(target)
+        choices = inputs.search_choices()
+        if inputs.frontier_behind_classified:
+            regen = inputs.gen_top_command(inputs.source)
+            choices = (Choice("refresh", regen), *choices)
         for line in render_choices(choices):
             print(line)
         if not choices:
@@ -553,7 +554,6 @@ class Complete(command.Action):
             "complete p2", opts, [evaluating[0].name])
         if code != 0:
             return code
-        generate.build_best_pairs(target)
         report(target)
         return 0
 
