@@ -70,6 +70,11 @@ class RowTests(unittest.TestCase):
         """The pair list gen dfs.best published beside its results."""
         return self._write(self.dir / "dfs.best.pairs", text, mtime)
 
+    def _dictionary(self, mtime=10) -> Path:
+        """Hand-placed and shared by every target under the root."""
+        return self._write(self.best / "dict" / state.DICTIONARY_NAME,
+                           "words\n", mtime)
+
     def _classified(self, kind: str, mtime=10, text=None) -> Path:
         path = config.classified(self.root, kind)
         if text is not None:
@@ -190,6 +195,17 @@ class RowTests(unittest.TestCase):
         self._top(mtime=45, source="best", marker=70)
         self.assertEqual("review needed (frontier from best)",
                          state._review_needed(self._inputs()).message)
+
+    def test_a_dictionary_newer_than_the_frontier_skips_review(self):
+        self._steady()
+        # The frontier is otherwise unreviewed: it is newer than the archived
+        # top round. A still newer dictionary makes that frontier obsolete.
+        os.utime(self.dir / "top.segments", (45, 45))
+        self._dictionary(90)
+        self.assertIsNone(state._review_needed(self._inputs()))
+        self.assertEqual(
+            "top.segments behind its inputs (dictionary changed)",
+            self._state().message)
 
     def test_an_open_oneoff_declines_top_rows_and_redirects_review_needed(self):
         self._steady()
@@ -316,9 +332,9 @@ class RowTests(unittest.TestCase):
     def test_the_frontier_falls_behind_a_classify_until_a_regen(self):
         self._steady()
         self._classified("yes", 90, text="a,b\n")
-        result = state._frontier_behind_classified(self._inputs())
+        result = state._frontier_outdated(self._inputs())
         self.assertEqual(
-            "top.segments behind the classified sets "
+            "top.segments behind its inputs "
             "(confirmed-YES set changed)", result.message)
         # The regeneration is offered from the source the frontier already
         # records, not from a choice of both.
@@ -328,15 +344,53 @@ class RowTests(unittest.TestCase):
 
         self._classified("no", 95)
         self.assertEqual(
-            "top.segments behind the classified sets (confirmed-YES set "
+            "top.segments behind its inputs (confirmed-YES set "
             "changed, hard-NO set changed)",
-            state._frontier_behind_classified(self._inputs()).message)
+            state._frontier_outdated(self._inputs()).message)
 
         # The marker is what clears it, and a byte-identical regeneration
         # still advances the marker -- which is what terminates the loop the
         # content clock could not.
         state.mark_generated(self.dir / "top.segments", "seed\n")
-        self.assertIsNone(state._frontier_behind_classified(self._inputs()))
+        self.assertIsNone(state._frontier_outdated(self._inputs()))
+
+    def test_a_dictionary_edit_dates_the_frontier_like_a_classify(self):
+        """Deliberately here rather than on the searches, and temporary.
+
+        top-segments never reads the dictionary, so the regen this row offers
+        cannot drop a word the dictionary lost: the marker moving is the whole
+        of the answer, and the row is a notification the operator acknowledges.
+        It is worth that much because the tight loop is where they are, and
+        dating the searches instead would bill hours for the same news.
+        """
+        self._steady()
+        self._dictionary(90)
+        result = state._frontier_outdated(self._inputs())
+        self.assertEqual(
+            "top.segments behind its inputs (dictionary changed)",
+            result.message)
+        self.assertEqual(
+            {"next": "wf best gen s2 -u cdef -g 4 top.segments --source seed"},
+            self._commands(result))
+
+        state.mark_generated(self.dir / "top.segments", "seed\n")
+        self.assertIsNone(state._frontier_outdated(self._inputs()))
+
+        # A dictionary placed before the frontier was made is the ordinary
+        # case, and says nothing.
+        self._dictionary(10)
+        self.assertIsNone(state._frontier_outdated(self._inputs()))
+
+    def test_an_unplaced_dictionary_is_not_a_status_failure(self):
+        """_dfs_inputs fails the search that needs one; a row only dates."""
+        self._steady()
+        self.assertIsNone(state._frontier_outdated(self._inputs()))
+
+        # Present under that name and not a regular file is a broken tree,
+        # the way a best.pairs that is not a file is.
+        (self.best / "dict" / state.DICTIONARY_NAME).mkdir()
+        with self.assertRaises(ValueError):
+            state._frontier_outdated(self._inputs())
 
     # ---------------------------------------------------------------- guards
 
@@ -347,13 +401,13 @@ class RowTests(unittest.TestCase):
         self._classified("yes", text="a,b\n")
         self._classified("no")
         for row in (state._review_needed, state._no_usable_pairs,
-                    state._frontier_behind_classified):
+                    state._frontier_outdated):
             with self.subTest(row=row.__name__):
                 with self.assertRaises(FileNotFoundError):
                     row(self._inputs())
 
         self._top()
-        self.assertIsNone(state._frontier_behind_classified(self._inputs()))
+        self.assertIsNone(state._frontier_outdated(self._inputs()))
         self.assertIsNone(state._no_usable_pairs(self._inputs()))
 
         # best.pairs is optional, so its absence is not a state -- but present
@@ -379,7 +433,7 @@ class RowTests(unittest.TestCase):
              "_review_needed",
              "_no_usable_pairs",
              "_top_segments_behind_dfs",
-             "_frontier_behind_classified",
+             "_frontier_outdated",
              "_next_search"],
             [row.name for row in state.ROWS])
 
@@ -417,7 +471,7 @@ class RowTests(unittest.TestCase):
         # past the finished search, and lose those hours.
         self._classified("yes", 90, text="a,b\n")
         os.utime(self.results / "dfs.seed.out", (80, 80))
-        self.assertTrue(self._inputs().frontier_behind_classified)
+        self.assertTrue(self._inputs().frontier_outdated)
         self.assertEqual("dfs.seed generated after top.segments",
                          self._state().message)
 
@@ -554,7 +608,7 @@ class RowTests(unittest.TestCase):
         self.assertEqual(("top.segments", "seed"),
                          verdicts["_top_segments_behind_dfs"].unmet)
         self.assertEqual(("top.segments",),
-                         verdicts["_frontier_behind_classified"].unmet)
+                         verdicts["_frontier_outdated"].unmet)
         self.assertEqual(("seed",), verdicts["_next_search"].unmet)
         # A row whose own condition needs nothing is still asked.
         self.assertEqual((), verdicts["_review_queued"].unmet)
@@ -569,7 +623,7 @@ class RowTests(unittest.TestCase):
         self.assertEqual((), verdicts["_review_needed"].unmet)
         self.assertEqual((), verdicts["_no_usable_pairs"].unmet)
         self.assertEqual((), verdicts["_top_segments_behind_dfs"].unmet)
-        self.assertEqual((), verdicts["_frontier_behind_classified"].unmet)
+        self.assertEqual((), verdicts["_frontier_outdated"].unmet)
 
     def test_the_walk_agrees_with_derive_state_down_to_the_winner(self):
         self._steady()

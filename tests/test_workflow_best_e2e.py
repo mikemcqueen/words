@@ -73,7 +73,12 @@ class BestEndToEndTests(unittest.TestCase):
         wf_dir = self.root / ".wf"
         best_dir = wf_dir / "best"
         (best_dir / "idx" / generate.INDEX_NAME).write_text("index\n")
-        (best_dir / "dict" / generate.DICTIONARY_NAME).write_text("words\n")
+        dictionary = best_dir / "dict" / state.DICTIONARY_NAME
+        dictionary.write_text("words\n")
+        # Dated back with the other hand-placed inputs: the frontier's marker
+        # is forced to 20 below, and a dictionary at real time would read as
+        # an edit made after it.
+        os.utime(dictionary, (5, 5))
 
         sentence_dir = best_dir / "s2"
         sentence_dir.mkdir()
@@ -161,7 +166,7 @@ class BestEndToEndTests(unittest.TestCase):
         # that dates the frontier, so the same DFS file refills 1000 fresh
         # candidates -- seconds, offered before any search.
         self.assertIn(
-            "s2/u-cdef/m4/g4: top.segments behind the classified sets "
+            "s2/u-cdef/m4/g4: top.segments behind its inputs "
             "(confirmed-YES set changed, hard-NO set changed)",
             stdout)
 
@@ -246,7 +251,7 @@ class BestEndToEndTests(unittest.TestCase):
         # The frontier is behind the round that just landed, which is the
         # cheap thing to fix and outranks the hours below it.
         self.assertIn(
-            "s2/u-cdef/m4/g4: top.segments behind the classified sets", stdout)
+            "s2/u-cdef/m4/g4: top.segments behind its inputs", stdout)
         # And the search itself is behind, because two of the four pairs it
         # would now weight by are ones it never saw.
         target_state = state.one_target(self.root, "s2", "u-cdef", 4, 4)

@@ -18,7 +18,6 @@ DFS_LIMIT = 1_000_000
 # its own cutoff explicitly and has to pass the one the primitive would have.
 TOP_LIMIT = 1000
 INDEX_NAME = "wiki-merged.2.index"
-DICTIONARY_NAME = "words.big"
 
 
 def _command_not_found(name: str) -> FileNotFoundError:
@@ -92,7 +91,7 @@ def _dfs_inputs(target: Target, results_dir: Path,
     """Everything a DFS run reads, checked before anything is created."""
     _require_command("dfs-anagrams")
     index = target.best_dir / "idx" / INDEX_NAME
-    dictionary = target.best_dir / "dict" / DICTIONARY_NAME
+    dictionary = target.dictionary
     fs.raise_if_not_file(index)
     fs.raise_if_not_file(dictionary)
     fs.raise_if_not_file(target.letters)

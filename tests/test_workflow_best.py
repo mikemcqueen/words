@@ -54,12 +54,12 @@ class BestTests(unittest.TestCase):
 
     def _shared_inputs(self, universe: Path) -> tuple[Path, Path, Path]:
         index = self.best / "idx" / generate.INDEX_NAME
-        dictionary = self.best / "dict" / generate.DICTIONARY_NAME
+        dictionary = self.best / "dict" / state.DICTIONARY_NAME
         sentence_dir = universe.parents[1]
         sentence_dir.mkdir(parents=True, exist_ok=True)
         seed = sentence_dir / f"seed.{universe.name}.idx2.85.15.pairs"
         self._write(index, "index\n")
-        self._write(dictionary, "words\n")
+        self._write(dictionary, "words\n", 10)
         self._write(sentence_dir / "letters", "abcdef\n", 10)
         self._write(seed, "a,b\n", 10)
         os.utime(config.classified(self.root, "no"), (10, 10))
@@ -252,7 +252,7 @@ class BestTests(unittest.TestCase):
         _, stdout, _ = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         self.assertIn(
-            "top.segments behind the classified sets "
+            "top.segments behind its inputs "
             "(confirmed-YES set changed)", stdout)
         os.utime(confirmed_yes, (10, 10))
 
@@ -556,7 +556,7 @@ class BestTests(unittest.TestCase):
         # The frontier comes first: refilling it costs seconds, and running
         # either search off one that is behind the verdicts costs hours.
         self.assertIn(
-            "top.segments behind the classified sets (hard-NO set changed)",
+            "top.segments behind its inputs (hard-NO set changed)",
             stdout)
 
     def test_review_subtracts_hard_no_and_opens_unfiltered_round(self):
