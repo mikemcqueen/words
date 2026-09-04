@@ -24,6 +24,12 @@ SHAPES = (
 LETTER_SET_DEPTH = 1
 UNIVERSE_DEPTH = 2
 
+# The shared Nutrimatic dictionary every search under the root filters by,
+# placed by hand under best/dict/. Named here rather than beside the index in
+# generate, which is where the searches live, because status now dates the
+# frontier against it too and Target is what both sides already share.
+DICTIONARY_NAME = "words.big"
+
 
 @dataclass(frozen=True)
 class Target:
@@ -76,6 +82,10 @@ class Target:
     @property
     def letters(self) -> Path:
         return self.sentence_dir / "letters"
+
+    @property
+    def dictionary(self) -> Path:
+        return self.best_dir / "dict" / DICTIONARY_NAME
 
     def artifact(self, name: str) -> Path:
         return self.target_dir / name
@@ -620,7 +630,7 @@ class Inputs:
     The conditions and the command strings live here rather than in the rows
     because several rows share them: `_no_usable_pairs` and `_next_search`
     both offer a reseed, `_no_frontier` and `_top_segments_behind_dfs` both
-    offer a top.segments generation, and `_frontier_behind_classified` and
+    offer a top.segments generation, and `_frontier_outdated` and
     `Review._converged` share one condition. Two renderings of one command is
     the drift `eval_p2_command` exists to prevent.
     """
@@ -644,6 +654,22 @@ class Inputs:
     @cached_property
     def confirmed_yes(self) -> Path:
         return config.classified(self.target.root, "yes")
+
+    @cached_property
+    def dictionary(self) -> Path | None:
+        """The shared dictionary, or None where nothing has placed one.
+
+        Absence is not the error here that it is in `_dfs_inputs`: that is
+        about to run a search and cannot without one, while this only dates a
+        frontier and has no business failing a status over a search input. A
+        name with nothing under it still raises, the way an optional
+        best.pairs does -- that is a broken tree, not an absent option.
+        """
+        path = self.target.dictionary
+        if not path.exists() and not path.is_symlink():
+            return None
+        fs.raise_if_not_file(path)
+        return path
 
     @cached_property
     def seed(self) -> Path | None:
@@ -710,14 +736,29 @@ class Inputs:
             return standing, fs.line_count(pairs), current
 
     @cached_property
-    def frontier_behind_classified(self) -> list[str]:
-        """Classified sets written since the frontier was last generated."""
+    def frontier_outdated(self) -> list[str]:
+        """Inputs written since the frontier was last generated.
+
+        The dictionary is a search input, not a frontier input: top-segments
+        never reads it, so a regen from the same DFS cannot drop a word the
+        dictionary no longer has, and this reason is answered by the marker
+        moving rather than by the frontier changing. Dating it here anyway is
+        deliberate and temporary. It is the only place the operator is told
+        the dictionary moved without being billed the hours a re-search
+        costs, and the tight loop -- review, classify, regen, review -- is
+        where they are. When top-segments learns a word-level reject this
+        becomes a reason a regen can actually answer, and the searches can
+        take the dictionary up as the clock that dates them.
+        """
         generated = _generated(self.top_segments)
         reasons = []
         if _newer(self.confirmed_yes, generated):
             reasons.append("confirmed-YES set changed")
         if _newer(self.hard_no, generated):
             reasons.append("hard-NO set changed")
+        dictionary = self.dictionary
+        if dictionary is not None and _newer(dictionary, generated):
+            reasons.append("dictionary changed")
         return reasons
 
     @cached_property
@@ -867,7 +908,11 @@ def _review_needed(inputs: Inputs) -> State | None:
     top_rounds = [round_ for round_ in archived if round_.kind == "top"]
     newest = max((round_.path.stat().st_mtime_ns for round_ in top_rounds),
                  default=0)
-    if newest > inputs.top_segments.stat().st_mtime_ns:
+    top_segments = inputs.top_segments
+    dictionary = inputs.dictionary
+    if (newest > top_segments.stat().st_mtime_ns
+            or (dictionary is not None
+                and _newer(dictionary, top_segments))):
         return None
     command = (inputs.target.command("complete")
                if inputs.oneoff_in_flight is not None
@@ -922,8 +967,8 @@ def _top_segments_behind_dfs(inputs: Inputs) -> State | None:
                  choices=_top_segments_choices(inputs, behind))
 
 
-def _frontier_behind_classified(inputs: Inputs) -> State | None:
-    """A classify landed after the frontier was last generated.
+def _frontier_outdated(inputs: Inputs) -> State | None:
+    """A classify, or a dictionary edit, landed after the frontier was made.
 
     Dated against the generation marker, not top.segments' own mtime:
     setops._place leaves the content mtime behind on a no-op regen, so a
@@ -932,11 +977,11 @@ def _frontier_behind_classified(inputs: Inputs) -> State | None:
     declines, and _review_needed above it still declines because the content
     mtime did not move.
     """
-    reasons = inputs.frontier_behind_classified
+    reasons = inputs.frontier_outdated
     if not reasons:
         return None
     return State(
-        f"top.segments behind the classified sets ({', '.join(reasons)})",
+        f"top.segments behind its inputs ({', '.join(reasons)})",
         choices=_top_segments_choices(inputs, (inputs.source,)))
 
 
@@ -993,11 +1038,11 @@ ROWS = (
     # where a regen from the recorded source would bump the marker past the
     # finished search and lose it.
     Row(_top_segments_behind_dfs, requires=("top.segments", "seed")),
-    # G6 -- a classify the frontier has not been rebuilt against. Below
-    # _review_needed so a freshly generated frontier gets reviewed rather than
-    # immediately regenerated, and above the searches so the seconds are
-    # offered before the hours.
-    Row(_frontier_behind_classified, requires=("top.segments",)),
+    # G6 -- a classify, or a dictionary edit, the frontier has not been
+    # rebuilt against. Below _review_needed so a freshly generated frontier
+    # gets reviewed rather than immediately regenerated, and above the
+    # searches so the seconds are offered before the hours.
+    Row(_frontier_outdated, requires=("top.segments",)),
     # G7 -- start the next search
     Row(_next_search, requires=("seed",)),
 )

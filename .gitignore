@@ -6,7 +6,7 @@ junk/
 data*/**
 final/**
 out/**
-results/**
+results*/**
 words/**
 wt/**
 __pycache__/

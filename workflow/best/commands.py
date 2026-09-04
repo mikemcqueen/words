@@ -453,8 +453,8 @@ class Review(command.Action):
     def _converged(target, cutoff: int) -> int:
         """Every frontier pair already has a verdict: ordinary, not an error.
 
-        `_frontier_behind_classified` reports this in status too -- the
-        classify that produced those verdicts moved a classified set past the
+        `_frontier_outdated` reports this in status too -- the classify
+        that produced those verdicts moved a classified set past the
         frontier's marker -- but this is reached in the window between a
         classify and the next frontier regen, so the detection point is still
         a guidance point. The cheap regeneration goes ahead of the searches,
@@ -464,7 +464,7 @@ class Review(command.Action):
               f"({cutoff} frontier pairs, all already classified)")
         inputs = Inputs(target)
         choices = inputs.search_choices()
-        if inputs.frontier_behind_classified:
+        if inputs.frontier_outdated:
             regen = inputs.gen_top_command(inputs.source)
             choices = (Choice("refresh", regen), *choices)
         for line in render_choices(choices):
