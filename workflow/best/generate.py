@@ -10,6 +10,7 @@ from pathlib import Path
 from workflow import config, fs, log, setops
 from workflow.best.state import (
     Target, build_search_pairs, mark_generated, search_pair_sources,
+    target_no_pairs,
 )
 
 
@@ -86,8 +87,25 @@ def _publish_link(link: Path, destination: Path) -> None:
     tmp.replace(link)
 
 
+def _exclusions(target: Target) -> list[str]:
+    """The --exclude-pairs flags a search runs with, root set first.
+
+    Both legs take both sets. The root directory resolves to the global
+    hard-NO verdicts; the target-local file, where the operator has written
+    one, drops pairs that are good English but wrong for this bag or this
+    segmentation. dfs-anagrams accepts the flag repeatedly as long as only
+    one argument is a directory, which is what the root is and the local file
+    is not.
+    """
+    argv = ["--exclude-pairs", str(target.root)]
+    target_no = target_no_pairs(target)
+    if target_no is not None:
+        argv.extend(["--exclude-pairs", str(target_no)])
+    return argv
+
+
 def _dfs_inputs(target: Target, results_dir: Path,
-                final: bool) -> tuple[Path, Path, Path, list[Path]]:
+                final: bool) -> tuple[Path, Path, Path, list[Path], list[str]]:
     """Everything a DFS run reads, checked before anything is created."""
     _require_command("dfs-anagrams")
     index = target.best_dir / "idx" / INDEX_NAME
@@ -100,6 +118,10 @@ def _dfs_inputs(target: Target, results_dir: Path,
         raise FileNotFoundError(f"seed missing: {target.seed_glob}")
     fs.raise_if_not_file(config.classified(target.root, "no"))
     fs.raise_if_not_dir(results_dir)
+    # Resolved here with the rest, so a no.pairs that is a directory or a
+    # dangling symlink stops the run before it creates anything rather than
+    # being handed to dfs-anagrams, which aborts on a file it cannot open.
+    exclusions = _exclusions(target)
     # The final leg unions its --pairs out of several files rather than
     # reading one, so what the run reads is a list either way.
     if final:
@@ -107,7 +129,7 @@ def _dfs_inputs(target: Target, results_dir: Path,
     else:
         fs.raise_if_not_file(seed)
         sources = [seed]
-    return index, dictionary, seed, sources
+    return index, dictionary, seed, sources, exclusions
 
 
 def gen_dfs(target: Target, *, final: bool, force: bool,
@@ -130,13 +152,14 @@ def gen_dfs(target: Target, *, final: bool, force: bool,
 
 def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
              results_dir: Path, count: int | None) -> None:
-    index, dictionary, seed, sources = _dfs_inputs(target, results_dir, final)
+    index, dictionary, seed, sources, exclusions = _dfs_inputs(
+        target, results_dir, final)
     sentence_results = results_dir / target.sentence
     if sentence_results.exists():
         fs.raise_if_not_dir(sentence_results)
 
     if final:
-        pairs, standing = build_search_pairs(target, scratch_dir)
+        pairs, allowed = build_search_pairs(target, scratch_dir)
         if fs.line_count(pairs) == 0:
             # dfs-anagrams given a --pairs nothing in it can spell is a
             # strictly worse dfs.seed: the same search with the pair bonuses
@@ -145,9 +168,10 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
             # before anything is created.
             named = " or ".join(str(source) for source in sources)
             raise ValueError(
-                f"no pair in {named} fits {target.address}'s letters "
-                f"({standing} confirmed pairs); dfs.best would search without "
-                f"pair bonuses. Review more of top.segments, or add pairs to "
+                f"no pair in {named} survives exclusions and letter-bag "
+                f"filtering for {target.address} ({allowed} pairs remain "
+                f"after exclusions); dfs.best would search without pair "
+                f"bonuses. Review more of top.segments, or add pairs to "
                 f"{target.artifact('best.pairs')}")
     else:
         pairs = seed
@@ -179,7 +203,7 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
         "--word-bonus", "1",
         "--dict", str(dictionary),
         "--pairs", str(pairs),
-        "--exclude-pairs", str(target.root),
+        *exclusions,
         "-x", "2",
         "-g", str(target.segment_count),
     ]
@@ -203,8 +227,8 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
         # merge over an already-sorted file, taken for its atomic write-aside
         # and rename rather than for the sort.
         published = setops.merge([pairs], target.artifact("dfs.best.pairs"))
-        log.success(f"Searched with {fs.line_count(published)} of {standing} "
-                    f"confirmed pairs → {target.address}/dfs.best.pairs")
+        log.success(f"Searched with {fs.line_count(published)} of {allowed} "
+                    f"allowed pairs → {target.address}/dfs.best.pairs")
 
 
 def gen_top_segments(target: Target, *, source: str,
@@ -234,6 +258,11 @@ def gen_top_segments(target: Target, *, source: str,
     # semantics --exclude-pairs applies at search time, so a regenerated
     # frontier stays consistent with a re-run search.
     argv.extend(["--wfroot", str(target.root), "-y"])
+    # --wfroot is itself an -r of the root's hard-NO set, so the target-local
+    # file joins it as a second one and gets the same whole-row rejection.
+    target_no = target_no_pairs(target)
+    if target_no is not None:
+        argv.extend(["-r", str(target_no)])
     argv.append(str(dfs))
     _display_command(argv)
     top_segments = target.artifact("top.segments")
