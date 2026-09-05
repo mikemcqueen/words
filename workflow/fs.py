@@ -43,6 +43,23 @@ def raise_if_not_file(path: Path):
         raise not_a_file_error(path)
 
 
+def optional_file(path: Path) -> Path | None:
+    """The regular file at path, or None where nothing has been placed there.
+
+    For an artifact whose absence is a choice the operator is entitled to make
+    rather than a broken tree: a hand-managed exclusion list, a dictionary
+    nothing has placed yet. A name with something under it that is not a
+    regular file -- a directory, a symlink to nothing -- still raises, because
+    that is a tree to fix and not an option declined. The symlink half of the
+    gate is what separates the two: a dangling link does not exist, and
+    without it would read as absent and be silently skipped.
+    """
+    if not path.exists() and not path.is_symlink():
+        return None
+    raise_if_not_file(path)
+    return path
+
+
 def raise_if_not_readable(path: Path):
     """A regular file this process can actually open.
 

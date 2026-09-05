@@ -70,6 +70,11 @@ class RowTests(unittest.TestCase):
         """The pair list gen dfs.best published beside its results."""
         return self._write(self.dir / "dfs.best.pairs", text, mtime)
 
+    def _target_no(self, text="a,b\n", mtime=50) -> Path:
+        """A hand-managed exclusion: nothing generates it, and it may be
+        unsorted."""
+        return self._write(self.dir / "no.pairs", text, mtime)
+
     def _dictionary(self, mtime=10) -> Path:
         """Hand-placed and shared by every target under the root."""
         return self._write(self.best / "dict" / state.DICTIONARY_NAME,
@@ -247,10 +252,11 @@ class RowTests(unittest.TestCase):
         self._classified("yes", text="x,y\nz,w\n")
 
         result = state._no_usable_pairs(self._inputs())
-        self.assertEqual("no confirmed pair fits this target's letters",
+        self.assertEqual("no allowed bonus pair fits this target's letters",
                          result.message)
-        self.assertEqual("(2 confirmed pairs, none spellable here)",
-                         result.detail)
+        self.assertEqual(
+            "(2 pairs remain after exclusions, none spellable here)",
+            result.detail)
         # The widen carries the recorded source and the frontier it already
         # has, and it is the only row that renders a count.
         self.assertEqual(
@@ -479,7 +485,7 @@ class RowTests(unittest.TestCase):
         self._steady()
         self._classified("yes", text="x,y\n")
         self._classified("no", 45)
-        self.assertEqual("no confirmed pair fits this target's letters",
+        self.assertEqual("no allowed bonus pair fits this target's letters",
                          self._state().message)
 
     def test_an_absent_best_pairs_is_not_a_state_and_a_hand_edit_is_read(self):
@@ -497,6 +503,160 @@ class RowTests(unittest.TestCase):
         # changed a score either.
         self._best_pairs("tiger,lily\n")
         self.assertEqual("converged", self._state().message)
+
+    # ------------------------------------------------- target-local no.pairs
+
+    def test_a_local_exclusion_leaves_the_effective_bonus_set(self):
+        """The one pair the bag can spell, excluded for this target alone.
+
+        classified/yes is untouched -- the pair keeps its global verdict and
+        stays eligible everywhere else -- so what changes is the set this
+        target's dfs.best may weight with.
+        """
+        self._steady()
+        self.assertEqual((1, 1, True), self._inputs().usable_pairs)
+
+        self._target_no("a,b\n", mtime=50)
+        allowed, usable, current = self._inputs().usable_pairs
+        self.assertEqual((0, 0, False), (allowed, usable, current))
+        self.assertEqual(
+            "a,b\n", config.classified(self.root, "yes").read_text())
+
+    def test_an_unsorted_local_exclusion_is_still_subtracted(self):
+        """comm under-subtracts in silence on an unsorted right-hand side."""
+        self._steady()
+        self._classified("yes", text="a,b\nb,a\n")
+        self._search_pairs("a,b\nb,a\n")
+        self.assertEqual((2, 2, True), self._inputs().usable_pairs)
+
+        self._target_no("b,a\na,b\n", mtime=50)
+        self.assertEqual((0, 0, False), self._inputs().usable_pairs)
+
+    def test_a_newer_local_exclusion_dates_both_searches(self):
+        self._steady()
+        # Excluding a pair the bag cannot spell leaves a usable bonus set, so
+        # both searches are still worth offering -- and both are now behind.
+        self._classified("yes", text="a,b\ntiger,lily\n")
+        self._search_pairs("a,b\n")
+        self._target_no("tiger,lily\n", mtime=90)
+        inputs = self._inputs()
+        self.assertEqual(["target-NO set changed"], inputs.seed_search_needed)
+        self.assertEqual(["target-NO set changed"], inputs.best_search_needed)
+
+        # And an older one says nothing at all.
+        self._target_no("tiger,lily\n", mtime=10)
+        inputs = self._inputs()
+        self.assertEqual([], inputs.seed_search_needed)
+        self.assertEqual([], inputs.best_search_needed)
+        self.assertEqual("converged", self._state().message)
+
+    def test_a_newer_local_exclusion_dates_the_frontier_and_defers_review(self):
+        self._steady()
+        # An unreviewed frontier: newer than the archived round that read it.
+        self._top(mtime=45, marker=45)
+        self.assertEqual("review needed (frontier from seed)",
+                         self._state().message)
+
+        self._classified("yes", text="a,b\ntiger,lily\n")
+        self._search_pairs("a,b\n")
+        self._target_no("tiger,lily\n", mtime=90)
+        # The frontier is obsolete rather than unreviewed, so the review row
+        # stands down and the regeneration is what is offered.
+        self.assertIsNone(state._review_needed(self._inputs()))
+        result = state._frontier_outdated(self._inputs())
+        self.assertEqual(
+            "top.segments behind its inputs (target-NO set changed)",
+            result.message)
+        self.assertEqual(
+            {"next": "wf best gen s2 -u cdef -g 4 top.segments --source seed"},
+            self._commands(result))
+
+    def test_a_no_op_regeneration_reopens_a_genuinely_unreviewed_frontier(self):
+        """The hole the content clock leaves, and why the marker closes it.
+
+        Excluding a pair that is not on the frontier makes the regeneration a
+        byte-for-byte no-op: stable_mtime leaves top.segments' own mtime
+        where it was, so a content-clock comparison would suppress the review
+        forever. The marker advances regardless, which is what lets the row
+        fire once the regeneration has actually happened.
+        """
+        self._steady()
+        self._top(mtime=45, marker=45)
+        self._classified("yes", text="a,b\ntiger,lily\n")
+        self._search_pairs("a,b\n")
+        self._target_no("tiger,lily\n", mtime=90)
+        self.assertIsNone(state._review_needed(self._inputs()))
+
+        # A no-op regen: the marker moves, the content mtime does not.
+        state.mark_generated(self.dir / "top.segments", "seed\n")
+        self.assertEqual(45, int((self.dir / "top.segments").stat().st_mtime))
+        self.assertEqual("review needed (frontier from seed)",
+                         self._state().message)
+
+    def test_a_no_op_regeneration_does_not_reopen_a_reviewed_frontier(self):
+        self._steady()
+        self._classified("yes", text="a,b\ntiger,lily\n")
+        self._search_pairs("a,b\n")
+        self._target_no("tiger,lily\n", mtime=90)
+        state.mark_generated(self.dir / "top.segments", "seed\n")
+        # The archived round is still newer than the frontier it read, so the
+        # frontier has been reviewed and stays reviewed. What the exclusion
+        # left behind is the searches, which is the row that wins.
+        self.assertIsNone(state._review_needed(self._inputs()))
+        self.assertEqual(
+            "dfs.seed out of date (target-NO set changed); "
+            "dfs.best out of date (target-NO set changed)",
+            self._state().message)
+
+    def test_no_usable_pairs_wins_and_names_the_local_file(self):
+        self._steady()
+        self._top("a,b\nc,d\n", mtime=30, source="best", marker=70)
+        self._target_no("a,b\n", mtime=90)
+
+        # The local exclusion took the last spellable pair, so the dead-end
+        # row wins over the search staleness it also created.
+        result = self._state()
+        self.assertEqual("no allowed bonus pair fits this target's letters",
+                         result.message)
+        self.assertEqual(
+            "(0 pairs remain after exclusions, none spellable here)",
+            result.detail)
+        self.assertIn(f"or retract target-local exclusions in "
+                      f"{self.dir / 'no.pairs'}", result.note)
+        # And no refine is offered: dfs.best refuses an empty bonus set.
+        self.assertEqual(["widen", "reseed"],
+                         [choice.label for choice in result.choices])
+
+        # With no local file the remedy is not named at all.
+        (self.dir / "no.pairs").unlink()
+        self._classified("yes", text="x,y\n")
+        result = state._no_usable_pairs(self._inputs())
+        self.assertEqual(
+            (f"or retract NO verdicts in {config.classified(self.root, 'no')}",
+             "   and run: wf best review s2 -u cdef -g 4",
+             f"or add pairs by hand to {self.dir / 'best.pairs'}"),
+            result.note)
+
+    def test_an_open_review_outranks_a_newer_local_exclusion(self):
+        self._steady()
+        self._target_no("tiger,lily\n", mtime=90)
+        queued = self._write(
+            fx.slot(self.opts, ["p2", "queued"])
+            / "top.s2.m4.g4.u-cdef.1000.r2.pairs", "a,b\n")
+        self.assertEqual(f"review submitted ({queued.name})",
+                         self._state().message)
+
+    def test_a_local_exclusion_that_is_not_a_file_is_rejected(self):
+        self._steady()
+        (self.dir / "no.pairs").mkdir()
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            self._inputs().target_no
+        (self.dir / "no.pairs").rmdir()
+
+        missing = self.root / "gone" / "no.pairs"
+        (self.dir / "no.pairs").symlink_to(missing)
+        with self.assertRaises(FileNotFoundError):
+            self._inputs().target_no
 
     # ----------------------------------------------------- shared renderers
 

@@ -512,7 +512,7 @@ class BestTests(unittest.TestCase):
         # tell a classify that changed something here from one that did not.
         self.assertEqual("a,b\nb,a\n", (target / "dfs.best.pairs").read_text())
         self.assertEqual("25", calls[0][calls[0].index("-n") + 1])
-        self.assertIn("Searched with 2 of 3 confirmed pairs", stdout)
+        self.assertIn("Searched with 2 of 3 allowed pairs", stdout)
         self.assertIn("Generated 2 results in 3s", stdout)
         # A finished search whose frontier was never generated: seconds of
         # work, and status offers it before the hours of another search.
@@ -529,6 +529,233 @@ class BestTests(unittest.TestCase):
                           "-u", "cdef", "-g", "4", "-r", str(results),
                           "dfs.best")
         which.assert_not_called()
+
+    # --------------------------------------------- target-local exclusions
+
+    def _stub_producers(self, calls, output="1 a b\n"):
+        def run(argv, **kwargs):
+            calls.append(argv)
+            kwargs["stdout"].write(output)
+            return mock.Mock(returncode=0)
+        return mock.patch.object(generate.subprocess, "run",
+                                 side_effect=only_producers(run))
+
+    def test_an_absent_no_pairs_leaves_every_command_line_alone(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        results = self.root / "results"
+        calls = []
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                self._stub_producers(calls):
+            for argv in (["gen", "s2", "-u", "cdef", "-g", "4",
+                          "-r", str(results), "dfs.seed"],
+                         ["gen", "s2", "-u", "cdef", "-g", "4",
+                          "-r", str(results), "dfs.best"],
+                         ["gen", "s2", "-u", "cdef", "-g", "4",
+                          "--source", "seed", "top.segments"]):
+                code, _, stderr = fx.run_wf("-d", str(self.root), "best",
+                                            *argv)
+                self.assertEqual(0, code, stderr)
+
+        for argv in calls[:2]:
+            self.assertEqual(["--exclude-pairs", str(self.root)],
+                             argv[argv.index("--exclude-pairs"):
+                                  argv.index("--exclude-pairs") + 2])
+            self.assertEqual(1, argv.count("--exclude-pairs"))
+        self.assertNotIn("-r", calls[2])
+
+    def test_a_present_no_pairs_reaches_both_searches_and_the_frontier(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        # A pair this bag cannot spell, so an effective bonus set remains and
+        # both searches are still worth running.
+        self._write(config.classified(self.root, "yes"),
+                    "a,b\ntiger,lily\n", 10)
+        local_no = self._write(target / "no.pairs", "tiger,lily\n", 50)
+        results = self.root / "results"
+        calls = []
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                self._stub_producers(calls):
+            for argv in (["gen", "s2", "-u", "cdef", "-g", "4",
+                          "-r", str(results), "dfs.seed"],
+                         ["gen", "s2", "-u", "cdef", "-g", "4",
+                          "-r", str(results), "dfs.best"],
+                         ["gen", "s2", "-u", "cdef", "-g", "4",
+                          "--source", "seed", "top.segments"]):
+                code, _, stderr = fx.run_wf("-d", str(self.root), "best",
+                                            *argv)
+                self.assertEqual(0, code, stderr)
+
+        # The root stays first and is still the only directory argument,
+        # which is what dfs-anagrams allows exactly one of.
+        for argv in calls[:2]:
+            first = argv.index("--exclude-pairs")
+            self.assertEqual(
+                ["--exclude-pairs", str(self.root),
+                 "--exclude-pairs", str(local_no)],
+                argv[first:first + 4])
+        # top-segments takes it as a second -r beside the one --wfroot implies.
+        self.assertEqual(["-r", str(local_no)],
+                         calls[2][calls[2].index("-r"):
+                                  calls[2].index("-r") + 2])
+
+    def test_a_local_exclusion_leaves_the_published_dfs_best_pairs(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        self._write(config.classified(self.root, "yes"), "a,b\nb,a\n", 10)
+        # Unsorted, the way a hand-managed file is, and comm needs it merged.
+        self._write(target / "no.pairs", "b,a\n", 50)
+        results = self.root / "results"
+        pairs_seen = []
+
+        def run(argv, **kwargs):
+            if argv[0] == "dfs-anagrams":
+                pairs_seen.append(
+                    Path(argv[argv.index("--pairs") + 1]).read_text())
+            kwargs["stdout"].write("1 a b\n")
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(run)):
+            code, stdout, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "gen", "s2", "-u", "cdef",
+                "-g", "4", "-r", str(results), "dfs.best")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["a,b\n"], pairs_seen)
+        self.assertEqual("a,b\n", (target / "dfs.best.pairs").read_text())
+        self.assertIn("Searched with 1 of 1 allowed pairs", stdout)
+        # The verdict is untouched: the pair is excluded here and nowhere else.
+        self.assertEqual(
+            "a,b\nb,a\n", config.classified(self.root, "yes").read_text())
+
+    def test_a_local_exclusion_that_empties_the_bonus_set_refuses_the_search(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        self._write(target / "no.pairs", "a,b\n", 50)
+        results = self.root / "results"
+        started = []
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(started.append)):
+            with self.assertRaisesRegex(
+                    ValueError,
+                    "survives exclusions and letter-bag filtering for "
+                    r"s2/u-cdef/m4/g4 \(0 pairs remain after exclusions\)"):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-u", "cdef", "-g", "4", "-r", str(results),
+                          "dfs.best")
+        self.assertEqual([], started)
+
+    def test_a_no_pairs_that_is_not_a_file_stops_a_search_before_it_starts(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        (target / "no.pairs").mkdir()
+        results = self.root / "results"
+        started = []
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"), \
+                mock.patch.object(generate.subprocess, "run",
+                                  side_effect=only_producers(started.append)):
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-u", "cdef", "-g", "4", "-r", str(results),
+                          "dfs.seed")
+        self.assertEqual([], started)
+
+    def test_review_subtracts_a_local_exclusion_from_an_older_frontier(self):
+        """The frontier's own -r does not cover a later exclusion.
+
+        `best review` reads top.segments without consulting the freshness
+        rows, so a frontier generated before the file was written is still
+        reviewable -- and would otherwise re-ask every pair the operator
+        excluded.
+        """
+        target = self._target()
+        self._complete_files(target)
+        self._write(target / "top.segments",
+                    "keep,new\nlocal,no\nhard,no\n", 30)
+        self._write(config.classified(self.root, "no"), "hard,no\n", 10)
+        self._write(target / "no.pairs", "local,no\n", 90)
+
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4")
+
+        self.assertEqual(0, code, stderr)
+        prepare.assert_called_once()
+        bundle_name = "top.s2.m4.g4.u-cdef.3.r2"
+        source = (fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+                  / f"{bundle_name}.pairs")
+        self.assertEqual("keep,new\n", source.read_text())
+
+    def test_oneoff_review_subtracts_an_unsorted_local_exclusion(self):
+        """Unsorted on purpose: it is the case the merge exists for.
+
+        A sorted fixture passes with or without it, and `comm -23` reports
+        nothing when it under-subtracts -- so this is the only shape that
+        proves the normalisation happens.
+        """
+        target = self._target()
+        supplied = self._write(
+            self.root / "supplied.pairs",
+            "keep,new\nzebra,local\napple,local\n")
+        self._write(config.classified(self.root, "yes"), "")
+        self._write(config.classified(self.root, "no"), "")
+        self._write(target / "no.pairs", "zebra,local\napple,local\n")
+
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4", str(supplied))
+
+        self.assertEqual(0, code, stderr)
+        bundle_name = "oneoff.s2.m4.g4.u-cdef.3.r1"
+        bundle = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        filtered = bundle / f"{bundle_name}.pairs.filtered"
+        # The full supplied file is kept; only what is reviewed is filtered.
+        self.assertEqual("apple,local\nkeep,new\nzebra,local\n",
+                         (bundle / f"{bundle_name}.pairs").read_text())
+        self.assertEqual("keep,new\n", filtered.read_text())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+
+    def test_both_review_refusals_say_excluded_and_name_the_local_file(self):
+        target = self._target()
+        self._complete_files(target)
+        local_no = self._write(target / "no.pairs", "local,no\n", 90)
+        supplied = self._write(self.root / "supplied.pairs", "local,no\n")
+
+        with self.assertRaisesRegex(
+                ValueError,
+                f"all 1 pairs are already classified or excluded; "
+                f"target-local exclusions: {local_no}"):
+            fx.run_wf("-d", str(self.root), "best", "review", "s2",
+                      "-u", "cdef", "-g", "4", str(supplied))
+
+        self._write(target / "top.segments", "local,no\n", 30)
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+            "-g", "4")
+        self.assertEqual(0, code, stderr)
+        self.assertIn(
+            f"s2/u-cdef/m4/g4: no review candidates remain (1 frontier "
+            f"pairs, all already classified or excluded); target-local "
+            f"exclusions: {local_no}", stdout)
 
     def test_gen_top_segments_rejects_force_before_running(self):
         target = self._target()
@@ -1164,7 +1391,9 @@ class BestTests(unittest.TestCase):
                             generate.subprocess, "run",
                             side_effect=only_producers(started.append)):
                     with self.assertRaisesRegex(
-                            ValueError, "fits s2/u-cdef/m4/g4's letters"):
+                            ValueError,
+                            "survives exclusions and letter-bag filtering "
+                            "for s2/u-cdef/m4/g4"):
                         fx.run_wf("-d", str(self.root), "best", *argv)
         self.assertEqual([], started)
         self.assertEqual(before, sorted((results).iterdir()))
@@ -1300,7 +1529,8 @@ class BestTests(unittest.TestCase):
 
         self.assertEqual(0, code, stderr)
         self.assertIn("s2/u-cdef/m4/g4: no review candidates remain "
-                      "(2 frontier pairs, all already classified)", stdout)
+                      "(2 frontier pairs, all already classified or "
+                      "excluded)", stdout)
         # The classify that produced those verdicts moved a classified set
         # past the frontier's marker, so refilling it is the cheap way out and
         # is named ahead of the hours.
