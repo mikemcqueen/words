@@ -1,4 +1,4 @@
-# Frontier = segments + solo-words, and a workflow-managed dictionary
+# Frontier = segments + solo-words
 
 ## Context
 
@@ -12,19 +12,28 @@ has `--solo-words` (`nutrimatic/source/top-segments.cpp:37`, "print only
 single-word segments"), so the candidate list is one extra call away from a DFS
 file we already have.
 
-The rub is that rejecting a word invalidates the dictionary, which invalidates
-the DFS, which costs hours — and the operator does not want to re-search on
-every rejection. So the design has to make a *frontier regeneration* (seconds)
-absorb a word rejection, leaving the re-search as a thing the operator chooses.
+**Depends on `plans/managed-dict.md`, which must land first.** That plan owns
+`best/dict/` — the hand-placed `words.big`, the global rejection set
+`no.solo-words`, the derived `words.dfs` the searches read — and the commands
+that record a rejection (`wf best exclude-words`, `wf best dict`). It is what
+keeps a rejected word out of the *next search*. This plan is the other half:
+producing the candidate list, and keeping a rejected word out of the *frontier*
+without paying for a re-search.
 
-The recently added `"dictionary changed"` reason on `_frontier_outdated`
-(`workflow/best/state.py:739`) is a placeholder for exactly this: it reports the
-dictionary moved but the regen it offers cannot currently answer it. This plan
-makes it answerable.
+That second half is the rub. Rejecting a word invalidates the dictionary, which
+invalidates the DFS, which costs hours — and the operator does not want to
+re-search on every rejection. So the design has to make a *frontier
+regeneration* (seconds) absorb a word rejection, leaving the re-search a thing
+the operator chooses at G7.
+
+The `"dictionary changed"` reason on `_frontier_outdated`
+(`workflow/best/state.py:788-790`) is where that shows up today: it reports the
+dictionary moved, but the regen it offers cannot currently answer it, and its
+docstring says so. The post-filter in §3 is what makes it answerable.
 
 Intended outcome: `top.segments` and `top.solo-words` are one frontier generated
-together; rejected words are recorded once, globally, and are gone from both the
-frontier and the next search; and the operator picks which review to do.
+together; a word rejected once, globally, is gone from both artifacts on the
+next regen; and the operator picks which review to do.
 
 ---
 
@@ -52,8 +61,9 @@ Sub-questions that fall out of it:
 - Does the reviewed bundle carry counts (`  1234 word`) or bare words?
 
 Everything else in this plan is independent of that decision and can be built
-now. The verdict-recording path is `wf best exclude-words` (§4), a hand-driven
-command that needs no review mechanics.
+now. The verdict-recording path is `wf best exclude-words`, from
+`plans/managed-dict.md` — a hand-driven command that needs no review mechanics,
+so a solo review can be done by hand before any of this is settled.
 
 **2. Whether `-n` should be shared between the two frontier artifacts.**
 One `gen top.segments` will make two `top-segments` calls. `--top-count` /
@@ -66,15 +76,13 @@ assumption below; a separate solo cutoff is a CLI change if wanted.
 
 - `top.all-words`. The third kind is designed for (nothing hardcodes two) but
   not wired.
+- Anything under `best/dict/`: the rejection set, the derived dictionary, and
+  the `exclude-words` / `dict` commands all belong to `plans/managed-dict.md`.
+  This plan only *reads* `no.solo-words`.
 - Any change in `/home/mike/code/nutrimatic`. Notably, a `top-segments`
   word-level reject turns out **not** to be needed: the derived dictionary keeps
   rejected words out of new searches, and the Python post-filter (§3) keeps them
   out of a frontier built from an old one.
-- `dict-remove` / `dict_remove.py` is a one-off hack (in-place edit of a
-  hardcoded `~/code/nutrimatic/idx/words.big`, numbered `.removed.N` archives).
-  **Do not call it.** Reuse its two good ideas only: strip a leading count
-  prefix off removal input (`^ *[0-9]+ `), and take the difference with
-  `comm -23` under `LC_ALL=C` — which `workflow/setops.py` already provides.
 
 ---
 
@@ -132,8 +140,11 @@ calls from the same DFS file and writes the marker once, after both:
 ### 3. Post-filter both artifacts against `no.solo-words`
 
 This is what makes a word rejection answerable by a regen instead of a
-re-search. `top-segments` output is ordered by descending count, not by
-collation, so `comm` cannot be used here — filter by streaming in Python:
+re-search. `no.solo-words` is the global rejection set from
+`plans/managed-dict.md`, read here through `config.solo_words(target.root)`;
+this plan never writes it. `top-segments` output is ordered by descending count,
+not by collation, so `comm` cannot be used here — filter by streaming in
+Python:
 
 - Load `no.solo-words` into a set (bare words, one per line).
 - `top.solo-words`: each row is `<count> <word>`; strip the count prefix
@@ -153,51 +164,23 @@ def place_file(src: Path, dst: Path, stable_mtime: bool = False) -> Path
 so `stable_mtime=True` still means "a byte-identical regeneration leaves the
 artifact's mtime alone", which the whole staleness design rests on.
 
-### 4. `best/dict/`: base, verdicts, derived
-
-| file | what it is |
-|---|---|
-| `words.big` | hand-placed base (today a symlink to nutrimatic's copy). **Never written by the workflow.** |
-| `no.solo-words` | union-only global rejection set, sorted-unique bare words |
-| `words.dfs` | derived: `words.big` − `no.solo-words`; this is what `--dict` gets |
-
-- `Target.dictionary` (`state.py:86-88`) repoints from `words.big` to
-  `words.dfs`. `_dfs_inputs` (`generate.py:94`) then passes the derived file,
-  and `Inputs.dictionary` / `frontier_outdated`'s `"dictionary changed"` reason
-  date against it — so a rejection that removes nothing (word not in the dict)
-  leaves `words.dfs` byte-identical under `stable_mtime=True` and costs nothing.
-- Derivation is `setops.diff(words_big, no_solo_words, words_dfs,
-  stable_mtime=True)` — `comm -23` under `LC_ALL=C`, which is what
-  `dict_remove.py` does by hand. Both inputs are already C-sorted sets
-  (`words.big` verified; `no.solo-words` is built by `setops.fold`).
-- New command `wf best dict` rebuilds `words.dfs` and reports line counts.
-- New command **`wf best exclude-words FILE`**, mirroring `Exclude`
-  (`commands.py:311-329`) and `workflow/classify.py`: strip count prefixes from
-  FILE, `setops.fold` into `no.solo-words`, then rebuild `words.dfs`. This is
-  the verdict-recording path that needs no review mechanics, so a solo review
-  can be done by hand today.
-- `wf init` is idempotent (`init.py:8-19`), so no layout node needs a
-  migration script; `no.solo-words` is created empty by `ensure_file` the way
-  `classified/yes|no` are.
-
-### 5. Staleness, after the above
+### 4. Staleness, after the above
 
 - `_review_needed` (`state.py:906-917`) compares against the frontier's
   **content** clock, which becomes
   `max(top.segments.st_mtime_ns, top.solo-words.st_mtime_ns)`. This preserves
   the termination property exactly: a no-op regen moves neither file, so G3
   stays declined and the loop ends.
-- One new row, immediately above `_next_search`: `_dictionary_stale` — fires
-  when `no.solo-words` is newer than `words.dfs`, offering `wf best dict`
-  (seconds, ahead of the hours). Normally never fires, since `exclude-words`
-  rebuilds; it catches a hand-edit of `no.solo-words`.
 - Remove the "deliberate and temporary" hedge from `frontier_outdated`'s
-  docstring: the regen it offers now genuinely drops rejected words.
+  docstring (`state.py:771-780`): the regen it offers now genuinely drops
+  rejected words, which is the condition that docstring names for lifting it.
+  The reason string itself is unchanged.
 
-The resulting loop: reject words → `no.solo-words` grows → `words.dfs` rebuilt
-→ `_frontier_outdated` says "dictionary changed" → regen (seconds) → post-filter
-drops the words from both artifacts → content moves → `_review_needed` reopens
-→ review. The re-search stays an explicit choice at G7.
+The resulting loop, across both plans: reject words → `no.solo-words` grows →
+`words.dfs` rebuilt (managed-dict) → `_frontier_outdated` says "dictionary
+changed" → regen (seconds) → post-filter drops the words from both artifacts →
+content moves → `_review_needed` reopens → review. The re-search stays an
+explicit choice at G7.
 
 ---
 
@@ -205,14 +188,12 @@ drops the words from both artifacts → content moves → `_review_needed` reope
 
 | file | what |
 |---|---|
-| `workflow/best/state.py` | `REVIEW_KINDS`/`FRONTIER_KINDS`; four `kind == "top"` filters; `Target.dictionary` → `words.dfs`; `Inputs.top_solo_words` + frontier content clock; `_no_frontier` requires both; `_dictionary_stale` row + `ROWS` entry; `frontier_outdated` docstring |
+| `workflow/best/state.py` | `REVIEW_KINDS`/`FRONTIER_KINDS`; four `kind == "top"` filters; `Inputs.top_solo_words` + frontier content clock; `_no_frontier` requires both; `frontier_outdated` docstring |
 | `workflow/best/generate.py` | `gen_top_segments` makes two calls, post-filters both, one `mark_generated`; the solo/pairs filter helper |
-| `workflow/best/commands.py` | `_preflight_top_segments` filter; `Review._top` literals; new `Dict` and `ExcludeWords` actions + dispatcher entries |
+| `workflow/best/commands.py` | `_preflight_top_segments` filter; `Review._top` literals |
 | `workflow/setops.py` | `place_file` (compare-and-rename tail of `_place`, reused) |
-| `workflow/config.py` | `_BEST["parts"]["dict"]` gains the managed files; a `solo_words()` accessor beside `classified()` |
-| `workflow/init.py` | `ensure_file` for `no.solo-words` |
 | `tests/test_workflow_best.py` | bundle-name literals `top.` → `segments.`; note `_complete_files` (line ~73) hand-builds the prefix instead of calling `review_prefix` — fix it to derive |
-| `tests/test_workflow_best_rows.py` | `_top` fixture places both artifacts; new tests for `_dictionary_stale`, the two-artifact content clock, `_no_frontier` on a missing solo file |
+| `tests/test_workflow_best_rows.py` | `_top` fixture places both artifacts; new tests for the two-artifact content clock and `_no_frontier` on a missing solo file |
 | `tests/test_workflow_best_e2e.py` | stub `top-segments` twice per gen; assert both artifacts and one marker |
 
 ---
@@ -229,9 +210,9 @@ three places, not just `done/in` — `wf best notes` re-derives from the
 .wf/p2/done/out/enex/top.*/           → segments.*/   (directories)
 ```
 
-Then `wf init` (creates `no.solo-words`), `wf best dict` (creates `words.dfs`),
-and one `wf best gen ... top.segments --source <recorded>` per target to place
-`top.solo-words`.
+Then one `wf best gen ... top.segments --source <recorded>` per target to place
+`top.solo-words`. The `best/dict/` steps are `plans/managed-dict.md`'s own
+migration and are assumed already done.
 
 ---
 
@@ -239,16 +220,14 @@ and one `wf best gen ... top.segments --source <recorded>` per target to place
 
 1. `python -m unittest discover -s tests -p 'test_workflow*.py'` — 245 tests
    pass today; expect additions, no removals.
-2. Unit: a rejection recorded via `exclude-words` removes the word from
-   `words.dfs`, and the next `gen top.segments` drops it from **both**
-   artifacts; a rejection of a word not in the dictionary leaves `words.dfs`
-   byte-identical and does not mark any search stale.
+2. Unit: a word in `no.solo-words` is dropped from **both** artifacts by the
+   next `gen top.segments` — from `top.solo-words` by its own row, and from
+   `top.segments` by any row that names it.
 3. Unit: two regens with no intervening change leave both artifacts' mtimes
    untouched and bump only the marker — `_review_needed` stays declined
    (the loop terminates).
 4. E2E: `_no_frontier` fires on a tree with `top.segments` but no
    `top.solo-words`, and one regen clears it.
-5. Live, read-only first: `cd final && ./wf best status s7 -a` before and after,
-   and confirm `dfs-anagrams` is invoked with `--dict .../words.dfs`
-   (`generate.py` `_display_dfs` prints the argv) without actually running the
-   hours-long search.
+5. Live, read-only first: `cd final && ./wf best status s7 -a` before and
+   after, and one `wf best gen ... top.segments` per target — seconds — to
+   confirm both artifacts appear and the loop still terminates.
