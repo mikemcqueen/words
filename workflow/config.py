@@ -102,9 +102,37 @@ _BEST = {
     "parts": {
         "idx": {
             "description": "shared Nutrimatic indexes"
+        }
+    }
+}
+
+
+# The dictionary is root-global, not a BEST input. Four tools read the derived
+# file in their workflow-configured modes -- dfs-anagrams under --dict, and the
+# three *-segments tools under --wf/--wfroot -- and a future p1 filter will read
+# it from outside BEST entirely, so it sits beside classified/ rather than under
+# one consumer.
+#
+# "content": True is load-bearing and not decorative. `LayoutArgs.has_missing`
+# is `not (parts and (is_leaf or has_content))`, so without it `wf show dict`
+# would stop listing and demand a subpart -- and dict holds files (the base and
+# the derived dictionary) as well as subparts. `done` carries it for the same
+# reason: reviewed.words sits beside in/.
+_DICT = {
+    "description": "The shared Nutrimatic dictionary and its removals",
+    "content": True,
+    "parts": {
+        "removed": {
+            "description": "applied word-removal generations"
         },
-        "dict": {
-            "description": "shared Nutrimatic dictionaries"
+        "done": {
+            "description": "completed removal rounds",
+            "content": True,
+            "parts": {
+                "in": {
+                    "description": "per-round submitted word inputs"
+                }
+            }
         }
     }
 }
@@ -120,9 +148,19 @@ CONFIG_LAYOUT = {
         "p2":         _PHASE2,
         "p3":         _PHASE3,
         "classified": _CLASSIFIED,
+        "dict":       _DICT,
         "best":       _BEST
     }
 }
+
+
+# The hand-placed base, never written by the workflow, and the derived file
+# every workflow-configured consumer reads. Named here rather than beside any
+# one of them: naming a shared artifact after its consumer is how a dictionary
+# that meant two different things on two sides would start.
+DICTIONARY_BASE_NAME = "words.big"
+DICTIONARY_NAME = "words.filtered"
+REVIEWED_WORDS_NAME = "reviewed.words"
 
 
 @dataclass(frozen=True)
@@ -200,6 +238,48 @@ def classified(root_dir: Path, kind: str) -> Path:
     they live beside the phases rather than inside one.
     """
     return path(root_dir, ["classified", kind]) / f"{kind}.pairs"
+
+
+def base_dictionary(root_dir: Path) -> Path:
+    """The hand-placed base: .wf/dict/words.big.
+
+    It may be a symlink to an operator-chosen source; the target is their
+    choice and is not part of the workflow contract. Nothing here ever writes
+    it.
+    """
+    return path(root_dir, ["dict"]) / DICTIONARY_BASE_NAME
+
+
+def dictionary(root_dir: Path) -> Path:
+    """The derived dictionary: the base minus every recorded removal.
+
+    Returning the path does not assert the file is there. `wf gen dict` creates
+    it and `wf init` deliberately does not, so its absence is a first-build
+    state for the rebuild and a missing required input for everything else --
+    which is a distinction each read boundary makes for itself.
+    """
+    return path(root_dir, ["dict"]) / DICTIONARY_NAME
+
+
+def removals(root_dir: Path) -> Path:
+    """Where one round's removals land: .wf/dict/removed/."""
+    return path(root_dir, ["dict", "removed"])
+
+
+def reviewed_inputs(root_dir: Path) -> Path:
+    """Where one round's submitted word input lands: .wf/dict/done/in/."""
+    return path(root_dir, ["dict", "done", "in"])
+
+
+def reviewed_words(root_dir: Path) -> Path:
+    """The union of every reviewed input: .wf/dict/done/reviewed.words.
+
+    Beside the per-round archive it is derived from, the way p1's done-set sits
+    beside the inputs that fed it. It answers "has this word been looked at",
+    which no removal record can: a word judged good is kept, and without this
+    it returns to the top of every candidate listing for ever.
+    """
+    return path(root_dir, ["dict", "done"]) / REVIEWED_WORDS_NAME
 
 
 def stable_mtime(parts: list[str]) -> bool:

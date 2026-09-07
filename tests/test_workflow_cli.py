@@ -130,7 +130,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertEqual("", stdout)
         self.assertIn("missing required argument", stderr)
-        self.assertIn("usage: wf show p1|p2|p3|classified|all", stderr)
+        self.assertIn("usage: wf show p1|p2|p3|classified|dict|all", stderr)
 
     def test_incomplete_show_parent_path_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("show", "p1")

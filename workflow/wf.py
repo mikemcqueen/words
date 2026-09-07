@@ -1,10 +1,12 @@
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 from workflow import (
-    best, classify, command, complete, dispatch, extract, filter_pairs, init,
-    log, notes, show, submit, usage, wipe, eval as evaluate,
+    best, classify, command, complete, dictionary, dispatch, extract,
+    filter_pairs, init, log, notes, show, submit, usage, wipe,
+    eval as evaluate,
 )
 
 
@@ -26,6 +28,15 @@ COMMANDS = {
                                        {"yes": extract.P1_YES})}),
     "classify": command.Dispatcher("classify — record a standing verdict (yes|no)",
                                    {"yes": classify.YES, "no": classify.NO}),
+    # Verb first, scope second, like every other root command: the scope names
+    # the object, so words are removed and the dictionary is generated. Neither
+    # takes a target -- dict/ is at the root and one removal applies to every
+    # target. `wf best gen` stays where it is; that one generates a target's own
+    # artifacts, and the dictionary stopped being one of those.
+    "remove":   command.Dispatcher("remove   — record a removal verdict (words)",
+                                   {"words": dictionary.REMOVE_WORDS}),
+    "gen":      command.Dispatcher("gen      — generate a derived artifact (dict)",
+                                   {"dict": dictionary.GEN_DICT}),
     "best":     best.COMMAND,
     # Unregistered until it is brought up to the steps architecture -- it is
     # the last pre-`steps/` command and now names its output differently from
@@ -70,6 +81,18 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
+    except subprocess.CalledProcessError as e:
+        # The tool has diagnosed itself on stderr already; a traceback over
+        # the top only buries it.
+        #
+        # cmd is a list at every call site in this package, but it is whatever
+        # was handed to subprocess, and a string one -- shell=True, or a bare
+        # string run -- would index to a single character and name a one-letter
+        # command in the diagnostic.
+        cmd = e.cmd
+        program = cmd[0] if isinstance(cmd, (list, tuple)) else cmd
+        log.error(f"{Path(program).name} failed ({e.returncode})")
+        raise SystemExit(1)
     except (OSError, ValueError) as e:
         if isinstance(e, OSError) and e.strerror is not None:
             log.error(f"{e.strerror}: {e.filename}")

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config
+from workflow import config, generation
 from workflow.best import commands, generate, state
 
 
@@ -26,6 +26,26 @@ class BestEndToEndTests(unittest.TestCase):
         # builds that file in a temp directory that does not outlive the run,
         # so it is read while the run holds it.
         self.pairs_seen: list[str] = []
+
+    def _dictionary(self, mtime=5) -> Path:
+        """The dictionary tree a rebuild leaves behind, dated back.
+
+        Dated with the other hand-placed inputs because the frontier's marker
+        is forced back below, and a dictionary at real time would read as an
+        edit made after it.
+        """
+        config.base_dictionary(self.root).write_text("words\n")
+        derived = config.dictionary(self.root)
+        derived.write_text("words\n")
+        config.reviewed_words(self.root).write_text("")
+        generation.mark_generated(derived)
+        for path in (config.base_dictionary(self.root), derived,
+                     config.reviewed_words(self.root),
+                     generation.stamp(derived),
+                     config.removals(self.root),
+                     config.reviewed_inputs(self.root)):
+            os.utime(path, (mtime, mtime))
+        return derived
 
     def _wf(self, *argv: str) -> tuple[str, str]:
         code, stdout, stderr = fx.run_wf("-d", str(self.root), *argv)
@@ -73,12 +93,7 @@ class BestEndToEndTests(unittest.TestCase):
         wf_dir = self.root / ".wf"
         best_dir = wf_dir / "best"
         (best_dir / "idx" / generate.INDEX_NAME).write_text("index\n")
-        dictionary = best_dir / "dict" / state.DICTIONARY_NAME
-        dictionary.write_text("words\n")
-        # Dated back with the other hand-placed inputs: the frontier's marker
-        # is forced to 20 below, and a dictionary at real time would read as
-        # an edit made after it.
-        os.utime(dictionary, (5, 5))
+        dictionary = self._dictionary()
 
         sentence_dir = best_dir / "s2"
         sentence_dir.mkdir()
@@ -125,7 +140,7 @@ class BestEndToEndTests(unittest.TestCase):
             os.utime(path, (5, 5))
         os.utime(target / "dfs.seed", (10, 10))
         for path in (target / "top.segments",
-                     state._stamp(target / "top.segments")):
+                     generation.stamp(target / "top.segments")):
             os.utime(path, (20, 20))
 
         with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
@@ -177,7 +192,7 @@ class BestEndToEndTests(unittest.TestCase):
             os.utime(config.classified(self.root, kind), (25, 25))
         os.utime(target / "dfs.seed", (30, 30))
         for path in (target / "top.segments",
-                     state._stamp(target / "top.segments")):
+                     generation.stamp(target / "top.segments")):
             os.utime(path, (40, 40))
         stdout, _ = self._wf("best", "status", "s2/u-cdef/m4/g4")
         self.assertIn("s2/u-cdef/m4/g4: dfs.best missing", stdout)
@@ -213,7 +228,7 @@ class BestEndToEndTests(unittest.TestCase):
             [str(self.root), "-y", str(target / "dfs.best")],
             commands_run[1][commands_run[1].index("--wfroot") + 1:])
         self.assertEqual("best\n",
-                         state._stamp(target / "top.segments").read_text())
+                         generation.stamp(target / "top.segments").read_text())
         self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from best)",
                       stdout)
 
@@ -222,7 +237,7 @@ class BestEndToEndTests(unittest.TestCase):
         # rest of the round is asking.
         os.utime(target / "dfs.best", (60, 60))
         for path in (target / "top.segments",
-                     state._stamp(target / "top.segments")):
+                     generation.stamp(target / "top.segments")):
             os.utime(path, (70, 70))
 
         # The confirmed-YES pairs are subtracted, so good,one is not asked
@@ -267,12 +282,50 @@ class BestEndToEndTests(unittest.TestCase):
              "dfs.s2.idx2.85.15.m4.x2.g4.best.3.u-cdef"],
             sorted(path.name for path in (self.results / "s2").iterdir()))
 
+    def test_a_removal_reaches_the_next_search_through_the_derived_file(self):
+        """`remove words` then `gen dfs.seed`: one round trip, end to end.
+
+        The searches read what the rebuild produced, not the hand-placed base,
+        so a word removed here is a word the next search cannot spell.
+        """
+        self._wf("init")
+        best_dir = self.root / ".wf" / "best"
+        (best_dir / "idx" / generate.INDEX_NAME).write_text("index\n")
+        config.base_dictionary(self.root).write_text(
+            "apple\nbanana\ncherry\n")
+        sentence_dir = best_dir / "s2"
+        sentence_dir.mkdir()
+        (sentence_dir / "letters").write_text("abcdef\n")
+        (sentence_dir / "seed.m4.idx2.85.15.pairs").write_text("seed,pair\n")
+
+        junk = self.root / "junk.txt"
+        junk.write_text("  1234 banana\n")
+        stdout, _ = self._wf("remove", "words", str(junk))
+        self.assertIn("1 words submitted, 1 new to the removal union, "
+                      "1 newly removed from the dictionary", stdout)
+        derived = config.dictionary(self.root)
+        self.assertEqual("apple\ncherry\n", derived.read_text())
+
+        command, _ = self._gen(
+            "100 good,one\n",
+            "-f", "s2", "-u", "cdef", "-g", "4", "-r", str(self.results),
+            "-n", "1", "dfs.seed")
+        self.assertEqual("dfs-anagrams", command[0])
+        self.assertEqual(str(derived), command[command.index("--dict") + 1])
+
+        # And the search it just ran is now behind the next removal.
+        os.utime(derived, (10 ** 10, 10 ** 10))
+        target = state.one_target(self.root, "s2", "u-cdef", 4, 4)
+        self.assertEqual(["dictionary changed"],
+                         state.Inputs(target).seed_search_needed)
+
     def test_oneoff_lifecycle_archives_source_and_records_yes_globally(self):
         self._wf("init")
         wf_dir = self.root / ".wf"
         target = wf_dir / "best" / "s2" / "u-cdef" / "m4" / "g4"
         target.mkdir(parents=True)
         (target / "top.segments").write_text("frontier,unknown\n")
+        self._dictionary()
         supplied = self.root / "arbitrary-input"
         supplied.write_text(
             "known,yes\nnew,yes\nknown,no\nnew,no\nknown,yes\n")
