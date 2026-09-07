@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from tests import wf_fixture as fx
-from workflow import config
+from workflow import config, generation
 from workflow.best import state
 
 
@@ -58,7 +58,7 @@ class RowTests(unittest.TestCase):
     def _top(self, text="a,b\n", mtime=30, source="seed", marker=None) -> Path:
         path = self._write(self.dir / "top.segments", text, mtime)
         if source is not None:
-            self._write(state._stamp(path), f"{source}\n",
+            self._write(generation.stamp(path), f"{source}\n",
                         mtime if marker is None else marker)
         return path
 
@@ -76,9 +76,22 @@ class RowTests(unittest.TestCase):
         return self._write(self.dir / "no.pairs", text, mtime)
 
     def _dictionary(self, mtime=10) -> Path:
-        """Hand-placed and shared by every target under the root."""
-        return self._write(self.best / "dict" / state.DICTIONARY_NAME,
-                           "words\n", mtime)
+        """A rebuilt dictionary tree, shared by every target under the root.
+
+        The base, the derived file, the reviewed done-set and the generation
+        marker, all dated together: what `wf gen dict` leaves behind, dated
+        back with the other hand-placed inputs so the fixture's small integer
+        mtimes stay meaningful against a tree `wf init` created at real time.
+        """
+        root = self.opts.dir
+        self._write(config.base_dictionary(root), "words\n", mtime)
+        derived = self._write(config.dictionary(root), "words\n", mtime)
+        self._write(config.reviewed_words(root), "", mtime)
+        for directory in (config.removals(root),
+                          config.reviewed_inputs(root)):
+            os.utime(directory, (mtime, mtime))
+        self._write(generation.stamp(derived), "", mtime)
+        return derived
 
     def _classified(self, kind: str, mtime=10, text=None) -> Path:
         path = config.classified(self.root, kind)
@@ -102,6 +115,7 @@ class RowTests(unittest.TestCase):
         """
         self._letters()
         self._seed()
+        self._dictionary()
         self._classified("yes", text="a,b\n")
         self._classified("no")
         self._dfs("seed", 20)
@@ -357,17 +371,16 @@ class RowTests(unittest.TestCase):
         # The marker is what clears it, and a byte-identical regeneration
         # still advances the marker -- which is what terminates the loop the
         # content clock could not.
-        state.mark_generated(self.dir / "top.segments", "seed\n")
+        generation.mark_generated(self.dir / "top.segments", "seed\n")
         self.assertIsNone(state._frontier_outdated(self._inputs()))
 
-    def test_a_dictionary_edit_dates_the_frontier_like_a_classify(self):
-        """Deliberately here rather than on the searches, and temporary.
+    def test_a_dictionary_edit_makes_the_frontier_outdated(self):
+        """Regenerating applies the changed dictionary to the recorded DFS.
 
-        top-segments never reads the dictionary, so the regen this row offers
-        cannot drop a word the dictionary lost: the marker moving is the whole
-        of the answer, and the row is a notification the operator acknowledges.
-        It is worth that much because the tight loop is where they are, and
-        dating the searches instead would bill hours for the same news.
+        top-segments rejects a whole result row holding a segment whose word
+        the dictionary no longer has, so the regen this row offers genuinely
+        drops what the dictionary lost -- which is why the operator is offered
+        the seconds here instead of being billed the hours of a re-search.
         """
         self._steady()
         self._dictionary(90)
@@ -379,7 +392,7 @@ class RowTests(unittest.TestCase):
             {"next": "wf best gen s2 -u cdef -g 4 top.segments --source seed"},
             self._commands(result))
 
-        state.mark_generated(self.dir / "top.segments", "seed\n")
+        generation.mark_generated(self.dir / "top.segments", "seed\n")
         self.assertIsNone(state._frontier_outdated(self._inputs()))
 
         # A dictionary placed before the frontier was made is the ordinary
@@ -387,22 +400,178 @@ class RowTests(unittest.TestCase):
         self._dictionary(10)
         self.assertIsNone(state._frontier_outdated(self._inputs()))
 
-    def test_an_unplaced_dictionary_is_not_a_status_failure(self):
-        """_dfs_inputs fails the search that needs one; a row only dates."""
-        self._steady()
-        self.assertIsNone(state._frontier_outdated(self._inputs()))
+    def test_the_g0_guards_require_both_dictionary_files(self):
+        """Neither is optional now: four tools read the derived file.
 
+        The base is hand-placed and the derived file is what `wf gen dict`
+        makes of it. A status that dated a frontier against a file that is not
+        there would be reporting on a search nothing could run, so both get the
+        ordinary file-not-found diagnostic rather than a state of their own.
+        """
+        self._steady()
+        self.assertIsNone(state._require_base_dictionary(self._inputs()))
+        self.assertIsNone(state._require_dictionary(self._inputs()))
+
+        config.dictionary(self.root).unlink()
+        with self.assertRaises(FileNotFoundError):
+            state._require_dictionary(self._inputs())
         # Present under that name and not a regular file is a broken tree,
         # the way a best.pairs that is not a file is.
-        (self.best / "dict" / state.DICTIONARY_NAME).mkdir()
+        config.dictionary(self.root).mkdir()
         with self.assertRaises(ValueError):
-            state._frontier_outdated(self._inputs())
+            state._require_dictionary(self._inputs())
+
+        config.base_dictionary(self.root).unlink()
+        with self.assertRaises(FileNotFoundError):
+            state._require_base_dictionary(self._inputs())
+
+    # ------------------------------------------------------ dictionary stale
+
+    def _stale(self) -> state.State | None:
+        return state._dictionary_stale(self._inputs())
+
+    def test_a_generation_newer_than_the_marker_offers_a_rebuild(self):
+        self._steady()
+        self.assertIsNone(self._stale())
+
+        # A round recorded after the last rebuild: the file and the directory
+        # both moved, which is the ordinary shape of an added record.
+        record = self._write(
+            config.removals(self.root) / "junk.txt.removed.1", "junk\n", 90)
+        os.utime(record.parent, (90, 90))
+        result = self._stale()
+        self.assertEqual("dictionary behind its records (removals changed)",
+                         result.message)
+        self.assertEqual({"next": "wf gen dict"}, self._commands(result))
+
+    def test_an_edit_in_place_is_caught_by_the_file_clock(self):
+        """The retraction path, and the reason both clocks are read.
+
+        Trimming a word out of a generation leaves the directory's own mtime
+        where it was: only the file moved.
+        """
+        self._steady()
+        record = self._write(
+            config.removals(self.root) / "junk.txt.removed.1", "junk\n", 10)
+        os.utime(record.parent, (10, 10))
+        self.assertIsNone(self._stale())
+
+        self._write(record, "", 90)
+        os.utime(record.parent, (10, 10))
+        self.assertEqual("dictionary behind its records (removals changed)",
+                         self._stale().message)
+
+    def test_a_replaced_base_is_the_likeliest_real_trigger(self):
+        """The base may be a symlink whose target the operator replaces."""
+        self._steady()
+        self._write(config.base_dictionary(self.root), "other\n", 90)
+        self.assertEqual(
+            "dictionary behind its records (base dictionary changed)",
+            self._stale().message)
+
+    def test_a_reviewed_input_dates_the_derived_done_set(self):
+        self._steady()
+        record = self._write(
+            config.reviewed_inputs(self.root) / "junk.txt.reviewed.1",
+            "junk\n", 90)
+        os.utime(record.parent, (90, 90))
+        self.assertEqual(
+            "dictionary behind its records (reviewed inputs changed)",
+            self._stale().message)
+
+    def test_a_missing_reviewed_done_set_is_a_repairable_state(self):
+        """Not a required input: its absence is what this row reports."""
+        self._steady()
+        config.reviewed_words(self.root).unlink()
+        self.assertEqual(
+            "dictionary behind its records (reviewed words missing)",
+            self._stale().message)
+
+        # Present and not a regular file is a broken tree either way.
+        config.reviewed_words(self.root).mkdir()
+        with self.assertRaises(ValueError):
+            self._stale()
+
+    def test_one_rebuild_clears_the_row_even_when_it_changes_nothing(self):
+        """stable_mtime pins the file; the marker is what moves regardless."""
+        self._steady()
+        self._write(config.base_dictionary(self.root), "words\n", 90)
+        # Above the searches, so the seconds are offered before the hours.
+        self.assertEqual(
+            "dictionary behind its records (base dictionary changed)",
+            self._state().message)
+
+        code, _, stderr = fx.run_wf("-d", str(self.root), "gen", "dict")
+        self.assertEqual(0, code, stderr)
+        self.assertIsNone(self._stale())
+        self.assertEqual("converged", self._state().message)
+
+    def test_an_effective_removal_dates_both_searches(self):
+        """The derived file's own mtime, not the marker: hours ride on it."""
+        self._steady()
+        inputs = self._inputs()
+        self.assertEqual([], inputs.seed_search_needed)
+        self.assertEqual([], inputs.best_search_needed)
+
+        # A rebuild that changed nothing moves only the marker.
+        self._write(generation.stamp(config.dictionary(self.root)), "", 90)
+        inputs = self._inputs()
+        self.assertEqual([], inputs.seed_search_needed)
+        self.assertEqual([], inputs.best_search_needed)
+
+        # A rebuild that removed a word moves the file itself.
+        self._write(config.dictionary(self.root), "word\n", 90)
+        inputs = self._inputs()
+        self.assertEqual(["dictionary changed"], inputs.seed_search_needed)
+        self.assertEqual(["dictionary changed"], inputs.best_search_needed)
+
+    def test_a_review_is_still_offered_after_a_removal(self):
+        """The frontier is unreviewed even where its bytes did not move.
+
+        Any removal that actually removes a word makes the dictionary newer
+        than top.segments, so a content-clock comparison would suppress this
+        target's review indefinitely. The marker is what the row dates against.
+        """
+        self._steady()
+        # A frontier written after the round that last read it, then a removal
+        # that landed after the frontier's bytes but before its rebuild.
+        self._top(mtime=50, marker=60)
+        self._archived(mtime=40)
+        self._write(config.dictionary(self.root), "word\n", 55)
+        self.assertEqual("review needed (frontier from seed)",
+                         state._review_needed(self._inputs()).message)
+
+        # A removal after the rebuild does make the frontier obsolete, and the
+        # row that offers the regeneration is the one that wins.
+        self._write(config.dictionary(self.root), "word\n", 70)
+        self.assertIsNone(state._review_needed(self._inputs()))
+
+    def test_the_stale_dictionary_yields_to_every_row_above_it(self):
+        self._steady()
+        self._write(config.base_dictionary(self.root), "words\n", 90)
+        self.assertTrue(self._stale())
+
+        # An unreviewed frontier, a missing one, and an open review each win.
+        self._top(mtime=95, marker=95)
+        self.assertEqual("review needed (frontier from seed)",
+                         self._state().message)
+
+        (self.dir / "top.segments").unlink()
+        self.assertEqual("top.segments missing", self._state().message)
+
+        self._top(mtime=30, marker=70)
+        queued = self._write(
+            fx.slot(self.opts, ["p2", "queued"])
+            / "top.s2.m4.g4.u-cdef.1000.r2.pairs", "a,b\n")
+        self.assertEqual(f"review submitted ({queued.name})",
+                         self._state().message)
 
     # ---------------------------------------------------------------- guards
 
     def test_a_row_reached_out_of_order_raises_rather_than_dating_nothing(self):
         self._letters()
         self._seed()
+        self._dictionary()
         self._dfs("seed")
         self._classified("yes", text="a,b\n")
         self._classified("no")
@@ -434,12 +603,14 @@ class RowTests(unittest.TestCase):
     def test_rows_are_evaluated_in_the_documented_precedence(self):
         self.assertEqual(
             ["_letters_missing", "_seed_missing",
+             "_require_base_dictionary", "_require_dictionary",
              "_review_queued", "_review_evaluating",
              "_no_frontier",
              "_review_needed",
              "_no_usable_pairs",
              "_top_segments_behind_dfs",
              "_frontier_outdated",
+             "_dictionary_stale",
              "_next_search"],
             [row.name for row in state.ROWS])
 
@@ -588,7 +759,7 @@ class RowTests(unittest.TestCase):
         self.assertIsNone(state._review_needed(self._inputs()))
 
         # A no-op regen: the marker moves, the content mtime does not.
-        state.mark_generated(self.dir / "top.segments", "seed\n")
+        generation.mark_generated(self.dir / "top.segments", "seed\n")
         self.assertEqual(45, int((self.dir / "top.segments").stat().st_mtime))
         self.assertEqual("review needed (frontier from seed)",
                          self._state().message)
@@ -598,7 +769,7 @@ class RowTests(unittest.TestCase):
         self._classified("yes", text="a,b\ntiger,lily\n")
         self._search_pairs("a,b\n")
         self._target_no("tiger,lily\n", mtime=90)
-        state.mark_generated(self.dir / "top.segments", "seed\n")
+        generation.mark_generated(self.dir / "top.segments", "seed\n")
         # The archived round is still newer than the frontier it read, so the
         # frontier has been reviewed and stays reviewed. What the exclusion
         # left behind is the searches, which is the row that wins.
@@ -673,6 +844,7 @@ class RowTests(unittest.TestCase):
     def test_both_rows_that_offer_a_generation_render_the_same_command(self):
         self._letters()
         self._seed()
+        self._dictionary()
         self._dfs("seed")
         absent = self._commands(state._no_frontier(self._inputs()))
 
@@ -688,7 +860,7 @@ class RowTests(unittest.TestCase):
 
     def test_the_source_marker_is_read_leniently_and_never_guessed(self):
         self._top(source=None)
-        marker = state._stamp(self.dir / "top.segments")
+        marker = generation.stamp(self.dir / "top.segments")
         self.assertFalse(marker.exists())
         # A tree built before the frontier had a choice of source.
         self.assertEqual("seed", state.top_segments_source(self.target))
@@ -700,23 +872,6 @@ class RowTests(unittest.TestCase):
         marker.write_text("dfs.best\n")
         with self.assertRaisesRegex(ValueError, "unrecognised"):
             state.top_segments_source(self.target)
-
-    def test_a_marker_dates_a_generation_the_artifact_cannot(self):
-        top = self._top(mtime=30, marker=30)
-        # A missing marker leaves the artifact dating itself.
-        state._stamp(top).unlink()
-        self.assertEqual(top, state._generated(top))
-
-        state.mark_generated(top, "best\n")
-        self.assertEqual(state._stamp(top), state._generated(top))
-        self.assertEqual("best\n", state._stamp(top).read_text())
-
-        # A byte-identical remark still advances the clock: content is what
-        # stable_mtime pins, and the generation clock has to move regardless.
-        os.utime(state._stamp(top), (30, 30))
-        state.mark_generated(top, "best\n")
-        self.assertGreater(state._stamp(top).stat().st_mtime_ns, 30 * 10 ** 9)
-        self.assertEqual(30, int(top.stat().st_mtime))
 
     # -------------------------------------------------------------- render
 
@@ -756,8 +911,12 @@ class RowTests(unittest.TestCase):
         """The whole point of the requires table: no row reads what is absent.
 
         Straight iteration over ROWS here raises in _review_needed, which is
-        what the walk exists to avoid.
+        what the walk exists to avoid. The dictionary is placed because its own
+        guards are not part of that table: they are required inputs whose
+        absence is an error at every row, not a file one row establishes for
+        another.
         """
+        self._dictionary()
         verdicts = self._labels()
         self.assertTrue(verdicts["_letters_missing"].fired)
         self.assertTrue(verdicts["_seed_missing"].fired)
@@ -777,6 +936,7 @@ class RowTests(unittest.TestCase):
     def test_a_row_is_asked_once_the_row_providing_its_file_declines(self):
         self._letters()
         self._seed()
+        self._dictionary()
         self._dfs("seed")
         self._top()
         verdicts = self._labels()
@@ -850,6 +1010,7 @@ class RowTests(unittest.TestCase):
             lines[following + 1:following + 4])
 
     def test_the_table_says_which_file_a_skipped_row_wanted(self):
+        self._dictionary()
         lines = state.render_rows(state.walk_rows(self.target))
         line = next(line for line in lines if "_review_needed" in line)
         self.assertIn("n/a:", line)

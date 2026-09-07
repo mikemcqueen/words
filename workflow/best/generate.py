@@ -7,10 +7,9 @@ import time
 
 from pathlib import Path
 
-from workflow import config, fs, log, setops
+from workflow import config, fs, generation, log, setops
 from workflow.best.state import (
-    Target, build_search_pairs, mark_generated, search_pair_sources,
-    target_no_pairs,
+    Target, build_search_pairs, search_pair_sources, target_no_pairs,
 )
 
 
@@ -109,7 +108,10 @@ def _dfs_inputs(target: Target, results_dir: Path,
     """Everything a DFS run reads, checked before anything is created."""
     _require_command("dfs-anagrams")
     index = target.best_dir / "idx" / INDEX_NAME
-    dictionary = target.dictionary
+    # Root-global and derived: the searches read what `wf gen dict` produced,
+    # not the hand-placed base, so a word removed from the dictionary is a word
+    # the search cannot spell.
+    dictionary = config.dictionary(target.root)
     fs.raise_if_not_file(index)
     fs.raise_if_not_file(dictionary)
     fs.raise_if_not_file(target.letters)
@@ -245,9 +247,19 @@ def gen_top_segments(target: Target, *, source: str,
     fs.raise_if_not_file(dfs)
     # pair-exclusions only warns on a missing classified file, and a warning
     # would produce an unfiltered frontier the state machine then believes is
-    # filtered. Both are checked here so it cannot.
+    # filtered. All three are checked here so it cannot -- the dictionary is
+    # the same hazard: an absent one warns, all_words_in_dict returns true on
+    # an empty set, and the frontier comes out unfiltered.
     fs.raise_if_not_file(config.classified(target.root, "yes"))
     fs.raise_if_not_file(config.classified(target.root, "no"))
+    # Unlike the generic required-file guards, this one says how to create its
+    # input. On a tree that has never rebuilt, _no_frontier wins before
+    # _dictionary_stale and sends the operator here, so the command itself has
+    # to carry the actionable recovery.
+    dictionary = config.dictionary(target.root)
+    if fs.optional_file(dictionary) is None:
+        raise ValueError(f"dictionary not generated: {dictionary}; "
+                         f"run `wf gen dict`")
     argv = ["top-segments", "--pairs"]
     if count is not None:
         argv.extend(["-n", str(count)])
@@ -271,7 +283,7 @@ def gen_top_segments(target: Target, *, source: str,
     # generation and the state heals. Marker-first would run the clock ahead,
     # the row would not fire, and the state would never be re-offered.
     setops._place(argv, top_segments, stable_mtime=True)
-    mark_generated(top_segments, f"{source}\n")
+    generation.mark_generated(top_segments, f"{source}\n")
     rows = fs.line_count(top_segments)
     log.success(f"Generated {rows} top segments → "
                 f"{target.address}/top.segments")

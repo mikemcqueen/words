@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config
+from workflow import config, generation
 from workflow.best import commands, generate, state
 
 
@@ -52,14 +52,30 @@ class BestTests(unittest.TestCase):
             os.utime(path, (mtime, mtime))
         return path
 
+    def _dictionary(self, mtime=10) -> Path:
+        """What `wf gen dict` leaves behind: base, derived, done-set, marker.
+
+        Dated back with the other hand-placed inputs, so the fixture's small
+        integer mtimes stay meaningful against a tree wf init created at real
+        time.
+        """
+        root = self.opts.dir
+        self._write(config.base_dictionary(root), "words\n", mtime)
+        derived = self._write(config.dictionary(root), "words\n", mtime)
+        self._write(config.reviewed_words(root), "", mtime)
+        for directory in (config.removals(root),
+                          config.reviewed_inputs(root)):
+            os.utime(directory, (mtime, mtime))
+        self._write(generation.stamp(derived), "", mtime)
+        return derived
+
     def _shared_inputs(self, universe: Path) -> tuple[Path, Path, Path]:
         index = self.best / "idx" / generate.INDEX_NAME
-        dictionary = self.best / "dict" / state.DICTIONARY_NAME
         sentence_dir = universe.parents[1]
         sentence_dir.mkdir(parents=True, exist_ok=True)
         seed = sentence_dir / f"seed.{universe.name}.idx2.85.15.pairs"
         self._write(index, "index\n")
-        self._write(dictionary, "words\n", 10)
+        dictionary = self._dictionary()
         self._write(sentence_dir / "letters", "abcdef\n", 10)
         self._write(seed, "a,b\n", 10)
         os.utime(config.classified(self.root, "no"), (10, 10))
@@ -74,6 +90,7 @@ class BestTests(unittest.TestCase):
         # best.pairs, which nothing generates and need not be there.
         self._write(config.classified(self.root, "yes"), "a,b\n", 10)
         os.utime(config.classified(self.root, "no"), (10, 10))
+        self._dictionary()
         self._write(sentence_dir / "letters", "abcdef\n", 10)
         self._write(
             sentence_dir / f"seed.{universe_dir.name}.idx2.85.15.pairs",
@@ -94,7 +111,7 @@ class BestTests(unittest.TestCase):
         # The frontier was last generated from dfs.best, after it landed: the
         # content clock stays at 30 because the regeneration was a no-op, and
         # the generation clock is what says the finished search was read.
-        self._write(state._stamp(target / "top.segments"), "best\n", 65)
+        self._write(generation.stamp(target / "top.segments"), "best\n", 65)
 
     def test_gen_help_describes_options_and_positionals(self):
         code, stdout, stderr = fx.run_wf(
@@ -123,7 +140,9 @@ class BestTests(unittest.TestCase):
 
     def test_init_builds_static_crown_and_show_points_to_status(self):
         self.assertTrue((self.best / "idx").is_dir())
-        self.assertTrue((self.best / "dict").is_dir())
+        # The dictionary is root-global now, not a BEST input.
+        self.assertTrue(config.removals(self.root).is_dir())
+        self.assertTrue(config.reviewed_inputs(self.root).is_dir())
 
         code, _, stderr = fx.run_wf(
             "-d", str(self.root), "show", "best")
@@ -155,6 +174,10 @@ class BestTests(unittest.TestCase):
 
     def test_status_all_reports_every_row_and_leaves_the_verdict_alone(self):
         self._target()
+        # The dictionary guards are required inputs rather than states, so the
+        # table cannot be walked without one: they raise where every other row
+        # would decline.
+        self._dictionary()
         plain_code, plain, stderr = fx.run_wf(
             "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
         code, stdout, stderr = fx.run_wf(
@@ -193,6 +216,7 @@ class BestTests(unittest.TestCase):
 
     def test_status_reports_no_search_results_and_a_dangling_link(self):
         target = self._target()
+        self._dictionary()
         self._write(target.parents[2] / "letters", "abcdef\n", 10)
         self._write(target.parents[2] / "seed.m4.idx2.85.15.pairs",
                     "a,b\n", 10)
@@ -404,8 +428,8 @@ class BestTests(unittest.TestCase):
             stderr2)
         # The marker records the source and advances even where the stable
         # placement left top.segments untouched.
-        self.assertEqual("seed\n", state._stamp(top).read_text())
-        self.assertGreater(state._stamp(top).stat().st_mtime_ns,
+        self.assertEqual("seed\n", generation.stamp(top).read_text())
+        self.assertGreater(generation.stamp(top).stat().st_mtime_ns,
                            top.stat().st_mtime_ns)
 
     def test_no_op_top_segments_gen_clears_a_reran_dfs_seed(self):
@@ -436,7 +460,7 @@ class BestTests(unittest.TestCase):
 
         self.assertEqual(0, code, stderr)
         self.assertEqual(30, int(top.stat().st_mtime))
-        self.assertEqual("seed\n", state._stamp(top).read_text())
+        self.assertEqual("seed\n", generation.stamp(top).read_text())
         self.assertNotIn("generated after top.segments", stdout)
         self.assertIn("s2/u-cdef/m4/g4: converged", stdout)
 
@@ -756,6 +780,54 @@ class BestTests(unittest.TestCase):
             f"s2/u-cdef/m4/g4: no review candidates remain (1 frontier "
             f"pairs, all already classified or excluded); target-local "
             f"exclusions: {local_no}", stdout)
+
+    def test_an_absent_derived_dictionary_stops_each_reader_its_own_way(self):
+        """A missing words.filtered is silent in the segment tools.
+
+        pair-exclusions warns and leaves the word set empty, and
+        all_words_in_dict returns true on an empty set -- so the frontier comes
+        out unfiltered and the state machine believes it is filtered. The
+        generic readers get the ordinary file-not-found diagnostic; the one
+        command that would launch a segment tool has to say how to create it,
+        because on a tree that has never rebuilt `_no_frontier` sends the
+        operator here before `_dictionary_stale` is ever reached.
+        """
+        target = self._target()
+        universe = target.parent
+        self._shared_inputs(universe)
+        self._write(target / "dfs.seed", "9 alpha,beta\n", 20)
+        config.dictionary(self.root).unlink()
+
+        with mock.patch.object(generate.shutil, "which",
+                               return_value="/bin/fake"):
+            with self.assertRaisesRegex(
+                    ValueError, r"dictionary not generated: .*words\.filtered; "
+                    r"run `wf gen dict`"):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-u", "cdef", "-g", "4", "--source", "seed",
+                          "top.segments")
+            with self.assertRaises(FileNotFoundError):
+                fx.run_wf("-d", str(self.root), "best", "gen", "s2",
+                          "-u", "cdef", "-g", "4", "-r", str(self.root),
+                          "dfs.seed")
+
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
+        self.assertEqual(1, code)
+        self.assertIn("file not found", stderr)
+        self.assertIn("words.filtered", stderr)
+
+    def test_status_offers_a_rebuild_for_a_missing_reviewed_done_set(self):
+        target = self._target()
+        self._complete_files(target)
+        config.reviewed_words(self.root).unlink()
+
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "best", "status", "s2/u-cdef/m4/g4")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("dictionary behind its records (reviewed words missing)",
+                      stdout)
+        self.assertIn("next: wf gen dict", stdout)
 
     def test_gen_top_segments_rejects_force_before_running(self):
         target = self._target()
@@ -1229,7 +1301,7 @@ class BestTests(unittest.TestCase):
                     calls[0])
                 self.assertEqual(
                     f"{source}\n",
-                    state._stamp(target / "top.segments").read_text())
+                    generation.stamp(target / "top.segments").read_text())
 
     def test_gen_top_segments_warns_when_the_dfs_file_is_exhausted(self):
         target = self._target()
@@ -1290,7 +1362,7 @@ class BestTests(unittest.TestCase):
         self.assertEqual("alpha,beta\ngamma,delta\n",
                          (target / "top.segments").read_text())
         self.assertEqual("seed\n",
-                         state._stamp(target / "top.segments").read_text())
+                         generation.stamp(target / "top.segments").read_text())
         self.assertIn("s2/u-cdef/m4/g4: review needed (frontier from seed)",
                       stdout)
 
@@ -1336,7 +1408,7 @@ class BestTests(unittest.TestCase):
             results / "s2" / "dfs.s2.idx2.85.15.m4.x2.g4.best.1.u-cdef",
             (target / "dfs.best").resolve())
         self.assertEqual("best\n",
-                         state._stamp(target / "top.segments").read_text())
+                         generation.stamp(target / "top.segments").read_text())
 
         # -f is what creates the levels below the sentence, and only a seed
         # search may create them.
@@ -1463,7 +1535,7 @@ class BestTests(unittest.TestCase):
         self._shared_inputs(target_dir.parent)
         results = self.root / "results"
         target = state.one_target(self.opts.dir, "s2", "u-cdef", 4, 4)
-        marker = state._stamp(target_dir / "top.segments")
+        marker = generation.stamp(target_dir / "top.segments")
         before = (target_dir / "top.segments").read_text()
 
         def run(command, **kwargs):

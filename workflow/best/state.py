@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from workflow import config, fs, setops
+from workflow import config, fs, generation, setops
 
 
 SHAPES = (
@@ -23,12 +23,6 @@ SHAPES = (
 # which is what such a sentence holds there instead.
 LETTER_SET_DEPTH = 1
 UNIVERSE_DEPTH = 2
-
-# The shared Nutrimatic dictionary every search under the root filters by,
-# placed by hand under best/dict/. Named here rather than beside the index in
-# generate, which is where the searches live, because status now dates the
-# frontier against it too and Target is what both sides already share.
-DICTIONARY_NAME = "words.big"
 
 
 @dataclass(frozen=True)
@@ -82,10 +76,6 @@ class Target:
     @property
     def letters(self) -> Path:
         return self.sentence_dir / "letters"
-
-    @property
-    def dictionary(self) -> Path:
-        return self.best_dir / "dict" / DICTIONARY_NAME
 
     def artifact(self, name: str) -> Path:
         return self.target_dir / name
@@ -401,39 +391,9 @@ SOURCES = ("seed", "best")
 WIDEN_STEP = 1000
 
 
-def _stamp(path: Path) -> Path:
-    """The generation marker beside an artifact, written by every gen."""
-    return path.with_name(f".{path.name}.gen")
-
-
-def _generated(path: Path) -> Path:
-    """The path whose mtime dates an artifact against its own inputs.
-
-    An artifact placed with stable_mtime keeps its mtime through a
-    byte-identical regeneration, which is what stops a no-op from cascading
-    into an hours-long DFS downstream. That same mtime cannot also answer
-    "has this been generated since its input moved?", because the answer it
-    gives never changes: an input that moves and yields identical content
-    reports stale forever, and the gen offered to clear it is the one write
-    stable_mtime suppresses. The marker answers that question -- it advances
-    on every gen, no-op or not -- and the artifact's own mtime goes on
-    answering the first for whatever reads it downstream.
-
-    Absent the marker the artifact dates itself, which is what a tree built
-    before the marker existed, or an artifact placed by hand, will do.
-    """
-    stamp = _stamp(path)
-    return stamp if stamp.exists() else path
-
-
-def mark_generated(path: Path, text: str = "") -> None:
-    """Record a successful generation, optionally with what it was made from.
-
-    write_text rather than touch: a marker that also carries contents has to
-    advance its mtime whether or not those contents changed, or the generation
-    clock would stall exactly where stable_mtime stalls the content clock.
-    """
-    _stamp(path).write_text(text)
+# The generation clock lives in workflow/generation.py: the derived dictionary
+# is the same kind of object as top.segments and needs the same pair of clocks,
+# so the marker convention is shared rather than BEST's own.
 
 
 def top_segments_source(target: Target) -> str:
@@ -444,7 +404,7 @@ def top_segments_source(target: Target) -> str:
     rejected rather than guessed at -- the value selects an input to hours of
     search, and a wrong guess spends them on the wrong one.
     """
-    marker = _stamp(target.artifact("top.segments"))
+    marker = generation.stamp(target.artifact("top.segments"))
     if not marker.exists():
         return "seed"
     recorded = marker.read_text().strip()
@@ -460,6 +420,21 @@ def top_segments_source(target: Target) -> str:
 def _newer(path: Path, reference: Path) -> bool:
     fs.raise_if_not_file(path)
     return path.stat().st_mtime_ns > reference.stat().st_mtime_ns
+
+
+def _newer_entry(directory: Path, reference: Path) -> bool:
+    """Has anything in directory moved since reference was written?
+
+    The directory's own mtime and every entry's, because the two answer
+    different halves: adding or deleting a record moves the directory, editing
+    one in place moves only the file. lstat rather than stat, so a stray
+    dangling symlink is a thing that changed rather than a status that raises.
+    """
+    fs.raise_if_not_dir(directory)
+    newest = max((entry.lstat().st_mtime_ns for entry in directory.iterdir()),
+                 default=0)
+    newest = max(newest, directory.stat().st_mtime_ns)
+    return newest > reference.stat().st_mtime_ns
 
 
 def _dangling(path: Path) -> str:
@@ -673,16 +648,58 @@ class Inputs:
         return config.classified(self.target.root, "yes")
 
     @cached_property
-    def dictionary(self) -> Path | None:
-        """The shared dictionary, or None where nothing has placed one.
+    def base_dictionary(self) -> Path:
+        """The hand-placed base, required and never written by the workflow.
 
-        Absence is not the error here that it is in `_dfs_inputs`: that is
-        about to run a search and cannot without one, while this only dates a
-        frontier and has no business failing a status over a search input. A
-        name with nothing under it still raises, the way an optional
-        best.pairs does -- that is a broken tree, not an absent option.
+        Root-global rather than a property of this target, so it is resolved
+        through config: dict/ sits beside classified/ and one removal set
+        serves every target under the root.
         """
-        return fs.optional_file(self.target.dictionary)
+        path = config.base_dictionary(self.target.root)
+        fs.raise_if_not_file(path)
+        return path
+
+    @cached_property
+    def dictionary(self) -> Path:
+        """The derived dictionary every search under the root filters by.
+
+        Required, not optional. It used to be the hand-placed base, whose
+        absence was an operator's choice; it is now generated, four tools read
+        it, and a status that dated a frontier against a file that is not there
+        would be reporting on a search nothing could run. `wf gen dict` is what
+        creates it, and `wf init` deliberately does not.
+        """
+        path = config.dictionary(self.target.root)
+        fs.raise_if_not_file(path)
+        return path
+
+    @cached_property
+    def dictionary_stale(self) -> list[str]:
+        """Records written since the derived dictionary was last generated.
+
+        Both clocks over each archive directory are needed: adding or deleting
+        a record moves the directory's own mtime, editing one in place moves
+        only that file's. The base is dated too, and is the likeliest real
+        trigger -- it may be a symlink whose operator-chosen target gets
+        replaced under a derived file nobody rebuilt.
+
+        Dated against the generation marker rather than the derived file's own
+        mtime, because a removal that removes nothing leaves that file
+        byte-identical on purpose and a content-clock comparison would report
+        stale for ever.
+        """
+        root = self.target.root
+        generated = generation.generated(self.dictionary)
+        reasons = []
+        if fs.optional_file(config.reviewed_words(root)) is None:
+            reasons.append("reviewed words missing")
+        if _newer_entry(config.removals(root), generated):
+            reasons.append("removals changed")
+        if _newer_entry(config.reviewed_inputs(root), generated):
+            reasons.append("reviewed inputs changed")
+        if _newer(self.base_dictionary, generated):
+            reasons.append("base dictionary changed")
+        return reasons
 
     @cached_property
     def target_no(self) -> Path | None:
@@ -735,6 +752,12 @@ class Inputs:
         reasons = []
         if _newer(self.seed, dfs_seed):
             reasons.append("seed changed")
+        # The derived file itself, not its marker: an effective dictionary
+        # change invalidates the search, while a rebuild whose output is
+        # byte-identical advances only the marker and must not offer hours of
+        # redundant work.
+        if _newer(self.dictionary, dfs_seed):
+            reasons.append("dictionary changed")
         if _newer(self.hard_no, dfs_seed):
             reasons.append("hard-NO set changed")
         if self.target_no is not None and _newer(self.target_no, dfs_seed):
@@ -768,25 +791,19 @@ class Inputs:
     def frontier_outdated(self) -> list[str]:
         """Inputs written since the frontier was last generated.
 
-        The dictionary is a search input, not a frontier input: top-segments
-        never reads it, so a regen from the same DFS cannot drop a word the
-        dictionary no longer has, and this reason is answered by the marker
-        moving rather than by the frontier changing. Dating it here anyway is
-        deliberate and temporary. It is the only place the operator is told
-        the dictionary moved without being billed the hours a re-search
-        costs, and the tight loop -- review, classify, regen, review -- is
-        where they are. When top-segments learns a word-level reject this
-        becomes a reason a regen can actually answer, and the searches can
-        take the dictionary up as the clock that dates them.
+        The dictionary is a frontier input as well as a search input:
+        top-segments rejects a whole result row holding a segment whose word
+        the dictionary no longer has, so a regen from the same DFS genuinely
+        answers this reason -- which is why the operator is offered the
+        seconds here rather than being billed the hours of a re-search.
         """
-        generated = _generated(self.top_segments)
+        generated = generation.generated(self.top_segments)
         reasons = []
         if _newer(self.confirmed_yes, generated):
             reasons.append("confirmed-YES set changed")
         if _newer(self.hard_no, generated):
             reasons.append("hard-NO set changed")
-        dictionary = self.dictionary
-        if dictionary is not None and _newer(dictionary, generated):
+        if _newer(self.dictionary, generated):
             reasons.append("dictionary changed")
         if self.target_no is not None and _newer(self.target_no, generated):
             reasons.append("target-NO set changed")
@@ -811,6 +828,8 @@ class Inputs:
         # the run used, and re-running is the only way to get one.
         if not current:
             reasons.append("usable pair set changed")
+        if _newer(self.dictionary, dfs_best):
+            reasons.append("dictionary changed")
         if _newer(self.hard_no, dfs_best):
             reasons.append("hard-NO set changed")
         if self.target_no is not None and _newer(self.target_no, dfs_best):
@@ -831,7 +850,7 @@ class Inputs:
         dfs = self.dfs(source)
         if not dfs.exists() or self.search_needed(source):
             return False
-        return _newer(dfs, _generated(self.top_segments))
+        return _newer(dfs, generation.generated(self.top_segments))
 
     # -------------------------------------------------------------- renderers
 
@@ -890,6 +909,31 @@ def _seed_missing(inputs: Inputs) -> State | None:
     return State("seed missing", place=inputs.target.seed_glob)
 
 
+def _require_base_dictionary(inputs: Inputs) -> State | None:
+    """The hand-placed base has to be there. Validation, not a state.
+
+    `words.big` is placed by the operator and never written by the workflow, so
+    an absent file or a dangling symlink is a hard error rather than a stage to
+    offer a command for. Declining is what establishes the input for the rows
+    below, which is why this is a row and not a line inside one.
+    """
+    _ = inputs.base_dictionary
+    return None
+
+
+def _require_dictionary(inputs: Inputs) -> State | None:
+    """The derived dictionary has to be there before anything dates against it.
+
+    A missing one gets the ordinary `file not found` diagnostic rather than a
+    migration-specific message: `wf gen dict` is what creates it, and status is
+    not the place to teach a tree how to have been initialized. The one command
+    that says so in its own words is `gen top.segments`, which would otherwise
+    hand the segment tools a warning and an unfiltered frontier.
+    """
+    _ = inputs.dictionary
+    return None
+
+
 def _review_queued(inputs: Inputs) -> State | None:
     queued, _, _ = inputs.review
     queued = [round_ for round_ in queued if round_.kind == "top"]
@@ -940,29 +984,28 @@ def _review_needed(inputs: Inputs) -> State | None:
     """A frontier written since the last round that read it, and still current.
 
     An input newer than the frontier makes it obsolete rather than unreviewed,
-    so this declines and the row that offers the regeneration wins. The two
-    such inputs are dated by different clocks, deliberately. The dictionary
-    keeps its content-mtime comparison, which is the standing behaviour.
-    Target-local no.pairs is dated against the generation marker, because the
-    case it has to survive is the one the content clock cannot: excluding a
-    pair that is not on the frontier makes the regen a byte-for-byte no-op,
+    so this declines and the row that offers the regeneration wins. Both such
+    inputs are dated against the generation marker, because the case they have
+    to survive is the one the content clock cannot: a removal or an exclusion
+    that does not touch the frontier makes the regen a byte-for-byte no-op,
     stable_mtime leaves the content mtime where it was, and a content-clock
     comparison would suppress the review of a genuinely unreviewed frontier
-    forever. The marker advances on every gen, so one no-op regeneration is
-    the whole of what it takes to reopen it.
+    forever. Under a plan whose point is making dictionary moves routine, that
+    is the behaviour that matters most: any removal that actually removes a
+    word makes the dictionary newer than top.segments, and the review would
+    stay suppressed for that target indefinitely. The marker advances on every
+    gen, so one no-op regeneration is the whole of what it takes to reopen it.
     """
     _, _, archived = inputs.review
     top_rounds = [round_ for round_ in archived if round_.kind == "top"]
     newest = max((round_.path.stat().st_mtime_ns for round_ in top_rounds),
                  default=0)
     top_segments = inputs.top_segments
-    dictionary = inputs.dictionary
+    generated = generation.generated(top_segments)
     target_no = inputs.target_no
     if (newest > top_segments.stat().st_mtime_ns
-            or (dictionary is not None
-                and _newer(dictionary, top_segments))
-            or (target_no is not None
-                and _newer(target_no, _generated(top_segments)))):
+            or _newer(inputs.dictionary, generated)
+            or (target_no is not None and _newer(target_no, generated))):
         return None
     command = (inputs.target.command("complete")
                if inputs.oneoff_in_flight is not None
@@ -1043,6 +1086,28 @@ def _frontier_outdated(inputs: Inputs) -> State | None:
         choices=_top_segments_choices(inputs, (inputs.source,)))
 
 
+def _dictionary_stale(inputs: Inputs) -> State | None:
+    """The derived dictionary is behind the records it derives from.
+
+    Normally never fires: `wf remove words` rebuilds as part of recording. It
+    catches a hand-edit of a generation -- which is the retraction path, there
+    being no un-remove command -- and a base replaced under a derived file that
+    was not rebuilt.
+
+    Below _frontier_outdated rather than above it, and the ordering is
+    self-correcting. A hand-edit of a generation leaves the derived dictionary
+    untouched, so its mtime has not moved, so _frontier_outdated declines and
+    this row fires. The rebuild it offers moves the derived file, and
+    _frontier_outdated fires on the next status with a reason a regen can now
+    actually answer. Seconds, then minutes, then hours.
+    """
+    reasons = inputs.dictionary_stale
+    if not reasons:
+        return None
+    return State(f"dictionary behind its records ({', '.join(reasons)})",
+                 choices=(Choice("next", "wf gen dict"),))
+
+
 def _next_search(inputs: Inputs) -> State | None:
     messages = []
     if inputs.seed_search_needed:
@@ -1082,13 +1147,16 @@ ROWS = (
     # G0 -- hand-placed inputs
     Row(_letters_missing),
     Row(_seed_missing, provides="seed"),
+    # G0 -- required dictionary inputs for BEST status
+    Row(_require_base_dictionary, provides="base_dictionary"),
+    Row(_require_dictionary, provides="dictionary"),
     # G1 -- open review: the frontier is being read and must not be rewritten
     Row(_review_queued),
     Row(_review_evaluating),
     # G2 -- no frontier; everything below has a top.segments
     Row(_no_frontier, provides="top.segments"),
     # G3 -- frontier not yet reviewed
-    Row(_review_needed, requires=("top.segments",)),
+    Row(_review_needed, requires=("top.segments", "dictionary")),
     # G4 -- the dead end: no standing pair this bag can spell
     Row(_no_usable_pairs, requires=("top.segments", "seed")),
     # G5 -- a finished search whose frontier was never generated. Above G6
@@ -1100,8 +1168,11 @@ ROWS = (
     # rebuilt against. Below _review_needed so a freshly generated frontier
     # gets reviewed rather than immediately regenerated, and above the
     # searches so the seconds are offered before the hours.
-    Row(_frontier_outdated, requires=("top.segments",)),
-    # G7 -- start the next search
+    Row(_frontier_outdated, requires=("top.segments", "dictionary")),
+    # G7 -- the derived dictionary is behind the records it derives from.
+    # Above _next_search so the seconds are offered before the hours.
+    Row(_dictionary_stale, requires=("base_dictionary", "dictionary")),
+    # G8 -- start the next search
     Row(_next_search, requires=("seed",)),
 )
 
