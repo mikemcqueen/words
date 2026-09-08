@@ -52,6 +52,12 @@ class BestEndToEndTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         return stdout, stderr
 
+    def _require_state(self, result: state.State | None) -> state.State:
+        """Assert that the directly tested status row fired."""
+        self.assertIsNotNone(result)
+        assert result is not None
+        return result
+
     def _run_producers(self, outputs: list[str],
                        *argv: str) -> tuple[list[list[str]], str]:
         """Drive a wf best command, standing in for its external producers.
@@ -368,7 +374,8 @@ class BestEndToEndTests(unittest.TestCase):
         target_state = state.one_target(self.root, "s2", "u-cdef", 4, 4)
         self.assertEqual(
             "review needed (frontier from seed)",
-            state._review_needed(state.Inputs(target_state)).message)
+            self._require_state(
+                state._review_needed(state.Inputs(target_state))).message)
 
 
 if __name__ == "__main__":

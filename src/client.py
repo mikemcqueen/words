@@ -265,7 +265,10 @@ def adjust_thinking(payload: dict, args) -> None:
 
     #print(f"thinking: {thinking}")
     
-    name = getattr(args, "model_id", None).lower()
+    model_id = getattr(args, "model_id", None)
+    if model_id is None:
+        return
+    name = model_id.lower()
     if args.llamacpp:
         if name.startswith("glm") or name.startswith("qwen"):
             payload["chat_template_kwargs"] = {"enable_thinking": False}

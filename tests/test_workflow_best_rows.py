@@ -55,7 +55,8 @@ class RowTests(unittest.TestCase):
         link.symlink_to(rendered)
         return link
 
-    def _top(self, text="a,b\n", mtime=30, source="seed", marker=None) -> Path:
+    def _top(self, text="a,b\n", mtime=30, source: str | None = "seed",
+             marker=None) -> Path:
         path = self._write(self.dir / "top.segments", text, mtime)
         if source is not None:
             self._write(generation.stamp(path), f"{source}\n",
@@ -130,7 +131,14 @@ class RowTests(unittest.TestCase):
     def _state(self) -> state.State:
         return state.derive_state(self.target)
 
-    def _commands(self, result: state.State) -> dict:
+    def _require_state(self, result: state.State | None) -> state.State:
+        """Assert that the directly tested status row fired."""
+        self.assertIsNotNone(result)
+        assert result is not None
+        return result
+
+    def _commands(self, result: state.State | None) -> dict:
+        result = self._require_state(result)
         return {choice.label: choice.command for choice in result.choices}
 
     # ------------------------------------------------------------------ rows
@@ -165,7 +173,7 @@ class RowTests(unittest.TestCase):
         self._seed()
 
         # Nothing has been searched: the one bootstrap gate.
-        result = state._no_frontier(self._inputs())
+        result = self._require_state(state._no_frontier(self._inputs()))
         self.assertEqual("no search results yet", result.message)
         self.assertEqual(
             {"next": "wf best prepare s2 -u cdef -g 4 --source seed"},
@@ -176,13 +184,13 @@ class RowTests(unittest.TestCase):
         (self.dir / "dfs.seed").symlink_to(missing)
         self.assertEqual(
             f"no search results yet (dangling symlink: {missing})",
-            state._no_frontier(self._inputs()).message)
+            self._require_state(state._no_frontier(self._inputs())).message)
         (self.dir / "dfs.seed").unlink()
 
         for source in ("seed", "best"):
             with self.subTest(source=source):
                 self._dfs(source)
-                result = state._no_frontier(self._inputs())
+                result = self._require_state(state._no_frontier(self._inputs()))
                 self.assertEqual("top.segments missing", result.message)
                 self.assertEqual(
                     {"next": f"wf best gen s2 -u cdef -g 4 top.segments "
@@ -192,7 +200,7 @@ class RowTests(unittest.TestCase):
 
         self._dfs("seed")
         self._dfs("best")
-        result = state._no_frontier(self._inputs())
+        result = self._require_state(state._no_frontier(self._inputs()))
         self.assertEqual("top.segments missing", result.message)
         self.assertEqual(
             {"seed": "wf best gen s2 -u cdef -g 4 top.segments --source seed",
@@ -206,14 +214,15 @@ class RowTests(unittest.TestCase):
         self._steady()
         # A frontier written after the last archived round is unreviewed.
         os.utime(self.dir / "top.segments", (45, 45))
-        result = state._review_needed(self._inputs())
+        result = self._require_state(state._review_needed(self._inputs()))
         self.assertEqual("review needed (frontier from seed)", result.message)
         self.assertEqual({"next": "wf best review s2 -u cdef -g 4"},
                          self._commands(result))
 
         self._top(mtime=45, source="best", marker=70)
         self.assertEqual("review needed (frontier from best)",
-                         state._review_needed(self._inputs()).message)
+                         self._require_state(
+                             state._review_needed(self._inputs())).message)
 
     def test_a_dictionary_newer_than_the_frontier_skips_review(self):
         self._steady()
@@ -238,7 +247,7 @@ class RowTests(unittest.TestCase):
         inputs = self._inputs()
         self.assertIsNone(state._review_queued(inputs))
         self.assertIsNone(state._review_evaluating(inputs))
-        result = state._review_needed(inputs)
+        result = self._require_state(state._review_needed(inputs))
         self.assertEqual("review needed (frontier from seed)", result.message)
         self.assertEqual(
             {"next": "wf best complete s2 -u cdef -g 4"},
@@ -265,7 +274,7 @@ class RowTests(unittest.TestCase):
         # Two standing pairs, neither spellable from the `ab` bag.
         self._classified("yes", text="x,y\nz,w\n")
 
-        result = state._no_usable_pairs(self._inputs())
+        result = self._require_state(state._no_usable_pairs(self._inputs()))
         self.assertEqual("no allowed bonus pair fits this target's letters",
                          result.message)
         self.assertEqual(
@@ -286,7 +295,7 @@ class RowTests(unittest.TestCase):
         # A reseed joins it only when the seed search is actually behind, and
         # a refine never does: dfs.best refuses a set this bag cannot spell.
         self._classified("no", 90)
-        result = state._no_usable_pairs(self._inputs())
+        result = self._require_state(state._no_usable_pairs(self._inputs()))
         self.assertEqual(
             ["widen", "reseed"], [choice.label for choice in result.choices])
 
@@ -299,7 +308,8 @@ class RowTests(unittest.TestCase):
         self._steady()
         # A finished seed search the frontier was never generated from.
         os.utime(self.results / "dfs.seed.out", (80, 80))
-        result = state._top_segments_behind_dfs(self._inputs())
+        result = self._require_state(
+            state._top_segments_behind_dfs(self._inputs()))
         self.assertEqual("dfs.seed generated after top.segments",
                          result.message)
         self.assertEqual(
@@ -312,7 +322,8 @@ class RowTests(unittest.TestCase):
 
         self._seed(mtime=10)
         os.utime(self.results / "dfs.best.out", (80, 80))
-        result = state._top_segments_behind_dfs(self._inputs())
+        result = self._require_state(
+            state._top_segments_behind_dfs(self._inputs()))
         self.assertEqual("dfs.seed and dfs.best generated after top.segments",
                          result.message)
         self.assertEqual(
@@ -327,7 +338,7 @@ class RowTests(unittest.TestCase):
         # Completing a round folds new verdicts into the hard-NO set, which
         # puts both searches behind at once -- the ordinary steady state.
         self._classified("no", 90)
-        result = state._next_search(self._inputs())
+        result = self._require_state(state._next_search(self._inputs()))
         self.assertEqual(
             "dfs.seed out of date (hard-NO set changed); "
             "dfs.best out of date (hard-NO set changed)", result.message)
@@ -339,7 +350,7 @@ class RowTests(unittest.TestCase):
         # An absent DFS file reads as missing rather than as out of date.
         self._classified("no", 10)
         (self.dir / "dfs.best").unlink()
-        result = state._next_search(self._inputs())
+        result = self._require_state(state._next_search(self._inputs()))
         self.assertEqual("dfs.best missing", result.message)
         self.assertEqual(["refine"],
                          [choice.label for choice in result.choices])
@@ -352,7 +363,7 @@ class RowTests(unittest.TestCase):
     def test_the_frontier_falls_behind_a_classify_until_a_regen(self):
         self._steady()
         self._classified("yes", 90, text="a,b\n")
-        result = state._frontier_outdated(self._inputs())
+        result = self._require_state(state._frontier_outdated(self._inputs()))
         self.assertEqual(
             "top.segments behind its inputs "
             "(confirmed-YES set changed)", result.message)
@@ -366,7 +377,8 @@ class RowTests(unittest.TestCase):
         self.assertEqual(
             "top.segments behind its inputs (confirmed-YES set "
             "changed, hard-NO set changed)",
-            state._frontier_outdated(self._inputs()).message)
+            self._require_state(
+                state._frontier_outdated(self._inputs())).message)
 
         # The marker is what clears it, and a byte-identical regeneration
         # still advances the marker -- which is what terminates the loop the
@@ -384,7 +396,7 @@ class RowTests(unittest.TestCase):
         """
         self._steady()
         self._dictionary(90)
-        result = state._frontier_outdated(self._inputs())
+        result = self._require_state(state._frontier_outdated(self._inputs()))
         self.assertEqual(
             "top.segments behind its inputs (dictionary changed)",
             result.message)
@@ -439,7 +451,7 @@ class RowTests(unittest.TestCase):
         record = self._write(
             config.removals(self.root) / "junk.txt.removed.1", "junk\n", 90)
         os.utime(record.parent, (90, 90))
-        result = self._stale()
+        result = self._require_state(self._stale())
         self.assertEqual("dictionary behind its records (removals changed)",
                          result.message)
         self.assertEqual({"next": "wf gen dict"}, self._commands(result))
@@ -459,7 +471,7 @@ class RowTests(unittest.TestCase):
         self._write(record, "", 90)
         os.utime(record.parent, (10, 10))
         self.assertEqual("dictionary behind its records (removals changed)",
-                         self._stale().message)
+                         self._require_state(self._stale()).message)
 
     def test_a_replaced_base_is_the_likeliest_real_trigger(self):
         """The base may be a symlink whose target the operator replaces."""
@@ -467,7 +479,7 @@ class RowTests(unittest.TestCase):
         self._write(config.base_dictionary(self.root), "other\n", 90)
         self.assertEqual(
             "dictionary behind its records (base dictionary changed)",
-            self._stale().message)
+            self._require_state(self._stale()).message)
 
     def test_a_reviewed_input_dates_the_derived_done_set(self):
         self._steady()
@@ -477,7 +489,7 @@ class RowTests(unittest.TestCase):
         os.utime(record.parent, (90, 90))
         self.assertEqual(
             "dictionary behind its records (reviewed inputs changed)",
-            self._stale().message)
+            self._require_state(self._stale()).message)
 
     def test_a_missing_reviewed_done_set_is_a_repairable_state(self):
         """Not a required input: its absence is what this row reports."""
@@ -485,7 +497,7 @@ class RowTests(unittest.TestCase):
         config.reviewed_words(self.root).unlink()
         self.assertEqual(
             "dictionary behind its records (reviewed words missing)",
-            self._stale().message)
+            self._require_state(self._stale()).message)
 
         # Present and not a regular file is a broken tree either way.
         config.reviewed_words(self.root).mkdir()
@@ -539,7 +551,8 @@ class RowTests(unittest.TestCase):
         self._archived(mtime=40)
         self._write(config.dictionary(self.root), "word\n", 55)
         self.assertEqual("review needed (frontier from seed)",
-                         state._review_needed(self._inputs()).message)
+                         self._require_state(
+                             state._review_needed(self._inputs())).message)
 
         # A removal after the rebuild does make the frontier obsolete, and the
         # row that offers the regeneration is the one that wins.
@@ -734,7 +747,7 @@ class RowTests(unittest.TestCase):
         # The frontier is obsolete rather than unreviewed, so the review row
         # stands down and the regeneration is what is offered.
         self.assertIsNone(state._review_needed(self._inputs()))
-        result = state._frontier_outdated(self._inputs())
+        result = self._require_state(state._frontier_outdated(self._inputs()))
         self.assertEqual(
             "top.segments behind its inputs (target-NO set changed)",
             result.message)
@@ -801,7 +814,7 @@ class RowTests(unittest.TestCase):
         # With no local file the remedy is not named at all.
         (self.dir / "no.pairs").unlink()
         self._classified("yes", text="x,y\n")
-        result = state._no_usable_pairs(self._inputs())
+        result = self._require_state(state._no_usable_pairs(self._inputs()))
         self.assertEqual(
             (f"or retract NO verdicts in {config.classified(self.root, 'no')}",
              "   and run: wf best review s2 -u cdef -g 4",

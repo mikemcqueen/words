@@ -34,7 +34,7 @@ class FakeNotes:
     def __init__(self):
         self.fetched = []
         self.parsed = []
-        self.fail_after = None
+        self.fail_after: int | None = None
 
     def get(self, argv, **kwargs):
         title = argv[argv.index("--get") + 1]

@@ -156,9 +156,10 @@ class EvalWords(command.Action):
         # recomputing. That retained file is what `bundle.evaluated()` and
         # `notes.make` go on to use, so it is also what the part-count preflight
         # and the reported counts have to describe -- resolve it before either.
-        retained = ctx.bundle_dir / f"{bundle_name}.filtered"
-        if retained.exists():
-            fs.raise_if_not_file(retained)
+        retained_path = ctx.bundle_dir / f"{bundle_name}.filtered"
+        if retained_path.exists():
+            fs.raise_if_not_file(retained_path)
+            retained: Path | None = retained_path
         else:
             retained = None
 
