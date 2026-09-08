@@ -110,16 +110,19 @@ detection are outside this plan.
 `comm -23` against the base:
 
 ```python
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     aggregate = setops.merge(generations, Path(tmp) / "removed")
-    setops.diff(base, aggregate, derived, stable_mtime=True)
+    prepared = setops.stage_diff(
+        base, aggregate, derived, Path(tmp) / "words.filtered",
+        stable_mtime=True)
+    setops.place(prepared)
 ```
 
-Both through `workflow/setops.py`, never as a raw shell redirect: the module
-runs every operation under `LC_ALL=C` (`setops.py:5-10`, without which `comm`
-yields a silently wrong difference rather than an error), writes aside and
-renames so the derived file is never observed half-written, and does the
-content compare `stable_mtime` needs.
+All operations go through `workflow/setops.py`, never a raw shell redirect: the
+module runs under `LC_ALL=C` (`setops.py:5-10`, without which `comm` yields a
+silently wrong difference rather than an error), prepares output under `/tmp`,
+renames it directly into place, and performs the content
+comparison `stable_mtime` needs.
 
 `generations` is the directory read in sorted order, filtered by the ordinal
 pattern below -- **not** a bare glob. The retraction path is "open a generation
@@ -158,12 +161,11 @@ bytes. `setops._place` already does exactly
 this and says so (`setops.py:31-37`).
 
 **Prepared batch placement.** Dictionary commands prepare every output before
-moving any of them into place. The staging directory is private and lives
-under `dict/`, not in the system temporary directory, so every final move stays
-on the destination filesystem. A prepared placement records its staged path,
-destination, replacement policy, and whether `stable_mtime` found changed
-content. Preparing the batch runs every `sort`, `comm`, write, and content
-comparison. It does not rename a final destination.
+moving any of them into place. Disposable work lives in
+`TemporaryDirectory(dir="/tmp")`, never in `.wf/dict/.staging.*`. A prepared placement
+records its temporary path, destination, replacement policy, and whether
+`stable_mtime` found changed content. Preparing the batch runs every `sort`,
+`comm`, write, and content comparison. It does not rename a final destination.
 
 One preflight then checks the complete batch. Each new archive destination must
 have no directory entry of any type; an archive is never overwritten. Each
@@ -174,15 +176,16 @@ at this point and omitted from the commit, preserving their content mtimes. The
 replaceable marker destination has the same contract. Its temporary file is
 written after the other staged files so its mtime dates the completed
 preparation, and it is always included even when both derived files are
-unchanged. Normal exceptions remove the private staging directory; a staging
-directory left by process or system failure matches neither archive input
-pattern and is ignored.
+unchanged. Normal exceptions remove the `/tmp` directory; process or system
+failure may leave cleanup to the host's temporary-file policy.
 
-The batch commits with same-filesystem atomic renames in this order: the
-removal archive, the reviewed-input archive, `done/reviewed.words`,
-`words.filtered`, and `.words.filtered.gen`. `wf gen dict` uses the same path
-without the two archive placements. The generic `stamp`, `generated`, and
-`mark_generated` helpers move from `workflow/best/state.py` to
+The batch passes each prepared file directly to `setops.place`, which renames
+it to its destination without first copying it beside that destination. The
+commit order is the removal archive, the reviewed-input archive,
+`done/reviewed.words`, `words.filtered`, and `.words.filtered.gen`. `wf gen
+dict` uses the same path without the two archive placements. No filesystem
+identity check, fallback, or intervening copy is required. The generic `stamp`,
+`generated`, and `mark_generated` helpers move from `workflow/best/state.py` to
 `workflow/generation.py`. BEST imports the shared API, and the dictionary module
 uses `stamp` to include the marker in its prepared batch. Without the marker the
 staleness row of §5 is a permanently stuck row: submit a
@@ -193,13 +196,13 @@ same split `top.segments` already uses -- the artifact's own mtime answers
 "did the set change?" for readers downstream, the marker answers "has this been
 generated since its input moved?"
 
-The preparation and preflight move validation, derivation, cross-filesystem,
-and destination-shape failures out of the commit interval. They do not make
-multiple renames across `removed/` and `done/in/` atomic. An unexpected rename
-failure or interruption can still stop that short sequence; automatic orphan
-detection, recovery, and a transaction or round-directory format are outside
-this milestone. A crash between placing `words.filtered` and its marker leaves
-the marker behind, so the staleness row offers the rebuild again.
+The preparation and preflight move validation, derivation, and expected
+destination-shape failures out of the commit interval. They do not make
+multiple renames across `removed/` and `done/in/` atomic. A rename failure or
+interruption can still stop that short sequence; automatic orphan detection,
+recovery, and a transaction or round-directory format are outside this
+milestone. A crash between placing `words.filtered` and its marker leaves the
+marker behind, so the staleness row offers the rebuild again.
 
 **Dictionary paths.** The dictionary is root-global, not a property of one BEST
 target, so `config` is the single owner of every path under it. It defines the
@@ -325,11 +328,11 @@ The verdict-recording path. Mirrors `workflow/classify.py` in behavior:
 3. Allocate N as one sequence across both archive namespaces: take one more
    than the maximum matching `.removed.N` in `removed/` or `.reviewed.N` in
    `done/in/`, reusing the directory enumerations required for prospective
-   derivation. Prepare two independent sorted-unique archive files under the
-   private `dict/` staging directory. They have the same content for this direct
-   command but must not be hard links, because the removal record is
-   hand-editable independently of the reviewed-input archive.
-4. In that staging directory, run the complete prospective derivation with the
+   derivation. Prepare two independent sorted-unique archive files in
+   `TemporaryDirectory(dir="/tmp")`. They have the same content for this direct command
+   but must not be hard links, because the removal record is hand-editable
+   independently of the reviewed-input archive.
+4. In that temporary directory, run the complete prospective derivation with the
    existing selected records plus the prepared sets: the prior and prospective
    removal unions, the prospective reviewed union, and `words.big` minus the
    prospective removal union. This is the same derivation `wf gen dict` runs,
@@ -341,8 +344,9 @@ The verdict-recording path. Mirrors `workflow/classify.py` in behavior:
    Preflight every destination as one batch: archives must be absent, while
    replaceable outputs must satisfy their normal file contracts. Do not rerun
    a prospective set operation after this point.
-6. Commit the prepared placements in the order specified in §1. Every move is
-   an atomic rename on the `dict/` filesystem.
+6. Commit the prepared placements in the order specified in §1 by passing each
+   directly to `setops.place`. It renames the `/tmp` file to its final
+   destination without an intervening copy or filesystem identity check.
 
 The order is validate, allocate, prepare everything, preflight everything,
 archive, publish derived outputs, mark. An ordinary failure therefore leaves no
@@ -449,18 +453,10 @@ stays the noun view of the same tree.
 **Reserved.** `wf submit words`, `wf eval words`, `wf complete words` are the
 review cycle. The scope string is `words` while the layout part is `dict`, so
 the action's part name has to come apart from the key it is registered under.
-That is one attribute, not a lookup table -- `submit.py:37` and `eval.py:46`
-pass the phase string straight into `config.path` -- but the same string is also
-interpolated into prose (`submit.py:28` renders `{phase}/queued`), so the two
-uses have to be split or `wf submit words` will advertise `dict/queued`.
-Summaries and errors should say `words`; path strings should say `dict/`,
-because a path is a real thing an operator will `cd` into and must not be
-aliased. The layout already anticipates the mapping: `config.py:10` carries
-`# TODO: "alias": "phase1"`. Landing `words -> dict` there rather than as a
-bespoke attribute gives `wf show`, dispatch and the actions one mapping to
-read, and gives `dispatch.registry_key`'s partial-match TODO (`dispatch.py:15`)
-a defined precedence -- an alias is an exact key, so it resolves before any
-prefix match and adding one cannot change what an existing prefix means.
+The dispatcher consumes `words` before invoking an action configured with
+canonical layout scope `dict`; `config` never receives `words` and gains no
+alias. Summaries and errors say `words`, while path strings and `wf show` use
+only `dict/`, because a path is a real thing an operator will `cd` into.
 
 **Notes, when the cycle lands.** The words review uses `--checkbox` (one box per
 line) where p2 uses `--two-checkboxes`, so `notes.create`'s hardcoded option
@@ -469,11 +465,12 @@ flag the way `p2_extract` does (`p2_extract.py:64-71`). The polarity inverts: a
 **checked** word is good and is what survives; the **unchecked** words are the
 removals, read with `--type NONE`. This deliberately re-adopts what p2 walked away from -- `p2_close.py:5-8` records
 that a NO is now "a reviewer's explicit verdict rather than the absence of a
-YES" -- so `complete words` must report the ratio and refuse an implausible one
-without a force flag: an abandoned note otherwise removes every word below where
-the reviewer stopped. What makes it recoverable rather than merely defensible is
-§4: the round lands as one generation file, that file is hand-editable, and
-`wf gen dict` is idempotent.
+YES". The detailed lifecycle and final validation policy live in
+`plans/dict-review-cycle.md`: checked and unchecked identities must exactly
+partition the evaluated input, but there is no numerical removal-ratio guard or
+force override for verdict proportions. Recovery still follows §4: the round
+lands as one generation file, that file is hand-editable, and `wf gen dict` is
+idempotent.
 
 ### 4. What is recorded: the generations and the done-set
 
@@ -791,7 +788,7 @@ drop out of `TARGET/top.solo-words` on their own.
 | `workflow/generation.py` (new) | shared `stamp`, `generated`, and `mark_generated` helpers moved without changing marker names or semantics |
 | `workflow/best/state.py` | remove `Target.dictionary`; resolve dictionary paths through `config`; add G0 required-file guards and `requires=` metadata for rows that read them; `_dictionary_stale` + `ROWS` entry at G7, `_next_search` renumbered to G8; remove `_frontier_outdated`'s hedge; use shared generation-clock helpers; `_review_needed` dates against `generation.generated(top_segments)`; both DFS freshness predicates date against the content mtime of `words.filtered` and report `dictionary changed` |
 | `workflow/config.py` | `dict` moves from `_BEST["parts"]` to `CONFIG_LAYOUT["parts"]` with `"content": True`, a `removed` part and a `done/in` part; dictionary-name constants; `dictionary()`, `base_dictionary()`, `removals()`, `reviewed_inputs()`, and `reviewed_words()` accessors |
-| `workflow/dictionary.py` (new) | require the base; allocate across both archive namespaces; prepare every archive, derived output, and marker under `dict/`; preflight and commit the complete placement batch in order; preserve derived content mtimes; derive the reviewed-input aggregate; strip count prefixes and check word shape; translate set-operation failures into concise `ValueError` diagnostics |
+| `workflow/dictionary.py` (new) | require the base; allocate across both archive namespaces; prepare every archive, derived output, and marker under `/tmp`; preflight and commit the complete placement batch through direct `setops.place` renames; create no `dict/.staging.*`; preserve derived content mtimes; derive the reviewed-input aggregate; strip count prefixes and check word shape; translate set-operation failures into concise `ValueError` diagnostics |
 | `workflow/wf.py` | `remove` and `gen` root verbs |
 | `workflow/setops.py` | internal prepared-placement support separating writes and comparisons from final renames; `Placement(path, replaced)` plus `merge_report` and `diff_report`; existing operations keep their immediate behavior and return `Path` |
 | `workflow/best/generate.py` | resolve the dictionary through `config` in `_dfs_inputs` and `gen_top_segments`, requiring it before invoking either tool |
@@ -801,7 +798,7 @@ drop out of `TARGET/top.solo-words` on their own.
 | `tests/test_workflow_best_rows.py` | same fixture updates (~80, ~397); rename `test_a_dictionary_edit_dates_the_frontier_like_a_classify` to `test_a_dictionary_edit_makes_the_frontier_outdated`, rewrite its obsolete docstring, and add `_dictionary_stale` tests |
 | `tests/test_workflow_best_e2e.py` | same (~76); a `remove words` -> `gen dfs` round trip asserting the `--dict` argv |
 | `tests/test_workflow_generation.py` (new) | shared marker-path, legacy fallback, marker-content, and byte-identical remark tests moved from BEST state coverage |
-| `tests/test_workflow_dictionary.py` (new) | §Tests |
+| `tests/test_workflow_dictionary.py` (new) | §Tests, including `/tmp` preparation, direct placement, and absence of `dict/.staging.*` |
 
 ## Tests
 
@@ -887,6 +884,10 @@ drop out of `TARGET/top.solo-words` on their own.
 - An unsorted base and an injected prospective `sort` or `comm` failure occur
   before archival: neither creates a removal generation or reviewed-input
   record, changes a derived output, nor advances the marker.
+- `wf remove words` and `wf gen dict` prepare disposable output under `/tmp`,
+  rename prepared files directly through `setops.place`,
+  and create no `.wf/dict/.staging.*` directory. Cross-filesystem behavior is
+  not tested or handled.
 - The count line renders `(new)` on the first build,
   `(unchanged)` on a submission of words absent from the base, and the arrow
   when the count moved -- and the arrow, not `(unchanged)`, for a rebuild that
@@ -963,6 +964,8 @@ no migration-specific behavior or compatibility path.
   reads a word list, not a note.
 - `done/out/`. Any enex or other artifact produced by the future review cycle
   belongs to that cycle's plan; §3's command produces no such archive.
+- Cross-filesystem validation, copying, or recovery for direct renames from
+  `/tmp`.
 - Filtering submitted p1 pairs against the dictionary. The move to the root is
   what makes it possible; nothing here does it.
 - `nutrimatic/nutrimatic/dict_remove.py` is a one-off hack: it edits a
@@ -990,8 +993,9 @@ no migration-specific behavior or compatibility path.
   direct manual edits use a single-process operator model in this milestone.
 - Atomic commit or automatic recovery of a round across the two archive
   directories. Full-batch preparation and preflight narrow the remaining
-  failure window to interruption during the final rename sequence; eliminating
-  it requires a transaction marker or a different round-directory layout.
+  failure window to failure or interruption during the final rename sequence;
+  eliminating it requires a transaction marker or a different round-directory
+  layout.
 - Case or diacritic normalization. `words.big` is one lowercase word per line;
   §3 refuses anything that is not `[a-z]+` rather than folding it.
 

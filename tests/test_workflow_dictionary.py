@@ -414,7 +414,7 @@ class DictionaryTests(unittest.TestCase):
         self._remove("junk.txt", "banana\n")
         self.assertEqual(
             [], [path for path in config.path(self.root, ["dict"]).iterdir()
-                 if path.name.startswith(dictionary.STAGING_PREFIX)])
+                 if path.name.startswith(".staging.")])
 
     # ---------------------------------------------------------- the report
 

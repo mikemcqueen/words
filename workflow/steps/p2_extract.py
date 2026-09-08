@@ -95,8 +95,9 @@ def _diagnostic(ctx, both: list[str]) -> str:
     return (f"{len(both):,} pair(s) marked both YES and NO in "
             f"{ctx.bundle_name} -- a row cannot be both:\n"
             f"  {shown}{more}\n"
-            f"Correct those rows in the note and re-run "
-            f"`wf complete p2 {ctx.bundle_name}`.")
+            f"Correct those rows in the checkbox notes in the note application, "
+            f"then run `wf -f complete p2 {ctx.bundle_name}` to download and "
+            f"validate those edits.")
 
 
 def run_step(ctx) -> None:

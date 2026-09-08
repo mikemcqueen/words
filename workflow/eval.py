@@ -12,41 +12,13 @@
 # what is left here is what opening a bundle means.
 
 import argparse
+import tempfile
 
 from pathlib import Path
 
 from workflow import (
-    bundle, command, config, context, fs, log, names, notes, setops, usage,
+    bundle, command, config, context, dictionary, fs, log, notes, setops, usage,
 )
-
-
-def _resolve_queued(root: Path, phase: str, positional: str) -> tuple[str, str]:
-    """Read eval's positional, which may name either a bundle or a queued file.
-
-    Returns the bundle name -- the eval directory, and the prefix of every
-    artifact derived in it -- along with the selector that finds the queued
-    artifact to open.
-
-    Exact match first. A positional that is the name of a file in the phase's
-    queue is taken as that file, and the bundle name is what is left when the
-    queue suffix comes off. Everything else is a bundle name, found by prefix,
-    which stays the form to reach for.
-
-    The exact form exists because a prefix can be ambiguous by construction:
-    p2's queue admits two shapes, so `s6.90.10.pairs` submitted and
-    `s6.90.10.p1.yes` advanced can share the slot and the prefix `s6.90.10`
-    names both. Naming the file is how the user says which -- and it costs
-    nothing, because the bundle name is still derived from the contract rather
-    than from whatever the user typed.
-    """
-    # Only a bare filename can name something in the slot; a path with
-    # separators in it is not a queued name and falls through to the prefix
-    # form, which reports it as the miss it is.
-    if Path(positional).name == positional:
-        queued = config.path(root, [phase, "queued"]) / positional
-        if queued.is_file():
-            return names.queue_stem(phase, positional), f"name:{positional}"
-    return positional, f"stem:{positional}"
 
 
 class Eval(command.Action):
@@ -80,16 +52,18 @@ class Eval(command.Action):
         rest = self.parse(opts, argv)
         if not rest:
             return usage.missing_argument(self.format_help(command))
+        if len(rest) > 1:
+            return usage.invalid_argument(rest[1], self.format_help(command))
 
         self.check(opts)
         if prepared is not None:
             fs.raise_if_not_readable(prepared)
 
-        bundle_name, selector = _resolve_queued(opts.dir, self.phase, rest[0])
+        bundle_name, selected = bundle.resolve_queued(opts.dir, self.phase,
+                                                      rest[0])
         ctx = context.Context(root=opts.dir, phase=self.phase,
-                              force=opts.force, bundle_name=bundle_name,
-                              selector=selector)
-        pairs = bundle.begin(ctx)
+                              force=opts.force, bundle_name=bundle_name)
+        pairs = bundle.begin(ctx, selected)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
         if prepared is not None:
             pairs = setops.merge([prepared], bundle.filtered(pairs))
@@ -155,3 +129,85 @@ class EvalNo(command.Action):
 P1 = Eval("p1", "p1      — evaluate pairs")
 P2 = EvalYes()
 P3 = EvalNo()
+
+
+class EvalWords(command.Action):
+    def __init__(self):
+        super().__init__(summary="words   — evaluate dictionary words for manual review",
+                         positional="NAME")
+
+    def run(self, command_text, opts, argv) -> int:
+        if not argv:
+            return usage.missing_argument(self.format_help(command_text))
+        if len(argv) > 1:
+            return usage.invalid_argument(argv[1],
+                                          self.format_help(command_text))
+
+        bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", argv[0])
+        reviewed = config.reviewed_words(opts.dir)
+        if not reviewed.is_file():
+            raise ValueError(f"dictionary reviewed words not generated: {reviewed}; "
+                             f"run `wf gen dict`")
+        ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
+                              bundle_name=bundle_name)
+
+        # An interrupted eval leaves its prepared derivative in the bundle with
+        # the source still queued, and the retry finishes the move rather than
+        # recomputing. That retained file is what `bundle.evaluated()` and
+        # `notes.make` go on to use, so it is also what the part-count preflight
+        # and the reported counts have to describe -- resolve it before either.
+        retained = ctx.bundle_dir / f"{bundle_name}.filtered"
+        if retained.exists():
+            fs.raise_if_not_file(retained)
+        else:
+            retained = None
+
+        prepared = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", prefix="wf-eval-words-", delete=False) as tmp:
+                prepared = Path(tmp.name)
+            result = dictionary.filter_reviewed_words(selected, reviewed,
+                                                      prepared)
+            if result.surviving_words == 0:
+                raise ValueError(f"no unreviewed words in {selected}")
+            if retained is None:
+                presentation = prepared if result.filtered else selected
+                surviving, filtering = result.surviving_words, result.filtered
+            else:
+                surviving, filtering = len(dictionary.read_words(retained)), True
+                if surviving == 0:
+                    raise ValueError(f"no unreviewed words in {retained}")
+                presentation = retained
+            logical_presentation = (Path(f"{bundle_name}.filtered")
+                                    if filtering else selected)
+            notes.part_paths(Path("."), logical_presentation,
+                             notes.part_count(presentation))
+
+            ctx.bundle_dir.mkdir(parents=True, exist_ok=True)
+            if retained is not None:
+                log.info(f"reusing prepared {retained.name} from an "
+                         f"interrupted eval")
+                prepared.unlink(missing_ok=True)
+                prepared = None
+            elif result.filtered:
+                setops.place(setops.Staged(
+                    prepared, ctx.bundle_dir / f"{bundle_name}.filtered", True))
+                prepared = None
+            source = bundle.begin(ctx, selected)
+            presentation = bundle.evaluated(ctx)
+            notes.make(presentation, opts, notes.ONE_CHECKBOX,
+                       f"wf notes words {bundle_name}")
+        finally:
+            if prepared is not None:
+                prepared.unlink(missing_ok=True)
+
+        log.info(f"{result.source_words} source words")
+        if filtering:
+            log.info(f"{surviving} filtered words")
+        log.success(f"{surviving} words ready for manual review: "
+                    f"{presentation.name}")
+        return 0
+
+
+WORDS = EvalWords()

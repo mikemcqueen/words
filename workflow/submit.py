@@ -8,9 +8,12 @@
 # three: that is the phase's queue contract, and it lives in names.py where
 # `eval` reads the same table.
 
+import argparse
+import tempfile
+
 from pathlib import Path
 
-from workflow import command, config, fs, log, names, setops
+from workflow import command, config, dictionary, fs, log, names, setops, usage
 
 
 def _resolve_input(argv) -> Path:
@@ -48,3 +51,59 @@ class Submit(command.Action):
 
 P1 = Submit(phase="p1", label="pairs",           positional="PAIRS-FILE")
 P2 = Submit(phase="p2", label="review-candidate", positional="PAIRS-FILE")
+
+
+class SubmitWords(command.Action):
+    """Queue ranked dictionary text without changing a byte."""
+
+    def __init__(self):
+        super().__init__(summary="words   — submit dictionary words for review",
+                         positional="FILE")
+
+    def parser(self):
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--as", dest="as_name", metavar="NAME",
+                            help="queue and archive name")
+        return parser
+
+    def run(self, command_text, opts, argv) -> int:
+        rest = self.parse(opts, argv)
+        if not rest:
+            return usage.missing_argument(self.format_help(command_text))
+        if len(rest) > 1:
+            return usage.invalid_argument(rest[1],
+                                          self.format_help(command_text))
+
+        src = Path(rest[0])
+        if src.is_symlink():
+            raise ValueError(f"symlink input not allowed: {src}")
+        fs.raise_if_not_readable(src)
+
+        chosen = opts.as_name if opts.as_name is not None else src.name
+        names.check_name(chosen, "submitted filename")
+        dictionary.archive_name(chosen)
+        dst = config.path(opts.dir, ["dict", "queued"]) / chosen
+        if opts.force:
+            fs.optional_file(dst)
+        elif dst.exists() or dst.is_symlink():
+            raise fs.file_already_exists_error(dst)
+
+        prepared = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    prefix="wf-submit-words-", delete=False) as tmp:
+                prepared = Path(tmp.name)
+                with src.open("rb") as source:
+                    while block := source.read(1024 * 1024):
+                        tmp.write(block)
+            setops.place(setops.Staged(prepared, dst, replaced=True))
+            prepared = None
+        finally:
+            if prepared is not None:
+                prepared.unlink(missing_ok=True)
+
+        log.success(f"Submitted words {dst.name}")
+        return 0
+
+
+WORDS = SubmitWords()
