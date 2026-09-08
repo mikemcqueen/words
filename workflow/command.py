@@ -21,6 +21,8 @@
 # submit_yes.py differed in four tokens. An object takes arguments, so the
 # variants become instances and the four tokens become a table.
 
+import argparse
+
 from workflow import dispatch, usage
 
 
@@ -31,7 +33,7 @@ class Command:
     def help_summary(self, name) -> str:
         return self.summary
 
-    def run(self, command, opts, argv) -> int:
+    def run(self, command, /, opts, argv) -> int:
         raise NotImplementedError
 
     def show_help(self, command, opts, argv) -> int:
@@ -64,7 +66,7 @@ class Action(Command):
         self.positional = positional
         self.positional_help = positional_help
 
-    def parser(self):
+    def parser(self) -> argparse.ArgumentParser | None:
         """An argparse parser for this command's own flags, or None."""
         return None
 

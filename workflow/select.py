@@ -16,7 +16,8 @@ from workflow import config, fs
 ALL = "all"
 
 
-def select(root: Path, slot: list[str], selector: str, glob="*") -> list[Path]:
+def select(root: Path, slot: list[str], selector: str,
+           glob: str | tuple[str, ...] = "*") -> list[Path]:
     """Resolve selector against root/<slot>, returning at least one file.
 
         all         every file in the slot matching glob, sorted

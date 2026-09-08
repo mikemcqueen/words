@@ -482,7 +482,7 @@ def _review_round(target: Target, path: Path, kind: str,
 
 def _rounds_in(directory: Path, target: Target, *, files: bool) \
         -> list[ReviewRound]:
-    rounds = []
+    rounds: list[ReviewRound] = []
     for kind in REVIEW_KINDS:
         prefix = target.review_prefix(kind)
         if files:

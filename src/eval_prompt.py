@@ -223,7 +223,7 @@ def eval_prompt_obj(prompt_obj: Dict, pairs: List[Dict], args) -> Dict:
         "model": args.model_id,
         "max_concurrent": args.max_concurrent,
         "seconds_elapsed": wall_elapsed,
-        "inference_params": # TODO client.add_inference_params? get_inference_params(args),
+        "inference_params": None,  # TODO: record shared inference parameters.
         "results": details
     }
 

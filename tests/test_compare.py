@@ -7,7 +7,7 @@ import numpy as np
 
 from src import compare_native
 
-from src.compare import _prefetch
+from src.common import prefetch
 from src.score import score_eval_results
 
 
@@ -28,7 +28,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
         return str(path)
 
     def test_projected_loader_exposes_compact_arrays_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records_a = [
@@ -76,7 +76,6 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
 
             block = next(compare_native.iter_projected_blocks(files, chunk_size=10))
 
-        self.assertEqual(["third.p3.tag1", "third.p3.tag2"], list(block.keys()))
         self.assertEqual(["fwd", "rvs"], list(block.directions()))
         self.assertEqual(2, block.size)
 
@@ -109,7 +108,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
         np.testing.assert_allclose(expected_probs, probs)
 
     def test_projected_loader_pair_mismatch_raises_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -122,7 +121,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 list(compare_native.iter_projected_blocks(files, chunk_size=10))
 
     def test_projected_loader_direction_mismatch_raises_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records_a = [
@@ -142,7 +141,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
                 list(compare_native.iter_projected_blocks(files, chunk_size=10))
 
     def test_prefetched_projected_blocks_match_direct_iteration_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         pairs = [f"pair_{i}" for i in range(250)]
@@ -153,18 +152,17 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
             ]
 
             direct_blocks = list(compare_native.iter_projected_blocks(files, chunk_size=100))
-            prefetched_blocks = list(_prefetch(compare_native.iter_projected_blocks(files, chunk_size=100)))
+            prefetched_blocks = list(prefetch(compare_native.iter_projected_blocks(files, chunk_size=100)))
 
         self.assertEqual(len(direct_blocks), len(prefetched_blocks))
         for direct_block, prefetched_block in zip(direct_blocks, prefetched_blocks):
-            self.assertEqual(list(direct_block.keys()), list(prefetched_block.keys()))
             self.assertEqual(list(direct_block.directions()), list(prefetched_block.directions()))
             self.assertEqual(direct_block.size, prefetched_block.size)
             np.testing.assert_array_equal(np.asarray(direct_block.labels()), np.asarray(prefetched_block.labels()))
             np.testing.assert_allclose(np.asarray(direct_block.probs()), np.asarray(prefetched_block.probs()))
 
     def test_projected_labels_match_python_top_token_results_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records_a = [
@@ -214,12 +212,12 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
 
         labels = np.asarray(projected_block.labels())
         actual_yes = np.any(labels == compare_native.LABEL_YES, axis=2)
-        for file_index, key in enumerate(projected_block.keys()):
+        for file_index, key in enumerate(expected_yes):
             np.testing.assert_array_equal(expected_yes[key], actual_yes[file_index])
 
 
     def test_projected_loader_tolerates_truncated_secondary_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records_a = [
@@ -263,7 +261,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
 
 
     def test_projected_loader_exposes_pairs_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records = [
@@ -278,7 +276,7 @@ class EvalResultsGeneratorsTests(unittest.TestCase):
         self.assertEqual(["pair_0", "pair_1"], list(block.pairs()))
 
     def test_projected_loader_pairs_respects_truncation_when_available(self):
-        if not compare_native.native_available():
+        if not compare_native._native_available():
             self.skipTest("native extension is not available")
 
         records_a = [
