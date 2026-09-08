@@ -3,6 +3,7 @@
 # Item 6: `complete p2` as a recipe. The note store is faked throughout -- the
 # real one is a production side effect and `note` is installed on this machine.
 
+import json
 import subprocess
 import tempfile
 import unittest
@@ -43,7 +44,8 @@ class FakeNotes:
         if suffix not in PARTS:
             return subprocess.CompletedProcess(argv, 1, "", "note not found")
         self.fetched.append(title)
-        return subprocess.CompletedProcess(argv, 0, f"<enex>{suffix}</enex>", "")
+        return subprocess.CompletedProcess(argv, 0,
+                                           json.dumps(PARTS[suffix]), "")
 
     def route(self, argv, **kwargs):
         """p2_retrieve and p2_extract share one `subprocess` module object, so
@@ -59,8 +61,8 @@ class FakeNotes:
         self.parsed.append(argv)
         source = Path(argv[argv.index("--parse-file") + 1])
         kind = argv[argv.index("--type") + 1]
-        suffix = source.name.removesuffix(".enex")[-2:]
-        for pair in PARTS[suffix][kind]:
+        snapshot = json.loads(source.read_text())
+        for pair in snapshot[kind]:
             kwargs["stdout"].write(pair + "\n")
         return subprocess.CompletedProcess(argv, 0)
 
@@ -277,15 +279,18 @@ class P2RecipeTests(unittest.TestCase):
                 self._complete("-f")
         self._assert_nothing_was_written()
 
-    def test_correcting_the_note_and_re_running_completes(self):
-        # The point of staging: the rejected extract placed nothing, so a
-        # plain re-run redoes it whole and reads the corrected rows. No -f, no
-        # cleaning up after the failure.
+    def test_correcting_remote_notes_requires_a_forced_refetch(self):
         with self._marked_both_ways():
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "wf -f complete p2"):
                 self._complete()
 
-        code, _, stderr = self._complete()
+        # A plain retry parses the held contradictory snapshot again even
+        # though the remote fixture is now corrected.
+        with self.assertRaises(ValueError):
+            self._complete()
+        self._assert_nothing_was_written()
+
+        code, _, stderr = self._complete("-f")
         self.assertEqual(0, code, stderr)
         self.assertFalse(self.bundle_dir.exists())
         self.assertEqual(["yankee,four", "zeta,one"],
@@ -368,7 +373,9 @@ class NotesCommandTests(unittest.TestCase):
         source = self._in_flight()
         split, create = self._notes()
         split.assert_called_once_with(source)
-        create.assert_called_once_with([], None)
+        create.assert_called_once_with(
+            [], None, notes.TWO_CHECKBOXES,
+            f"wf notes p2 {self.BUNDLE_NAME}")
 
         # `eval` follows the .filtered derivative when it wrote one, and so
         # does this: the notes cover the pairs actually under review.
@@ -442,7 +449,9 @@ class NotesCommandTests(unittest.TestCase):
         self._in_flight()
         yes_pairs = fx.write_pairs(self.root / "best.pairs", ["alpha,two"])
         _, create = self._notes("--yes-pairs", str(yes_pairs))
-        create.assert_called_once_with([], yes_pairs)
+        create.assert_called_once_with(
+            [], yes_pairs, notes.TWO_CHECKBOXES,
+            f"wf notes p2 {self.BUNDLE_NAME}")
 
     def test_a_bad_yes_pairs_path_fails_before_a_single_note_is_made(self):
         self._in_flight()

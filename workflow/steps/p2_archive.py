@@ -5,8 +5,6 @@
 # `classify` has already folded both verdicts into the standing classified
 # sets.
 
-import shutil
-
 from pathlib import Path
 
 from workflow import bundle, config, fs
@@ -59,13 +57,3 @@ def run_step(ctx) -> None:
 
     for found in fs.globs(ctx.bundle_dir, bundle.source_globs(ctx)):
         fs.move_into(found, _done(ctx, "in"), ctx.force)
-
-    # The .filtered derivative is scratch: the original is what gets archived.
-    for scratch in ctx.bundle_dir.glob("*.filtered"):
-        scratch.unlink()
-
-    # So is enex.part/, when a fetch that failed part-way was never resumed --
-    # which a forced refetch over a complete enex/ can leave behind. Nothing
-    # archives it, and `bundle.finish` will not close over a bundle still
-    # holding it.
-    shutil.rmtree(p2_retrieve.partial_dir(ctx), ignore_errors=True)

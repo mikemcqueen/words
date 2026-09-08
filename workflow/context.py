@@ -20,7 +20,7 @@ from workflow import config, names
 class Context:
     # Bundle coordinates: what a lifecycle step resolves its paths against.
     root: Path            # the workflow root -- the directory *containing* .wf
-    phase: str            # p1 | p2 | p3
+    phase: str            # p1 | p2 | p3 | dict (words lifecycle layout)
     force: bool = False   # ignore is_done and overwrite
     bundle_name: str = ""  # eval directory name; empty for non-bundle reads
 

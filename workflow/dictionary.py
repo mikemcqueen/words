@@ -27,7 +27,6 @@
 # suffix -- ported onto a different stem and a different mutability.
 
 import re
-import shutil
 import subprocess
 import tempfile
 
@@ -57,13 +56,6 @@ REVIEWED = "reviewed"
 # take.
 ORDINAL = r"[1-9]\d*"
 
-# Under dict/, not in the system temporary directory, so every final rename
-# stays on the destination filesystem. A staging directory left behind by
-# process or system failure matches neither archive input pattern and is
-# ignored.
-STAGING_PREFIX = ".staging."
-
-
 # ------------------------------------------------------------------- the tree
 
 
@@ -84,6 +76,7 @@ class Tree:
     removals: Path
     reviewed_inputs: Path
     reviewed_words: Path
+    enex_archives: Path
 
     @property
     def marker(self) -> Path:
@@ -96,7 +89,9 @@ def tree(root: Path) -> Tree:
                 derived=config.dictionary(root),
                 removals=config.removals(root),
                 reviewed_inputs=config.reviewed_inputs(root),
-                reviewed_words=config.reviewed_words(root))
+                reviewed_words=config.reviewed_words(root),
+                enex_archives=config.path(root, ["dict", "done", "out",
+                                                "enex"]))
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -163,14 +158,59 @@ def read_words(path: Path) -> list[str]:
     fs.raise_if_not_file(path)
     words = []
     for number, line in enumerate(path.read_text().splitlines(), start=1):
-        word = COUNT_PREFIX.sub("", line).strip()
-        if not word:
-            continue
-        if WORD.fullmatch(word) is None:
-            raise ValueError(f"{path}:{number}: not a word: {word!r}; "
-                             f"expected one lowercase word per line")
-        words.append(word)
+        word = parse_word_row(path, number, line)
+        if word is not None:
+            words.append(word)
     return words
+
+
+def parse_word_row(path: Path, number: int, line: str) -> str | None:
+    """Return one normalized identity, ignoring only whitespace-only rows."""
+    if not line.strip():
+        return None
+    word = COUNT_PREFIX.sub("", line).strip()
+    if not word or WORD.fullmatch(word) is None:
+        raise ValueError(f"{path}:{number}: not a word: {word!r}; "
+                         f"expected one lowercase word per line")
+    return word
+
+
+@dataclass(frozen=True)
+class FilterResult:
+    source_words: int
+    surviving_words: int
+    filtered_words: int
+
+    @property
+    def filtered(self) -> bool:
+        return self.filtered_words != 0
+
+
+def filter_reviewed_words(source: Path, reviewed: Path,
+                          staged: Path) -> FilterResult:
+    """Write unreviewed presentation rows in order without moving source."""
+    fs.raise_if_not_file(reviewed)
+    reviewed_set = set(read_words(reviewed))
+    source_words = surviving = filtered_count = 0
+    with source.open("r") as incoming, staged.open("w") as outgoing:
+        for number, line in enumerate(incoming, start=1):
+            identity = parse_word_row(source, number, line.rstrip("\r\n"))
+            if identity is None:
+                continue
+            source_words += 1
+            if identity in reviewed_set:
+                filtered_count += 1
+                continue
+            outgoing.write(line.rstrip("\r\n") + "\n")
+            surviving += 1
+    return FilterResult(source_words, surviving, filtered_count)
+
+
+def archive_name(name: str) -> str:
+    """Validate a filename that will be interpolated into archive records."""
+    if name in ("", ".", "..") or Path(name).name != name:
+        raise ValueError(f"cannot name an archive after {name!r}")
+    return name
 
 
 def archive_stem(path: Path) -> str:
@@ -179,10 +219,7 @@ def archive_stem(path: Path) -> str:
     It answers "where did this come from" with the name the operator gave it,
     which no generated name can reconstruct.
     """
-    name = path.name
-    if name in ("", ".", ".."):
-        raise ValueError(f"cannot name an archive after {path}")
-    return name
+    return archive_name(path.name)
 
 
 # ------------------------------------------------------------- set operations
@@ -242,11 +279,10 @@ class Prepared:
 def _preflight(prepared: list[Prepared]) -> None:
     """Check the complete batch before the first final move.
 
-    Validation, derivation, cross-filesystem and destination-shape failures all
-    happen before this point, so an ordinary failure leaves no durable record
-    and no changed output. What is left is the interval of the renames
-    themselves, which is narrow and not eliminated: an unexpected rename failure
-    can still stop the sequence short.
+    Validation, derivation, and destination-shape failures happen before this
+    point, so an ordinary preparation failure leaves no durable record and no
+    changed output. Cross-filesystem and unexpected rename failures remain in
+    the deliberately accepted publication window.
     """
     for placement in prepared:
         dst = placement.dst
@@ -257,7 +293,7 @@ def _preflight(prepared: list[Prepared]) -> None:
 
 
 def _commit(prepared: list[Prepared]) -> None:
-    """Publish the batch in order, each an atomic rename on dict/.
+    """Publish the batch in order through the prepared-placement primitive.
 
     Byte-identical derived outputs are dropped rather than renamed, which is
     what preserves their content mtimes -- and their content mtime is what dates
@@ -270,11 +306,8 @@ def _commit(prepared: list[Prepared]) -> None:
 
 @contextmanager
 def _staging(tree: Tree):
-    directory = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=tree.dir))
-    try:
-        yield directory
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+    with tempfile.TemporaryDirectory(prefix="wf-dictionary-") as tmp:
+        yield Path(tmp)
 
 
 # ---------------------------------------------------------------- derivation
@@ -362,6 +395,105 @@ def _report(root: Path, tree: Tree, derived: setops.Staged,
 # ------------------------------------------------------------------ commands
 
 
+@dataclass(frozen=True)
+class Publication:
+    ordinal: int
+    removal_dst: Path
+    reviewed_dst: Path
+    enex_dst: Path | None
+    submitted: int
+    new_to_union: int
+    effective: int
+    count_lines: tuple[str, ...]
+
+
+def publish_words(root: Path, stem: str, reviewed_input: Path,
+                  removals: Path, enex: Path | None = None) -> Publication:
+    """Publish one normalized reviewed/removal round and rebuild dictionary."""
+    archive_name(stem)
+    dictionary = tree(root)
+    fs.raise_if_not_file(dictionary.base)
+    fs.raise_if_not_file(reviewed_input)
+    fs.raise_if_not_file(removals)
+
+    removal_records = records(dictionary.removals, REMOVED)
+    reviewed_records = records(dictionary.reviewed_inputs, REVIEWED)
+    ordinal = _next_ordinal(removal_records, reviewed_records)
+    removal_dst = dictionary.removals / f"{stem}.{REMOVED}.{ordinal}"
+    reviewed_dst = dictionary.reviewed_inputs / f"{stem}.{REVIEWED}.{ordinal}"
+    enex_dst = (dictionary.enex_archives / f"{stem}.{REVIEWED}.{ordinal}"
+                if enex is not None else None)
+
+    if enex is not None:
+        fs.raise_if_not_dir(enex)
+        fs.raise_if_not_dir(dictionary.enex_archives)
+        assert enex_dst is not None
+        if enex_dst.exists() or enex_dst.is_symlink():
+            raise fs.file_already_exists_error(enex_dst)
+
+    with _staging(dictionary) as staging:
+        with _operation("submission normalization", reviewed_input, removals):
+            removal = setops.stage_merge([removals], removal_dst,
+                                         staging / "removal.archive")
+            reviewed = setops.stage_merge([reviewed_input], reviewed_dst,
+                                          staging / "reviewed.archive")
+
+        recorded = [path for _, path in removal_records]
+        prior = staging / "prior.removed"
+        prospective = staging / "next.removed"
+        with _operation("removal union", *recorded):
+            _union(recorded, prior)
+            _union([*recorded, removal.path], prospective)
+        with _operation("removal delta", prior, prospective):
+            delta = setops.diff(prospective, prior, staging / "delta")
+        with _operation("removed-word intersection", delta, dictionary.base):
+            effective = setops.common(delta, dictionary.base,
+                                      staging / "effective")
+
+        derived = _stage_derived(dictionary, staging, prospective)
+        reviewed_words = _stage_reviewed_words(
+            dictionary, staging,
+            [path for _, path in reviewed_records] + [reviewed.path])
+        batch = [Prepared(removal, replace=False),
+                 Prepared(reviewed, replace=False),
+                 Prepared(reviewed_words), Prepared(derived)]
+        _preflight(batch)
+        fs.raise_if_any_exist([removal_dst, reviewed_dst])
+        if enex_dst is not None and (enex_dst.exists() or enex_dst.is_symlink()):
+            raise fs.file_already_exists_error(enex_dst)
+
+        result = Publication(
+            ordinal=ordinal,
+            removal_dst=removal_dst,
+            reviewed_dst=reviewed_dst,
+            enex_dst=enex_dst,
+            submitted=fs.line_count(removal.path),
+            new_to_union=fs.line_count(delta),
+            effective=fs.line_count(effective),
+            count_lines=tuple(_report(root, dictionary, derived,
+                                      reviewed_words)),
+        )
+        _commit(batch)
+        if enex is not None:
+            assert enex_dst is not None
+            enex.rename(enex_dst)
+        _mark_generated(dictionary)
+        return result
+
+
+def report_publication(root: Path, result: Publication) -> None:
+    log.success(f"{result.submitted} words submitted, "
+                f"{result.new_to_union} new to the removal union, "
+                f"{result.effective} newly removed from the dictionary")
+    lead = f"recorded as generation {result.ordinal} "
+    print(f"{lead}-> {_relative(root, result.removal_dst)}")
+    print(f"{' ' * len(lead)}-> {_relative(root, result.reviewed_dst)}")
+    if result.enex_dst is not None:
+        print(f"archived notes          -> {_relative(root, result.enex_dst)}/")
+    for line in result.count_lines:
+        print(line)
+
+
 def remove_words(root: Path, src: Path) -> None:
     """Record one round of word removals and rebuild the derived files.
 
@@ -380,71 +512,18 @@ def remove_words(root: Path, src: Path) -> None:
     """
     words = read_words(src)
     stem = archive_stem(src)
-    dictionary = tree(root)
-    fs.raise_if_not_file(dictionary.base)
-
-    removal_records = records(dictionary.removals, REMOVED)
-    reviewed_records = records(dictionary.reviewed_inputs, REVIEWED)
-    ordinal = _next_ordinal(removal_records, reviewed_records)
-    removal_dst = dictionary.removals / f"{stem}.{REMOVED}.{ordinal}"
-    reviewed_dst = dictionary.reviewed_inputs / f"{stem}.{REVIEWED}.{ordinal}"
-
-    with _staging(dictionary) as staging:
-        submission = staging / "submission"
+    reviewed = fs.optional_file(config.reviewed_words(root))
+    with tempfile.TemporaryDirectory(prefix="wf-remove-words-") as tmp:
+        submission = Path(tmp) / "submission"
         submission.write_text("".join(f"{word}\n" for word in words))
-        # Two independent sorts, not one file hard-linked twice: the removal
-        # record is hand-editable independently of the reviewed-input archive,
-        # and a retraction must not rewrite what the round was asked to review.
-        with _operation("submission normalization", src):
-            removal = setops.stage_merge([submission], removal_dst,
-                                         staging / "removal.archive")
-            reviewed = setops.stage_merge([submission], reviewed_dst,
-                                          staging / "reviewed.archive")
-
-        recorded = [path for _, path in removal_records]
-        prior = staging / "prior.removed"
-        prospective = staging / "next.removed"
-        with _operation("removal union", *recorded):
-            _union(recorded, prior)
-            _union([*recorded, removal.path], prospective)
-        # New to the removal union, then that delta intersected with the base --
-        # not the whole submission intersected with it. A previously removed
-        # word remains in words.big, so counting all submitted base words would
-        # make a resubmission look effective.
-        with _operation("removal delta", prior, prospective):
-            delta = setops.diff(prospective, prior, staging / "delta")
-        with _operation("removed-word intersection", delta, dictionary.base):
-            effective = setops.common(delta, dictionary.base,
-                                      staging / "effective")
-
-        derived = _stage_derived(dictionary, staging, prospective)
-        reviewed_words = _stage_reviewed_words(
-            dictionary, staging,
-            [path for _, path in reviewed_records] + [reviewed.path])
-
-        batch = [Prepared(removal, replace=False),
-                 Prepared(reviewed, replace=False),
-                 Prepared(reviewed_words),
-                 Prepared(derived)]
-        _preflight(batch)
-        # Defensive, not an expected branch: the allocator has already seen
-        # every name in both directories.
-        fs.raise_if_any_exist([removal_dst, reviewed_dst])
-
-        counts = _report(root, dictionary, derived, reviewed_words)
-        headline = (f"{len(words)} words submitted, "
-                    f"{fs.line_count(delta)} new to the removal union, "
-                    f"{fs.line_count(effective)} newly removed from the "
-                    f"dictionary")
-        _commit(batch)
-        _mark_generated(dictionary)
-
-        log.success(headline)
-        lead = f"recorded as generation {ordinal} "
-        print(f"{lead}-> {_relative(root, removal_dst)}")
-        print(f"{' ' * len(lead)}-> {_relative(root, reviewed_dst)}")
-        for line in counts:
-            print(line)
+        if reviewed is not None:
+            unreviewed = Path(tmp) / "unreviewed"
+            filtered = filter_reviewed_words(submission, reviewed, unreviewed)
+            if filtered.surviving_words == 0:
+                raise ValueError(f"no unreviewed words in {src}")
+            submission = unreviewed
+        result = publish_words(root, stem, submission, submission)
+    report_publication(root, result)
 
 
 def gen_dict(root: Path) -> None:

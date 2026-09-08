@@ -102,6 +102,10 @@ QUEUE_SUFFIXES = {
     "p2": (f"{SEP}pairs", f"{SEP}p1{SEP}yes"),
 }
 
+# `words` is the public command scope; `dict` is the canonical layout scope
+# carried by Context after the dispatcher boundary.
+SUFFIXLESS_QUEUES = ("words", "dict")
+
 
 def _queue_suffixes(phase: str) -> tuple[str, ...]:
     if phase not in QUEUE_SUFFIXES:
@@ -122,6 +126,8 @@ def queue_name(phase: str, name: str) -> str:
     candidate list.
     """
     check_name(name, "submitted filename")
+    if phase in SUFFIXLESS_QUEUES:
+        return name
     suffixes = _queue_suffixes(phase)
     if any(name.endswith(suffix) for suffix in suffixes):
         return name
@@ -138,6 +144,9 @@ def queue_stem(phase: str, name: str) -> str:
     apart for a dimension -- no other segment is recovered, and a name the
     contract does not admit is rejected rather than guessed at.
     """
+    check_name(name, "queued filename")
+    if phase in SUFFIXLESS_QUEUES:
+        return name
     # Longest first, so a contract whose shapes overlap (`.yes` and `.p1.yes`)
     # strips the specific one rather than whichever came first in the table.
     for suffix in sorted(_queue_suffixes(phase), key=len, reverse=True):
@@ -163,10 +172,20 @@ def queue_names(phase: str, bundle_name: str) -> tuple[str, ...]:
     `check_name` has already ruled out the characters a glob would read.
     """
     check_name(bundle_name, "bundle name")
-    return tuple(f"{bundle_name}{suffix}"
-                 for suffix in _queue_suffixes(phase))
+    if phase in SUFFIXLESS_QUEUES:
+        return (bundle_name,)
+    rendered = [f"{bundle_name}{suffix}"
+                for suffix in _queue_suffixes(phase)]
+    # Preserve old bundles whose directory name was itself already a legal
+    # queue filename. New evals strip the suffix, but completed/in-flight state
+    # from the earlier spelling still has to remain readable.
+    if any(bundle_name.endswith(suffix) for suffix in _queue_suffixes(phase)):
+        rendered.insert(0, bundle_name)
+    return tuple(dict.fromkeys(rendered))
 
 
 def queue_globs(phase: str) -> tuple[str, ...]:
     """The globs that find a phase's queued artifact, wherever it has moved to."""
+    if phase in SUFFIXLESS_QUEUES:
+        return ("*",)
     return tuple(f"*{suffix}" for suffix in _queue_suffixes(phase))

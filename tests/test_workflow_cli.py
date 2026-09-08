@@ -26,7 +26,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("init    — initialize a workflow (stub)", stderr)
         self.assertIn("show    — display workflow state", stderr)
-        self.assertIn("submit  — submit items (p1|p2)", stderr)
+        self.assertIn("submit  — submit items (p1|p2|words)", stderr)
 
     def test_wfroot_is_the_default_workflow_root(self):
         with tempfile.TemporaryDirectory() as root:
@@ -163,6 +163,21 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual("", stdout)
         self.assertIn("missing required argument", stderr)
         self.assertIn("p1      — complete a pairs file evaluation", stderr)
+
+    def test_words_lifecycle_help_uses_public_scope_and_exact_operands(self):
+        expected = {
+            ("submit", "words"): "[--as NAME] FILE",
+            ("eval", "words"): "NAME",
+            ("notes", "words"): "NAME",
+            ("complete", "words"): "NAME",
+        }
+        for (command, scope), tail in expected.items():
+            with self.subTest(command=command):
+                code, stdout, stderr = self._run("help", command, scope)
+                self.assertEqual(0, code, stderr)
+                self.assertIn(f"usage: wf {command} words", stdout)
+                self.assertIn(tail, stdout)
+                self.assertNotIn("dict/", stdout)
 
 
 if __name__ == "__main__":

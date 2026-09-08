@@ -24,17 +24,43 @@ def in_flight(ctx) -> bool:
     return ctx.bundle_dir.is_dir()
 
 
-def begin(ctx) -> Path:
+def resolve_queued(root: Path, phase: str,
+                   positional: str) -> tuple[str, Path]:
+    """Resolve an eval operand without changing the queue.
+
+    An exact queued filename wins. Otherwise the operand is a bundle-name
+    prefix and must select exactly one queue artifact.
+    """
+    queued_dir = config.path(root, [phase, "queued"])
+    if Path(positional).name == positional:
+        exact = queued_dir / positional
+        if exact.is_file():
+            if not fs.matches(exact.name, names.queue_globs(phase)):
+                names.queue_stem(phase, exact.name)
+            return names.queue_stem(phase, exact.name), exact
+    selected = select.select(root, [phase, "queued"], f"stem:{positional}",
+                             glob=names.queue_globs(phase))[0]
+    return names.queue_stem(phase, selected.name), selected
+
+
+def begin(ctx, selected: Path | None = None) -> Path:
     """Create the bundle directory and move the queued artifact into it."""
     # The bundle name as a prefix is the base rule. A Context that carries a
     # selector of its own -- `eval` builds one when the user named the queued
     # file exactly -- overrides it, which is what makes a prefix shared by two
     # queue shapes openable at all. `all` is the field's unset default and must
     # not be honoured here: it would open whichever bundle sorted first.
-    selector = (f"stem:{ctx.bundle_name}"
-                if ctx.selector == select.ALL else ctx.selector)
-    src = select.select(ctx.root, [ctx.phase, "queued"], selector,
-                        glob=names.queue_globs(ctx.phase))[0]
+    if selected is None:
+        selector = (f"stem:{ctx.bundle_name}"
+                    if ctx.selector == select.ALL else ctx.selector)
+        src = select.select(ctx.root, [ctx.phase, "queued"], selector,
+                            glob=names.queue_globs(ctx.phase))[0]
+    else:
+        expected = config.path(ctx.root, [ctx.phase, "queued"])
+        if selected.parent != expected:
+            raise ValueError(f"queued source is outside {expected}: {selected}")
+        fs.raise_if_not_file(selected)
+        src = selected
 
     bundle_dir = ctx.bundle_dir
     if bundle_dir.exists():
@@ -49,7 +75,14 @@ def begin(ctx) -> Path:
         if held:
             raise ValueError(f"bundle {ctx.bundle_name} is already open on "
                              f"{', '.join(p.name for p in held)}")
-        if not ctx.force:
+        if ctx.phase == "dict" and selected is not None:
+            allowed = {f"{ctx.bundle_name}.filtered"}
+            unexpected = sorted(p.name for p in bundle_dir.iterdir()
+                                if p.name not in allowed)
+            if unexpected:
+                raise ValueError(f"incomplete bundle {ctx.bundle_name} holds: "
+                                 f"{', '.join(unexpected)}")
+        if not ctx.force and not (ctx.phase == "dict" and selected is not None):
             raise fs.file_already_exists_error(bundle_dir)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
@@ -91,7 +124,7 @@ def one(bundle_dir: Path, glob) -> Path:
 # misses the very file it is looking for. The directory is already the
 # namespace; nothing else in it ends in these suffixes.
 def source_globs(ctx) -> tuple[str, ...]:
-    return names.queue_globs(ctx.phase)
+    return names.queue_names(ctx.phase, ctx.bundle_name)
 
 
 def source(ctx) -> Path:

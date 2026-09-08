@@ -122,6 +122,12 @@ _DICT = {
     "description": "The shared Nutrimatic dictionary and its removals",
     "content": True,
     "parts": {
+        "queued": {
+            "description": "dictionary word files queued for manual review"
+        },
+        "eval": {
+            "description": "dictionary word files being manually reviewed"
+        },
         "removed": {
             "description": "applied word-removal generations"
         },
@@ -131,6 +137,14 @@ _DICT = {
             "parts": {
                 "in": {
                     "description": "per-round submitted word inputs"
+                },
+                "out": {
+                    "description": "completed dictionary review outputs",
+                    "parts": {
+                        "enex": {
+                            "description": "raw completed dictionary review notes"
+                        }
+                    }
                 }
             }
         }

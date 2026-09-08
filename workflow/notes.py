@@ -22,10 +22,11 @@
 
 import argparse
 import subprocess
+import tempfile
 
 from pathlib import Path
 
-from workflow import bundle, command, context, fs, log, usage
+from workflow import bundle, command, config, context, fs, log, names, usage
 
 
 CHUNK_SIZE = 400
@@ -34,9 +35,8 @@ CHUNK_SIZE = 400
 # letter, .aa through .az.
 MAX_PARTS = 26
 
-# Where a split lands. The parts are scratch -- `note --create` reads them and
-# nothing in the workflow refers to them again.
-STAGING = Path("/tmp")
+TWO_CHECKBOXES = "two-checkboxes"
+ONE_CHECKBOX = "checkbox"
 
 
 def title(source: Path, index: int) -> str:
@@ -65,28 +65,65 @@ def part_paths(directory: Path, source: Path, count: int) -> list[Path]:
     return [directory / title(source, index) for index in range(count)]
 
 
+class SplitPaths(list[Path]):
+    """Part paths that retain ownership of their temporary directory."""
+
+    def __init__(self, paths: list[Path], temporary) -> None:
+        super().__init__(paths)
+        self.temporary = temporary
+
+    def cleanup(self) -> None:
+        self.temporary.cleanup()
+
+
 def split(source: Path) -> list[Path]:
-    """Split source into note-sized parts under STAGING and return them."""
-    paths = part_paths(STAGING, source, part_count(source))
-    # check=True raises on non-zero return code
-    subprocess.run(["split.sh", f"{source}", f"{CHUNK_SIZE}",
-                    f"{STAGING / source.name}"],
-                   stdout=subprocess.DEVNULL, check=True)
-    fs.raise_if_any_not_file(paths)
-    return paths
+    """Split source into note-sized parts under temporary storage."""
+    temporary = tempfile.TemporaryDirectory(prefix="wf-notes-")
+    directory = Path(temporary.name)
+    try:
+        paths = part_paths(directory, source, part_count(source))
+        # check=True raises on non-zero return code
+        subprocess.run(["split.sh", f"{source}", f"{CHUNK_SIZE}",
+                        f"{directory / source.name}"],
+                       stdout=subprocess.DEVNULL, check=True)
+        fs.raise_if_any_not_file(paths)
+    except BaseException:
+        temporary.cleanup()
+        raise
+    return SplitPaths(paths, temporary)
 
 
-def create(paths: list[Path], yes_pairs: Path | None = None) -> None:
+def create(paths: list[Path], yes_pairs: Path | None = None,
+           checkbox_mode: str = TWO_CHECKBOXES,
+           retry_command: str | None = None) -> None:
     log.info(f"Creating {len(paths)} notes...")
     # One argument list for both shapes: a review that has a confirmed-YES set
     # to check itself against differs from one that does not by two arguments,
     # not by a second call.
-    options = ["--text", "--two-checkboxes", "--production"]
+    checkbox = {TWO_CHECKBOXES: "--two-checkboxes",
+                ONE_CHECKBOX: "--checkbox"}.get(checkbox_mode)
+    if checkbox is None:
+        raise ValueError(f"unknown note checkbox mode: {checkbox_mode}")
+    options = ["--text", checkbox, "--production"]
     if yes_pairs is not None:
         options += ["--yes-pairs", str(yes_pairs)]
+    created: list[Path] = []
+    retry_command = retry_command or "wf notes p2 NAME"
     for path in paths:
-        subprocess.run(["note", "-pf.72", "--create", f"{path}", *options],
-                       stdout=subprocess.DEVNULL, check=True)
+        try:
+            subprocess.run(
+                ["note", "-pf.72", "--create", f"{path}", *options],
+                stdout=subprocess.DEVNULL, check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            succeeded = "\n".join(f"  {p.name}" for p in created)
+            earlier = (f"Delete the notes already created:\n{succeeded}\n"
+                       if created else "No earlier note creation was confirmed.\n")
+            raise ValueError(
+                f"note creation failed at {path.name}.\n{earlier}"
+                f"Check whether {path.name} was created, and delete it if it "
+                f"exists. After manual cleanup, recreate the complete batch "
+                f"with `{retry_command}`.") from error
+        created.append(path)
 
 
 def add_yes_pairs(parser: argparse.ArgumentParser) -> None:
@@ -109,17 +146,37 @@ def check_yes_pairs(opts) -> None:
 
 
 def _yes_pairs(opts) -> Path | None:
-    return Path(opts.yes_pairs) if opts.yes_pairs else None
+    value = getattr(opts, "yes_pairs", None)
+    return Path(value) if value else None
 
 
-def make(pairs: Path, opts) -> list[Path]:
+def make(pairs: Path, opts, checkbox_mode: str = TWO_CHECKBOXES,
+         retry_command: str | None = None) -> list[str]:
     """Split a bundle's evaluated pairs and raise one note per part.
 
     The whole of what `eval p2` does to a bundle beyond opening it.
+
+    Returns the titles of the notes created, not the parts they were made
+    from: the parts are scratch this deletes on the way out, and their names
+    are the titles -- the same ones retrieval re-derives to find these notes
+    again.
     """
+    if retry_command is None:
+        if pairs.parent.name == "in":
+            try:
+                named = names.queue_stem("p2", pairs.name)
+            except ValueError:
+                named = "NAME"
+        else:
+            named = pairs.parent.name
+        retry_command = f"wf notes p2 {named}"
     paths = split(pairs)
-    create(paths, _yes_pairs(opts))
-    return paths
+    try:
+        create(paths, _yes_pairs(opts), checkbox_mode, retry_command)
+        return [path.name for path in paths]
+    finally:
+        if isinstance(paths, SplitPaths):
+            paths.cleanup()
 
 
 class Notes(command.Action):
@@ -142,6 +199,9 @@ class Notes(command.Action):
         rest = self.parse(opts, argv)
         if not rest:
             return usage.missing_argument(self.format_help(command_text))
+        if len(rest) > 1:
+            return usage.invalid_argument(rest[1],
+                                          self.format_help(command_text))
 
         check_yes_pairs(opts)
         bundle_name, named = bundle.resolve_source(opts.dir, self.phase,
@@ -149,9 +209,43 @@ class Notes(command.Action):
         ctx = context.Context(root=opts.dir, phase=self.phase,
                               force=opts.force, bundle_name=bundle_name)
         source = bundle.recover(ctx, named)
-        paths = make(source, opts)
-        log.success(f"{len(paths)} note(s) recreated from {source.name}")
+        titles = make(source, opts)
+        log.success(f"{len(titles)} note(s) recreated from {source.name}")
         return 0
 
 
 P2 = Notes("p2", "p2      — recreate a manual review's notes")
+
+
+class NotesWords(command.Action):
+    """Recreate a complete note batch for one active dictionary review."""
+
+    def __init__(self):
+        super().__init__(summary="words   — recreate a dictionary review's notes",
+                         positional="NAME")
+
+    def run(self, command_text, opts, argv) -> int:
+        if not argv:
+            return usage.missing_argument(self.format_help(command_text))
+        if len(argv) > 1:
+            return usage.invalid_argument(argv[1],
+                                          self.format_help(command_text))
+        name = argv[0]
+        bundle_name = names.check_name(name, "bundle name")
+        ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
+                              bundle_name=bundle_name)
+        if not ctx.bundle_dir.is_dir():
+            queued = config.path(opts.dir, ["dict", "queued"]) / bundle_name
+            if queued.is_file():
+                raise ValueError(
+                    f"{bundle_name} is queued and has no active words review; "
+                    f"run `wf eval words {bundle_name}`")
+            raise ValueError(f"no active words review: {bundle_name}")
+        source = bundle.evaluated(ctx)
+        titles = make(source, opts, ONE_CHECKBOX,
+                      f"wf notes words {bundle_name}")
+        log.success(f"{len(titles)} note(s) recreated from {source.name}")
+        return 0
+
+
+WORDS = NotesWords()

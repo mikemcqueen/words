@@ -10,9 +10,12 @@
 # p1 still closes inside its own `advance`, where closing is the tail of a
 # publication that really happens.
 
+import shutil
+
 from pathlib import Path
 
 from workflow import bundle
+from workflow.steps import p2_retrieve
 
 
 NAME = "close"
@@ -33,4 +36,7 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
+    for scratch in ctx.bundle_dir.glob("*.filtered"):
+        scratch.unlink()
+    shutil.rmtree(p2_retrieve.partial_dir(ctx), ignore_errors=True)
     bundle.finish(ctx)
