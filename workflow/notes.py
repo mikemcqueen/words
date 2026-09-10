@@ -95,7 +95,8 @@ def split(source: Path) -> list[Path]:
 
 def create(paths: list[Path], yes_pairs: Path | None = None,
            checkbox_mode: str = TWO_CHECKBOXES,
-           retry_command: str | None = None) -> None:
+           retry_command: str | None = None,
+           checked: str | None = None) -> None:
     log.info(f"Creating {len(paths)} notes...")
     # One argument list for both shapes: a review that has a confirmed-YES set
     # to check itself against differs from one that does not by two arguments,
@@ -107,6 +108,8 @@ def create(paths: list[Path], yes_pairs: Path | None = None,
     options = ["--text", checkbox, "--production"]
     if yes_pairs is not None:
         options += ["--yes-pairs", str(yes_pairs)]
+    if checked is not None:
+        options += ["--checked", checked]
     created: list[Path] = []
     retry_command = retry_command or "wf notes p2 NAME"
     for path in paths:
@@ -126,8 +129,15 @@ def create(paths: list[Path], yes_pairs: Path | None = None,
         created.append(path)
 
 
+def add_checked(parser: argparse.ArgumentParser) -> None:
+    """Add the initial checked-type option used by P2 note creation."""
+    parser.add_argument(
+        "--checked", type=str.upper, choices=("YES", "NO"), metavar="TYPE",
+        help="initial checkbox type to check (YES or NO)")
+
+
 def add_yes_pairs(parser: argparse.ArgumentParser) -> None:
-    """The flag both commands that raise notes admit."""
+    """Add the confirmed-YES input option used by P2 note creation."""
     parser.add_argument("--yes-pairs", metavar="PATH",
                         help="confirmed-YES pairs the notes check themselves "
                              "against")
@@ -172,7 +182,8 @@ def make(pairs: Path, opts, checkbox_mode: str = TWO_CHECKBOXES,
         retry_command = f"wf notes p2 {named}"
     paths = split(pairs)
     try:
-        create(paths, _yes_pairs(opts), checkbox_mode, retry_command)
+        create(paths, _yes_pairs(opts), checkbox_mode, retry_command,
+               getattr(opts, "checked", None))
         return [path.name for path in paths]
     finally:
         if isinstance(paths, SplitPaths):
@@ -192,6 +203,7 @@ class Notes(command.Action):
         # -- `notes` reads whatever `eval` left -- and an inert flag would imply
         # a mode the command does not have.
         p = argparse.ArgumentParser(add_help=False)
+        add_checked(p)
         add_yes_pairs(p)
         return p
 

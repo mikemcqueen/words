@@ -111,6 +111,7 @@ class EvalYes(Eval):
         p.add_argument(
             "--filter-completed", action="store_true",
             help="also filter pairs already present in p2_done.pairs")
+        notes.add_checked(p)
         notes.add_yes_pairs(p)
         return p
 

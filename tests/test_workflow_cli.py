@@ -126,6 +126,26 @@ class WorkflowCliTests(unittest.TestCase):
         )
         self.assertNotIn("--no-filter", stdout)
 
+    def test_eval_p2_help_describes_checked_type(self):
+        code, stdout, stderr = self._run("help", "eval", "p2")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("[--checked TYPE]", stdout)
+        self.assertIn(
+            "--checked TYPE      initial checkbox type to check (YES or NO)",
+            stdout,
+        )
+
+    def test_notes_p2_help_describes_checked_type(self):
+        code, stdout, stderr = self._run("help", "notes", "p2")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("[--checked TYPE]", stdout)
+        self.assertIn(
+            "--checked TYPE     initial checkbox type to check (YES or NO)",
+            stdout,
+        )
+
     def test_invalid_complete_p1_help_argument_shows_default_help(self):
         code, stdout, stderr = self._run("help", "complete", "p1", "balls")
 
