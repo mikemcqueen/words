@@ -2,11 +2,10 @@
 #
 # Place a file into a phase's queue, sorted and deduped.
 #
-# p1 and p2 differ in three things -- the phase, the word used in help and log
-# lines, and the name of the positional. They are one class and a two-row
-# table, not two files. What the queued copy is *called* is not among the
-# three: that is the phase's queue contract, and it lives in names.py where
-# `eval` reads the same table.
+# p1 and p2 share the queue operation. P2 additionally validates the pair
+# syntax at this outside boundary: everything downstream treats a line as an
+# opaque set member, so accepting counted or otherwise malformed rows here
+# would keep them from matching the classified pair sets.
 
 import argparse
 import tempfile
@@ -35,6 +34,9 @@ class Submit(command.Action):
         self.phase = phase
         self.label = label
 
+    def prepare(self, src: Path) -> Path:
+        return src
+
     def run(self, command, opts, argv) -> int:
         src = _resolve_input(argv)
         dst = (config.path(opts.dir, [self.phase, "queued"])
@@ -42,15 +44,49 @@ class Submit(command.Action):
         if not opts.force:
             fs.raise_if_exists(dst)
 
-        setops.merge([src], dst)
-        # The queued name, not the one handed in: the queue contract may have
-        # stamped a suffix on, and this is the name `eval` will want.
-        log.success(f"Submitted {self.label} {dst.name}")
-        return 0
+        prepared = self.prepare(src)
+        try:
+            setops.merge([prepared], dst)
+            # The queued name, not the one handed in: the queue contract may have
+            # stamped a suffix on, and this is the name `eval` will want.
+            log.success(f"Submitted {self.label} {dst.name}")
+            return 0
+        finally:
+            if prepared != src:
+                prepared.unlink(missing_ok=True)
+
+
+class SubmitP2(Submit):
+    def prepare(self, src: Path) -> Path:
+        prepared = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", prefix="wf-submit-p2-", delete=False) as tmp:
+                prepared = Path(tmp.name)
+                with src.open() as source:
+                    for line_number, raw in enumerate(source, 1):
+                        pair = raw.rstrip("\n")
+                        if not pair.strip():
+                            continue
+                        fields = pair.split(",")
+                        if (len(fields) != 2 or
+                                any(not field or field != field.strip()
+                                    for field in fields)):
+                            raise ValueError(
+                                f"invalid pair in {src} at line {line_number}: "
+                                f"expected exactly two nonempty comma-separated "
+                                f"fields with no surrounding whitespace; got "
+                                f"{pair!r}")
+                        tmp.write(f"{pair}\n")
+            return prepared
+        except BaseException:
+            if prepared is not None:
+                prepared.unlink(missing_ok=True)
+            raise
 
 
 P1 = Submit(phase="p1", label="pairs",           positional="PAIRS-FILE")
-P2 = Submit(phase="p2", label="review-candidate", positional="PAIRS-FILE")
+P2 = SubmitP2(phase="p2", label="review-candidate", positional="PAIRS-FILE")
 
 
 class SubmitWords(command.Action):
