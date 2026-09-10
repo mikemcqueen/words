@@ -385,6 +385,93 @@ class BestTests(unittest.TestCase):
             "truncated\n",
             rendered.with_name(rendered.name + ".tmp").read_text())
 
+    def test_dry_run_prints_the_seed_search_and_creates_nothing(self):
+        """The command an operator wants to read costs no tree and no hours.
+
+        -f is passed against a target that does not exist yet, because that
+        is the case where a dry run most obviously must not leave anything
+        behind: the creation now happens after the print rather than before.
+        """
+        universe = self.best / "s2" / "u-cdef" / "m4"
+        universe.mkdir(parents=True)
+        _, _, seed = self._shared_inputs(universe)
+        results = self.root / "results"
+        results.mkdir()
+        target = universe / "g4"
+
+        code, calls, stdout, stderr = self._run_producers(
+            [], "-f", "--dry-run", "best", "gen", "s2", "-u", "cdef",
+            "-g", "4", "-r", str(results), "dfs.seed")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([], calls)
+        self.assertIn("Running dfs-anagrams:", stderr)
+        self.assertIn(f"--pairs {seed}", stderr)
+        self.assertIn("-n 1000000", stderr)
+        self.assertFalse(target.exists())
+        self.assertFalse((results / "s2").exists())
+        # No search ran, so no state moved and there is no report -- which
+        # would push the printed command off the top of the screen.
+        self.assertEqual("", stdout)
+
+    def test_dry_run_of_the_final_search_names_its_scratch_pairs(self):
+        target = self._target()
+        self._complete_files(target)
+        self._shared_inputs(target.parent)
+        results = self.root / "results"
+        published = (target / "dfs.best").resolve()
+
+        code, calls, stdout, stderr = self._run_producers(
+            [], "--dry-run", "best", "gen", "s2", "-u", "cdef", "-g", "4",
+            "-r", str(results), "dfs.best")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([], calls)
+        self.assertIn("Running dfs-anagrams:", stderr)
+        # The union is real work and the counts are the ones the search would
+        # have used, but the file itself goes away with the scratch directory.
+        self.assertIn("dry run: --pairs is a temporary union of 1 of 1 "
+                      "allowed pairs", stderr)
+        self.assertEqual(published, (target / "dfs.best").resolve())
+        self.assertFalse((results / "s2").exists())
+        self.assertEqual("", stdout)
+
+    def test_dry_run_is_refused_by_the_stages_that_run_nothing_long(self):
+        target = self._target()
+        self._complete_files(target)
+
+        with self.assertRaises(ValueError) as caught:
+            fx.run_wf("-d", str(self.root), "--dry-run", "best", "gen", "s2",
+                      "-u", "cdef", "-g", "4", "--source", "seed",
+                      "top.segments")
+        self.assertIn("--dry-run is only valid for the DFS stages",
+                      str(caught.exception))
+
+        with self.assertRaises(ValueError) as caught:
+            fx.run_wf("-d", str(self.root), "--dry-run", "best", "review",
+                      "s2", "-u", "cdef", "-g", "4")
+        self.assertIn("--dry-run is not valid for best review",
+                      str(caught.exception))
+
+    def test_prepare_dry_run_stops_before_the_frontier_leg(self):
+        universe = self.best / "s2" / "u-cdef" / "m4"
+        self._shared_inputs(universe)
+        results = self.root / "results"
+        results.mkdir()
+        target = universe / "g4"
+
+        code, calls, _, stderr = self._run_producers(
+            [], "-f", "--dry-run", "best", "prepare", "s2", "-u", "cdef",
+            "-g", "4", "-r", str(results), "--source", "seed")
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([], calls)
+        self.assertIn("Running dfs-anagrams:", stderr)
+        # top-segments reads the results the search did not write, so the
+        # second leg has nothing to render and does not run either.
+        self.assertNotIn("top-segments", stderr)
+        self.assertFalse(target.exists())
+
     def test_gen_top_segments_passes_count_and_preserves_unchanged_mtime(self):
         target = self._target()
         universe = target.parent
