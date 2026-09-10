@@ -100,7 +100,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertEqual("", stdout)
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — submit a pairs file into p1/queued (sorted, deduped)", stderr)
-        self.assertIn("usage: wf submit p1 [-d DIR] [-f] [-h] PAIRS-FILE", stderr)
+        self.assertIn("usage: wf submit p1 [-d DIR] [-f] [--dry-run] [-h] PAIRS-FILE", stderr)
 
     def test_invalid_eval_p1_help_argument_shows_default_help(self):
         code, stdout, stderr = self._run("help", "eval", "p1", "balls")
@@ -110,7 +110,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — evaluate pairs", stderr)
         self.assertIn(
-            "usage: wf eval p1 [-d DIR] [-f] [-h] [--no-filter] BUNDLE-NAME",
+            "usage: wf eval p1 [-d DIR] [-f] [--dry-run] [-h] [--no-filter] BUNDLE-NAME",
             stderr,
         )
 
@@ -122,7 +122,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — complete a pairs file evaluation", stderr)
         self.assertIn(
-            "usage: wf complete p1 [-d DIR] [-f] [-h] BUNDLE-NAME", stderr)
+            "usage: wf complete p1 [-d DIR] [-f] [--dry-run] [-h] BUNDLE-NAME", stderr)
 
     def test_incomplete_show_command_reports_missing_required_argument(self):
         code, stdout, stderr = self._run("show")

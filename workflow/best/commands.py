@@ -167,12 +167,17 @@ class Gen(command.Action):
                 raise ValueError("-f/--force is only valid for gen dfs.seed")
             generate.gen_dfs(target, final=stage == "dfs.best",
                              force=opts.force, results_dir=opts.results_dir,
-                             count=opts.count)
+                             count=opts.count, dry_run=opts.dry_run)
             return
         if opts.force:
             raise ValueError("-f/--force is only valid for gen dfs.seed")
         if opts.results_dir is not None:
             raise ValueError("-r/--results-dir is only valid for DFS stages")
+        if opts.dry_run:
+            # top-segments takes seconds and rewrites one file, so there is
+            # nothing here a dry run saves. Refused rather than ignored, so
+            # --dry-run never means "and it ran anyway".
+            raise ValueError("--dry-run is only valid for the DFS stages")
         _preflight_top_segments(target)
         generate.gen_top_segments(target, source=opts.source,
                                   count=opts.count)
@@ -211,6 +216,10 @@ class Gen(command.Action):
         _check_target_dirs(target, may_create=stage == "dfs.seed",
                            force=opts.force)
         self._stage(target, stage, opts)
+        if opts.dry_run:
+            # Nothing moved, so there is no new state to report -- and the
+            # report would push the printed command off the top of a screen.
+            return 0
         report(target)
         return 0
 
@@ -278,7 +287,10 @@ class Prepare(command.Action):
         _preflight_top_segments(target)
         generate.prepare(target, source=opts.source, force=opts.force,
                          results_dir=opts.results_dir,
-                         dfs_count=opts.dfs_count, top_count=opts.top_count)
+                         dfs_count=opts.dfs_count, top_count=opts.top_count,
+                         dry_run=opts.dry_run)
+        if opts.dry_run:
+            return 0
         report(target)
         return 0
 
@@ -323,6 +335,8 @@ class Exclude(command.Action):
         target, rest = parsed
         if opts.force:
             raise ValueError("-f/--force is not valid for best exclude")
+        if opts.dry_run:
+            raise ValueError("--dry-run is not valid for best exclude")
         code = classify.NO.run("classify no", opts, [rest[1]])
         if code == 0:
             report(target)
@@ -362,6 +376,8 @@ class Review(command.Action):
         target, rest = parsed
         if opts.force:
             raise ValueError("-f/--force is not valid for best review")
+        if opts.dry_run:
+            raise ValueError("--dry-run is not valid for best review")
 
         supplied = Path(rest[1]).resolve() if len(rest) == 2 else None
         if supplied is not None:

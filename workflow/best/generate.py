@@ -135,7 +135,8 @@ def _dfs_inputs(target: Target, results_dir: Path,
 
 
 def gen_dfs(target: Target, *, final: bool, force: bool,
-            results_dir: Path | None, count: int | None) -> None:
+            results_dir: Path | None, count: int | None,
+            dry_run: bool = False) -> None:
     """Run one DFS search and publish its results as dfs.seed or dfs.best.
 
     Takes what it needs by name rather than an opts namespace, because
@@ -143,17 +144,22 @@ def gen_dfs(target: Target, *, final: bool, force: bool,
     disagree about every flag: -f, -r and -n belong to the DFS leg and are
     refused by the other. Which flags a command accepts is the command
     layer's to say.
+
+    Under --dry-run every input is still resolved and every refusal still
+    fires -- the printed command is only worth having if it is the one the
+    real run would have issued -- and the run stops at the print, before
+    anything is created.
     """
     results_dir = Path(results_dir or "results").resolve()
     # The scratch directory wraps the whole run so the union outlives input
     # validation and the search that reads it.
     with tempfile.TemporaryDirectory(prefix="wf-dfs-pairs-") as tmp:
         _run_dfs(target, Path(tmp), final=final, force=force,
-                 results_dir=results_dir, count=count)
+                 results_dir=results_dir, count=count, dry_run=dry_run)
 
 
 def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
-             results_dir: Path, count: int | None) -> None:
+             results_dir: Path, count: int | None, dry_run: bool) -> None:
     index, dictionary, seed, sources, exclusions = _dfs_inputs(
         target, results_dir, final)
     sentence_results = results_dir / target.sentence
@@ -178,15 +184,8 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
     else:
         pairs = seed
 
-    if not target.target_dir.exists():
-        if not force:
-            fs.raise_if_not_dir(target.target_dir)
-        # -f now creates any missing part of <letter-set>/m<N>/g<N>, having
-        # validated every input first: a run that cannot start leaves no tree.
-        target.target_dir.mkdir(parents=True)
-
-    sentence_results.mkdir(exist_ok=True)
-    fs.raise_if_not_dir(sentence_results)
+    if not target.target_dir.exists() and not force:
+        fs.raise_if_not_dir(target.target_dir)
 
     limit = DFS_LIMIT if count is None else count
     rendered = sentence_results / _dfs_name(target, seed, limit, final)
@@ -210,6 +209,23 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
         "-g", str(target.segment_count),
     ]
     _display_dfs(argv, target)
+    if dry_run:
+        if final:
+            # The union is built in a scratch directory that this command's
+            # own exit removes, so the printed --pairs path is a description
+            # of the search rather than a file to re-run it against.
+            log.warn(f"dry run: --pairs is a temporary union of "
+                     f"{fs.line_count(pairs)} of {allowed} allowed pairs, "
+                     f"removed when this command exits")
+        return
+    # The directories are created here, after the print rather than with the
+    # checks above: -f still creates any missing part of
+    # <letter-set>/m<N>/g<N> only once every input has validated, and a dry
+    # run reaches the command it would have run without leaving a tree.
+    if not target.target_dir.exists():
+        target.target_dir.mkdir(parents=True)
+    sentence_results.mkdir(exist_ok=True)
+    fs.raise_if_not_dir(sentence_results)
     started = time.monotonic()
     with scratch.open("w") as output:
         subprocess.run(argv, stdout=output, check=True)
@@ -298,7 +314,7 @@ def gen_top_segments(target: Target, *, source: str,
 
 def prepare(target: Target, *, source: str, force: bool,
             results_dir: Path | None, dfs_count: int | None,
-            top_count: int | None) -> None:
+            top_count: int | None, dry_run: bool = False) -> None:
     """Run one search and generate the frontier from it, in one shell.
 
     The two legs take independent cutoffs: -n means results out of
@@ -310,7 +326,12 @@ def prepare(target: Target, *, source: str, force: bool,
     # top-segments costs nothing instead of the hours the DFS just spent.
     _require_command("top-segments")
     gen_dfs(target, final=source == "best", force=force,
-            results_dir=results_dir, count=dfs_count)
+            results_dir=results_dir, count=dfs_count, dry_run=dry_run)
+    if dry_run:
+        # The frontier leg reads the DFS results the search would have
+        # written, so there is no second command to render from a tree the
+        # dry run deliberately did not touch.
+        return
     try:
         gen_top_segments(target, source=source, count=top_count)
     except BaseException:
