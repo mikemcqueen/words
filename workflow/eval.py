@@ -30,10 +30,7 @@ class Eval(command.Action):
         self.ready_for = ready_for
 
     def parser(self):
-        p = argparse.ArgumentParser(add_help=False)
-        p.add_argument("--no-filter", action="store_true",
-                       help="skip filtering already-evaluated pairs")
-        return p
+        return argparse.ArgumentParser(add_help=False)
 
     def check(self, opts) -> None:
         """Whatever this phase must know is good before the bundle is opened.
@@ -47,6 +44,10 @@ class Eval(command.Action):
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         """What this phase does with its pairs once the bundle is open."""
+
+    def filter(self, pairs: Path, ctx, opts) -> Path:
+        """Apply this phase's review-history filter."""
+        return bundle.filter_done(pairs, ctx)
 
     def _run(self, command, opts, argv, prepared: Path | None = None) -> int:
         rest = self.parse(opts, argv)
@@ -66,10 +67,13 @@ class Eval(command.Action):
         pairs = bundle.begin(ctx, selected)
         log.info(f"{fs.line_count(pairs)} source {self.source_noun}")
         if prepared is not None:
-            pairs = setops.merge([prepared], bundle.filtered(pairs))
-            log.info(f"{fs.line_count(pairs)} filtered pairs")
-        elif not opts.no_filter:
-            pairs = bundle.filter_done(pairs, ctx)
+            # The caller's subset can turn out to be the whole source -- a
+            # one-off whose pairs were all unreviewed -- and then there is
+            # nothing for a derivative to claim.
+            merged = setops.merge([prepared], bundle.filtered(pairs))
+            pairs = bundle.keep_if_changed(pairs, merged)
+        else:
+            pairs = self.filter(pairs, ctx, opts)
 
         self.prepare(pairs, ctx, opts)
 
@@ -104,11 +108,18 @@ class EvalYes(Eval):
 
     def parser(self):
         p = super().parser()
+        p.add_argument(
+            "--filter-completed", action="store_true",
+            help="also filter pairs already present in p2_done.pairs")
         notes.add_yes_pairs(p)
         return p
 
     def check(self, opts) -> None:
         notes.check_yes_pairs(opts)
+
+    def filter(self, pairs: Path, ctx, opts) -> Path:
+        return bundle.filter_done(
+            pairs, ctx, filter_completed=opts.filter_completed)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         notes.make(pairs, opts)

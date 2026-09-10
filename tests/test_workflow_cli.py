@@ -110,9 +110,21 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — evaluate pairs", stderr)
         self.assertIn(
-            "usage: wf eval p1 [-d DIR] [-f] [--dry-run] [-h] [--no-filter] BUNDLE-NAME",
+            "usage: wf eval p1 [-d DIR] [-f] [--dry-run] [-h] BUNDLE-NAME",
             stderr,
         )
+
+    def test_eval_p2_help_names_the_completed_filter(self):
+        code, stdout, stderr = self._run("help", "eval", "p2")
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("[--filter-completed]", stdout)
+        self.assertIn(
+            "--filter-completed  also filter pairs already present in "
+            "p2_done.pairs",
+            stdout,
+        )
+        self.assertNotIn("--no-filter", stdout)
 
     def test_invalid_complete_p1_help_argument_shows_default_help(self):
         code, stdout, stderr = self._run("help", "complete", "p1", "balls")

@@ -188,9 +188,9 @@ class Notes(command.Action):
         self.phase = phase
 
     def parser(self):
-        # Deliberately no --no-filter: there is no filtering step here to skip
-        # -- `notes` reads whatever `eval` left -- and an inert flag would
-        # imply a mode the command does not have.
+        # Deliberately no review-filter flags: there is no filtering step here
+        # -- `notes` reads whatever `eval` left -- and an inert flag would imply
+        # a mode the command does not have.
         p = argparse.ArgumentParser(add_help=False)
         add_yes_pairs(p)
         return p

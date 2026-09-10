@@ -72,6 +72,65 @@ class P2QueueContractTests(unittest.TestCase):
         self._assert_opens("s6.pairs.90.10.p1.yes",
                            "s6.pairs.90.10.p1.yes", "s6.pairs.90.10")
 
+    def test_eval_filters_global_verdicts_but_not_completed_p2_pairs(self):
+        self._submit(
+            "review",
+            pairs=("keep,new", "yes,known", "no,known", "p2,done"))
+        fx.write_pairs(config.classified(self.root, "yes"), ["yes,known"])
+        fx.write_pairs(config.classified(self.root, "no"), ["no,known"])
+        fx.write_pairs(
+            fx.slot(self.opts, ["p2", "done"]) / "p2_done.pairs",
+            ["p2,done"])
+
+        with mock.patch.object(evaluate.EvalYes, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", "review")
+
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "review"
+        source = bundle_dir / "review.pairs"
+        filtered = source.with_name(source.name + ".filtered")
+        self.assertEqual(
+            ["keep,new", "no,known", "p2,done", "yes,known"],
+            source.read_text().splitlines())
+        self.assertEqual(
+            ["keep,new", "p2,done"], filtered.read_text().splitlines())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+
+    def test_eval_filter_completed_also_filters_p2_done(self):
+        self._submit("review", pairs=("keep,new", "p2,done"))
+        fx.write_pairs(
+            fx.slot(self.opts, ["p2", "done"]) / "p2_done.pairs",
+            ["p2,done"])
+
+        with mock.patch.object(evaluate.EvalYes, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2",
+                "--filter-completed", "review")
+
+        self.assertEqual(0, code, stderr)
+        source = (fx.slot(self.opts, ["p2", "eval"]) / "review"
+                  / "review.pairs")
+        filtered = source.with_name(source.name + ".filtered")
+        self.assertEqual(["keep,new"], filtered.read_text().splitlines())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+
+    def test_eval_rejects_the_removed_no_filter_option_before_opening(self):
+        self._submit("review", pairs=("keep,new",))
+
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "eval", "p2", "--no-filter", "review")
+
+        self.assertEqual(2, code)
+        self.assertIn("invalid argument:", stderr)
+        self.assertNotIn("--no-filter]", stderr)
+        self.assertEqual(
+            ["review.pairs"],
+            [path.name for path in
+             fx.slot(self.opts, ["p2", "queued"]).iterdir()])
+        self.assertEqual(
+            [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+
     # Naming the queued file is the second way in. The bundle it opens is the
     # same one either spelling names -- the suffix comes off, so the eval
     # directory never records which producer filled the slot.

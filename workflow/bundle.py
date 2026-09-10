@@ -15,9 +15,11 @@
 # exception is `resolve_source`, which renders the name a Context is built
 # from and so necessarily runs before there is one.
 
+import filecmp
+
 from pathlib import Path
 
-from workflow import config, fs, log, names, select, setops
+from workflow import config, fs, log, names, review, select, setops
 
 
 def in_flight(ctx) -> bool:
@@ -145,16 +147,16 @@ def has_source(ctx) -> bool:
 
 
 def filtered(src: Path) -> Path:
-    """The derivative `eval` writes when it drops already-done pairs."""
+    """The derivative `eval` writes when it drops reviewed pairs."""
     return src.with_name(src.name + ".filtered")
 
 
 def evaluated(ctx) -> Path:
     """The input as actually evaluated.
 
-    `eval` writes a `.filtered` derivative when it drops already-done pairs, and
-    everything downstream -- note titles, the done-set merge -- follows whichever
-    file it chose. The original is what gets archived.
+    `eval` writes a `.filtered` derivative when it drops reviewed pairs, and
+    everything downstream -- note titles, the done-set merge -- follows
+    whichever file it chose. The original is what gets archived.
     """
     src = source(ctx)
     candidate = filtered(src)
@@ -263,18 +265,55 @@ def recover(ctx, source: Path | None = None) -> Path:
     return archived
 
 
+def keep_if_changed(src_pairs: Path, dst: Path) -> Path:
+    """`dst` when it differs from its source, otherwise `src_pairs`.
+
+    A `.filtered` derivative is a claim that something was dropped, and
+    everything downstream -- note titles, `evaluated`, the done-set merge --
+    follows whichever file this returns. So a derivative that turned out to
+    match its source is deleted rather than carried: it would make the round
+    read as filtered when nothing was.
+    """
+    filecmp.clear_cache()
+    if filecmp.cmp(src_pairs, dst, shallow=False):
+        dst.unlink()
+        return src_pairs
+    log.info(f"{fs.line_count(dst)} filtered pairs")
+    return dst
+
+
 def done_pairs(ctx) -> Path:
     """The phase's accumulated done-set, which every bundle folds into."""
     return config.path(ctx.root, [ctx.phase, "done"]) / f"{ctx.phase}_done.pairs"
 
 
-def filter_done(src_pairs: Path, ctx) -> Path:
-    """Drop pairs the phase has already evaluated.
+def filter_done(src_pairs: Path, ctx, *,
+                filter_completed: bool = True) -> Path:
+    """Drop pairs the phase has already evaluated or classified.
 
     Returns the file to carry forward: the `.filtered` derivative when there is
-    a done-set to subtract, otherwise `src_pairs` untouched.
+    something to subtract, otherwise `src_pairs` untouched. P2 always consults
+    the workflow-global review verdicts and consults its done-set only when
+    ``filter_completed`` is true. P1 always consults its done-set.
     """
     done = done_pairs(ctx)
+    if ctx.phase == "p2":
+        classified = [config.classified(ctx.root, kind)
+                      for kind in ("yes", "no")]
+        for path in classified:
+            fs.raise_if_not_file(path)
+        completed = done if filter_completed and done.is_file() else None
+        if completed is None and not any(path.stat().st_size
+                                         for path in classified):
+            return src_pairs
+
+        dst = filtered(src_pairs)
+        if not ctx.force:
+            fs.raise_if_exists(dst)
+        review.filter_review_pairs(
+            src_pairs, ctx.root, dst, completed_pairs=completed)
+        return keep_if_changed(src_pairs, dst)
+
     if not done.is_file():
         return src_pairs
 
