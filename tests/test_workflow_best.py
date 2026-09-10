@@ -945,7 +945,7 @@ class BestTests(unittest.TestCase):
             "top.segments behind its inputs (hard-NO set changed)",
             stdout)
 
-    def test_review_subtracts_hard_no_and_opens_unfiltered_round(self):
+    def test_review_subtracts_hard_no_before_eval_filters_again(self):
         target = self._target()
         universe = target.parent
         self._shared_inputs(universe)
@@ -973,7 +973,7 @@ class BestTests(unittest.TestCase):
         source = bundle_dir / f"{bundle_name}.pairs"
         self.assertEqual("keep,known\nnew,pair\n", source.read_text())
         self.assertFalse(source.with_name(source.name + ".filtered").exists())
-        prepare.assert_called_once()
+        self.assertEqual(source, prepare.call_args.args[0])
         self.assertIn(f"review awaiting completion ({bundle_name})", stdout)
 
         with self.assertRaisesRegex(ValueError, "already in flight"):
@@ -1023,6 +1023,24 @@ class BestTests(unittest.TestCase):
         supplied.unlink()
         self.assertEqual(
             "no,known\nunknown,pair\nyes,known\n", source.read_text())
+
+    def test_oneoff_review_writes_no_derivative_when_nothing_is_dropped(self):
+        self._target()
+        supplied = self._write(self.root / "outside-name.txt",
+                               "unknown,pair\nsecond,unknown\n")
+
+        with mock.patch.object(commands.evaluate.P2, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "best", "review", "s2", "-u", "cdef",
+                "-g", "4", str(supplied))
+
+        self.assertEqual(0, code, stderr)
+        bundle_name = "oneoff.s2.m4.g4.u-cdef.2.r1"
+        bundle = fx.slot(self.opts, ["p2", "eval"]) / bundle_name
+        source = bundle / f"{bundle_name}.pairs"
+        self.assertEqual("second,unknown\nunknown,pair\n", source.read_text())
+        self.assertFalse(source.with_name(source.name + ".filtered").exists())
+        self.assertEqual(source, prepare.call_args.args[0])
 
     def test_review_kinds_have_independent_round_sequences(self):
         target_dir = self._target()

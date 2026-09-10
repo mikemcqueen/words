@@ -4,7 +4,8 @@ import tempfile
 from pathlib import Path
 
 from workflow import (
-    classify, command, config, fs, log, names, notes, setops, submit, usage,
+    classify, command, config, fs, log, names, notes, review, setops, submit,
+    usage,
     complete as complete_phase, eval as evaluate,
 )
 from workflow.best import generate
@@ -386,23 +387,6 @@ class Review(command.Action):
         return self._top(target, opts)
 
     @staticmethod
-    def _union_no_pairs(target, scratch: Path) -> Path:
-        """The NO sets a review subtracts: global hard-NO, plus target-local.
-
-        The merge is load-bearing rather than tidiness: setops.diff shells out
-        to `comm -23`, which under-subtracts in silence when its right-hand
-        side is unsorted, and no.pairs is hand-managed. With no local file the
-        helper returns hard_no unmerged -- the degenerate union, and the
-        behaviour before this existed, byte for byte.
-        """
-        hard_no = config.classified(target.root, "no")
-        fs.raise_if_not_file(hard_no)
-        local_no = target_no_pairs(target)
-        if local_no is None:
-            return hard_no
-        return setops.merge([hard_no, local_no], scratch / "union.no.pairs")
-
-    @staticmethod
     def _in_flight(target, queued, evaluating) -> None:
         in_flight = [*queued, *evaluating]
         if in_flight:
@@ -430,44 +414,32 @@ class Review(command.Action):
         round_number = max(review_rounds(target, archived, "top"), default=0) + 1
         review_name = (f"{target.review_prefix('top')}{cutoff}."
                        f"r{round_number}.pairs")
-        # The hard-NO set is checked by _union_no_pairs, which is the one
-        # that reads it now.
-        confirmed_yes = config.classified(target.root, "yes")
-        fs.raise_if_not_file(confirmed_yes)
         with tempfile.TemporaryDirectory(prefix="wf-best-review-") as tmp:
             scratch = Path(tmp)
             collated = setops.merge([top_segments], scratch / "top.pairs")
             # Both standing sets come out, not just the hard-NO one. A YES
             # verdict is global and reaches --pairs directly from
             # classified/yes, so re-asking about a pair that already has one
-            # buys nothing. It is a no-op against a -y-filtered frontier and
-            # still load-bearing for _oneoff, whose supplied file has been
-            # through no filter at all.
+            # buys nothing. It is a no-op against a -y-filtered frontier.
             #
             # The target-local exclusions come out here too, and this is only
             # mostly covered by the -r the generation passes: a frontier made
             # before the exclusion was written is still reviewable, and would
             # otherwise re-ask every pair in it.
-            remaining = setops.diff(
-                collated, self._union_no_pairs(target, scratch),
-                scratch / "remaining.pairs")
-            review_file = setops.diff(
-                remaining, confirmed_yes, scratch / review_name)
+            review_file = review.filter_review_pairs(
+                collated, target.root, scratch / review_name,
+                local_no_pairs=target_no_pairs(target))
             if fs.line_count(review_file) == 0:
                 return self._converged(target, cutoff)
             code = submit.P2.run("submit p2", opts, [str(review_file)])
         if code != 0:
             return code
-        code = evaluate.P2.run(
-            "eval p2", opts, ["--no-filter", review_name])
+        code = evaluate.P2.run("eval p2", opts, [review_name])
         if code == 0:
             report(target)
         return code
 
     def _oneoff(self, target, supplied: Path, opts) -> int:
-        confirmed_yes = config.classified(target.root, "yes")
-        fs.raise_if_not_file(confirmed_yes)
-
         with tempfile.TemporaryDirectory(prefix="wf-best-oneoff-") as tmp:
             scratch = Path(tmp)
             canonical = setops.merge([supplied], scratch / "canonical.pairs")
@@ -475,11 +447,9 @@ class Review(command.Action):
             # The target-local exclusions have no cover at all here: nothing
             # filtered the supplied file, so without this a one-off keeps
             # asking about pairs the operator excluded.
-            remaining = setops.diff(
-                canonical, self._union_no_pairs(target, scratch),
-                scratch / "remaining.pairs")
-            reviewed = setops.diff(
-                remaining, confirmed_yes, scratch / "reviewed.pairs")
+            reviewed = review.filter_review_pairs(
+                canonical, target.root, scratch / "reviewed.pairs",
+                local_no_pairs=target_no_pairs(target))
             if fs.line_count(reviewed) == 0:
                 raise ValueError(
                     f"one-off review has no candidates: all {cutoff} pairs "
