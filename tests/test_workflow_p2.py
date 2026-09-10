@@ -318,6 +318,18 @@ class NoteNamingTests(unittest.TestCase):
             notes.part_paths(Path("/tmp"), source, notes.MAX_PARTS + 1)
 
 
+class NoteCreationTests(unittest.TestCase):
+    def test_checked_type_is_passed_to_note_create(self):
+        path = Path("/tmp/review.pairs.aa")
+        with mock.patch.object(notes.subprocess, "run") as run:
+            notes.create([path], checked="YES")
+
+        run.assert_called_once_with(
+            ["note", "-pf.72", "--create", str(path), "--text",
+             "--two-checkboxes", "--production", "--checked", "YES"],
+            stdout=subprocess.DEVNULL, check=True)
+
+
 class NotesCommandTests(unittest.TestCase):
     """`wf notes p2` -- the note derivation, reached without moving anything.
 
@@ -375,7 +387,7 @@ class NotesCommandTests(unittest.TestCase):
         split.assert_called_once_with(source)
         create.assert_called_once_with(
             [], None, notes.TWO_CHECKBOXES,
-            f"wf notes p2 {self.BUNDLE_NAME}")
+            f"wf notes p2 {self.BUNDLE_NAME}", None)
 
         # `eval` follows the .filtered derivative when it wrote one, and so
         # does this: the notes cover the pairs actually under review.
@@ -451,7 +463,24 @@ class NotesCommandTests(unittest.TestCase):
         _, create = self._notes("--yes-pairs", str(yes_pairs))
         create.assert_called_once_with(
             [], yes_pairs, notes.TWO_CHECKBOXES,
-            f"wf notes p2 {self.BUNDLE_NAME}")
+            f"wf notes p2 {self.BUNDLE_NAME}", None)
+
+    def test_checked_reaches_note_creation_case_insensitively(self):
+        self._in_flight()
+        _, create = self._notes("--checked", "yes")
+        create.assert_called_once_with(
+            [], None, notes.TWO_CHECKBOXES,
+            f"wf notes p2 {self.BUNDLE_NAME}", "YES")
+
+    def test_invalid_checked_type_is_rejected_before_note_creation(self):
+        self._in_flight()
+        with mock.patch.object(notes, "split") as split, \
+             mock.patch.object(notes, "create") as create, \
+             self.assertRaises(SystemExit):
+            fx.run_wf(*self._argv(False, ("--checked", "MAYBE")))
+
+        split.assert_not_called()
+        create.assert_not_called()
 
     def test_a_bad_yes_pairs_path_fails_before_a_single_note_is_made(self):
         self._in_flight()

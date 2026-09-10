@@ -569,3 +569,40 @@ class BundleLifecycleTests(unittest.TestCase):
                 self.assertTrue(queued.is_file())
                 self.assertEqual(
                     [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
+
+    def test_eval_p2_passes_case_insensitive_checked_type_to_notes(self):
+        bundle_name = "s6.txt.pairs-third.90.10"
+        fx.write_pairs(
+            fx.slot(self.opts, ["p2", "queued"])
+            / names.artifact(bundle_name, "p1", "yes"),
+            ["alpha,two", "mid,three"])
+
+        with mock.patch.object(notes, "split", return_value=[]), \
+             mock.patch.object(notes, "create") as create:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", bundle_name,
+                "--checked", "no")
+
+        self.assertEqual(0, code, stderr)
+        create.assert_called_once_with(
+            [], None, notes.TWO_CHECKBOXES,
+            f"wf notes p2 {bundle_name}", "NO")
+
+    def test_eval_p2_rejects_invalid_checked_type_before_opening_bundle(self):
+        bundle_name = "s6.txt.pairs-third.90.10"
+        queued = (fx.slot(self.opts, ["p2", "queued"])
+                  / names.artifact(bundle_name, "p1", "yes"))
+        fx.write_pairs(queued, ["alpha,two", "mid,three"])
+
+        with mock.patch.object(notes, "split") as split, \
+             mock.patch.object(notes, "create") as create, \
+             self.assertRaises(SystemExit):
+            fx.run_wf(
+                "-d", str(self.root), "eval", "p2", bundle_name,
+                "--checked", "MAYBE")
+
+        split.assert_not_called()
+        create.assert_not_called()
+        self.assertTrue(queued.is_file())
+        self.assertEqual(
+            [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
