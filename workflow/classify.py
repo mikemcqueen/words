@@ -19,11 +19,9 @@
 # The input is normalized on the way in -- `sort -u` over the union -- because
 # the aggregate is later handed to `comm` and to a tool that assumes a set.
 
-import tempfile
-
 from pathlib import Path
 
-from workflow import command, config, fs, log, setops, usage
+from workflow import command, config, fs, log, usage
 
 
 # The verdict each kind contradicts. Recording both for one pair is a mistake
@@ -32,6 +30,36 @@ from workflow import command, config, fs, log, setops, usage
 OPPOSITE = {"yes": "no", "no": "yes"}
 
 SAMPLE = 3
+
+
+def contradictions(src: Path, opposing: Path) -> list[str]:
+    """Return src pairs that oppose a pair in opposing, in either order.
+
+    Pair order is presentation, not identity, for a standing verdict. Build the
+    small lookup in memory so both ``first,second`` and ``second,first`` are
+    forbidden without relying on the line identity and ordering required by
+    ``comm``.
+    """
+    if not opposing.exists():
+        return []
+
+    prohibited = set()
+    for pair in opposing.read_text().splitlines():
+        first, separator, second = pair.partition(",")
+        prohibited.add(pair)
+        if separator:
+            prohibited.add(f"{second},{first}")
+
+    return sorted(set(src.read_text().splitlines()) & prohibited)
+
+
+def contradiction_message(kind: str, pairs: list[str]) -> str:
+    shown = ", ".join(pairs[:SAMPLE])
+    more = (f" (+{len(pairs) - SAMPLE} more)"
+            if len(pairs) > SAMPLE else "")
+    return (f"Cannot classify {kind.upper()}: "
+            f"{len(pairs)} input pair(s) already classified "
+            f"{OPPOSITE[kind].upper()}: {shown}{more}")
 
 
 class Classify(command.Action):
@@ -44,14 +72,7 @@ class Classify(command.Action):
 
     def _contradictions(self, opts, src: Path) -> list[str]:
         other = config.classified(opts.dir, OPPOSITE[self.kind])
-        if not other.exists():
-            return []
-        with tempfile.TemporaryDirectory(prefix="wf-classify-") as scratch:
-            scratch = Path(scratch)
-            normalized = setops.merge([src], scratch / "input.pairs")
-            overlap = setops.common(
-                normalized, other, scratch / "overlap.pairs")
-            return overlap.read_text().splitlines()
+        return contradictions(src, other)
 
     def run(self, command, opts, argv) -> int:
         if not argv:
@@ -64,13 +85,7 @@ class Classify(command.Action):
 
         contradictions = self._contradictions(opts, src)
         if contradictions:
-            shown = ", ".join(contradictions[:SAMPLE])
-            more = (f" (+{len(contradictions) - SAMPLE} more)"
-                    if len(contradictions) > SAMPLE else "")
-            log.error(
-                f"Cannot classify {self.kind.upper()}: "
-                f"{len(contradictions)} input pair(s) already classified "
-                f"{OPPOSITE[self.kind].upper()}: {shown}{more}")
+            log.error(contradiction_message(self.kind, contradictions))
             return 1
 
         dst = config.classified(opts.dir, self.kind)

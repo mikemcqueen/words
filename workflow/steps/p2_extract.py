@@ -25,7 +25,7 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import fs, log, setops
+from workflow import classify, fs, log, setops
 from workflow.steps import p2_retrieve
 
 
@@ -80,12 +80,8 @@ def _stage(ctx, enex: list[Path], kind: str) -> Path:
 
 
 def _contradictions(ctx, staged: dict) -> list[str]:
-    """The pairs marked both ways: the intersection of the two staged sets.
-
-    Both are `sort -u` output, so `comm -12` is reading them as what they are.
-    """
-    both = setops.common(staged["yes"], staged["no"], _scratch(ctx, "both"))
-    return both.read_text().splitlines()
+    """The pairs marked both ways, including opposite word order."""
+    return classify.contradictions(staged["yes"], staged["no"])
 
 
 def _diagnostic(ctx, both: list[str]) -> str:

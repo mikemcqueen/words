@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import bundle, names, notes
+from workflow import bundle, config, names, notes
 from workflow.context import Context
 from workflow.steps import p2_extract, p2_retrieve
 
@@ -272,6 +272,23 @@ class P2RecipeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "mid,three"):
                 self._complete()
         self._assert_nothing_was_written()
+
+    def test_a_reversed_pair_marked_both_ways_stops_the_bundle(self):
+        with self._marked_both_ways("three,mid"):
+            with self.assertRaisesRegex(ValueError, "mid,three"):
+                self._complete()
+        self._assert_nothing_was_written()
+
+    def test_a_review_verdict_cannot_reverse_a_global_verdict(self):
+        no = config.classified(self.root, "no")
+        fx.write_pairs(no, ["two,alpha"])
+
+        with self.assertRaisesRegex(ValueError, "alpha,two"):
+            self._complete()
+
+        self.assertEqual("", config.classified(self.root, "yes").read_text())
+        self.assertEqual(["two,alpha"], no.read_text().splitlines())
+        self.assertTrue(bundle.has_source(self.ctx))
 
     def test_force_does_not_wave_a_contradiction_through(self):
         with self._marked_both_ways():
