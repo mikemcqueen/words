@@ -28,9 +28,7 @@ from workflow import command, config, fs, log, setops, usage
 
 # The verdict each kind contradicts. Recording both for one pair is a mistake
 # the workflow cannot resolve on the user's behalf: it may be a slip, or it may
-# be a reversal, and there is no un-classify to undo the earlier call with. So
-# this warns and proceeds rather than refusing -- the last write is what the
-# user just asked for, and the collision is what they need to be told about.
+# be a reversal, and there is no un-classify to undo the earlier call with.
 OPPOSITE = {"yes": "no", "no": "yes"}
 
 SAMPLE = 3
@@ -44,20 +42,16 @@ class Classify(command.Action):
         )
         self.kind = kind
 
-    def _warn_if_contradicted(self, opts, dst: Path) -> None:
+    def _contradictions(self, opts, src: Path) -> list[str]:
         other = config.classified(opts.dir, OPPOSITE[self.kind])
         if not other.exists():
-            return
-        with tempfile.NamedTemporaryFile(prefix="wf-classify-",
-                                         suffix=".pairs") as scratch:
-            overlap = setops.common(dst, other, Path(scratch.name))
-            pairs = overlap.read_text().split()
-        if not pairs:
-            return
-        shown = ", ".join(pairs[:SAMPLE])
-        more = f" (+{len(pairs) - SAMPLE} more)" if len(pairs) > SAMPLE else ""
-        log.warn(f"{len(pairs)} pair(s) now classified both {self.kind.upper()} "
-                 f"and {OPPOSITE[self.kind].upper()}: {shown}{more}")
+            return []
+        with tempfile.TemporaryDirectory(prefix="wf-classify-") as scratch:
+            scratch = Path(scratch)
+            normalized = setops.merge([src], scratch / "input.pairs")
+            overlap = setops.common(
+                normalized, other, scratch / "overlap.pairs")
+            return overlap.read_text().splitlines()
 
     def run(self, command, opts, argv) -> int:
         if not argv:
@@ -68,6 +62,17 @@ class Classify(command.Action):
         src = Path(argv[0]).resolve()
         fs.raise_if_not_file(src)
 
+        contradictions = self._contradictions(opts, src)
+        if contradictions:
+            shown = ", ".join(contradictions[:SAMPLE])
+            more = (f" (+{len(contradictions) - SAMPLE} more)"
+                    if len(contradictions) > SAMPLE else "")
+            log.error(
+                f"Cannot classify {self.kind.upper()}: "
+                f"{len(contradictions)} input pair(s) already classified "
+                f"{OPPOSITE[self.kind].upper()}: {shown}{more}")
+            return 1
+
         dst = config.classified(opts.dir, self.kind)
         before = fs.line_count(dst) if dst.exists() else 0
         config.fold_classified(opts.dir, self.kind, src)
@@ -75,7 +80,6 @@ class Classify(command.Action):
 
         log.success(f"Classified {self.kind.upper()}: {total - before} new, "
                     f"{total} total → {dst.name}")
-        self._warn_if_contradicted(opts, dst)
         return 0
 
 
