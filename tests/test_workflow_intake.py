@@ -279,18 +279,20 @@ class ClassifyTests(unittest.TestCase):
     def test_normalizes_an_unsorted_input(self):
         for kind in self.KINDS:
             with self.subTest(kind=kind):
+                pairs = [f"zeta,{kind}", f"alpha,{kind}", f"alpha,{kind}"]
                 code, _, stderr = self._classify(
-                    kind, f"{kind}.pairs", ["zeta,one", "alpha,two", "alpha,two"])
+                    kind, f"{kind}.pairs", pairs)
                 self.assertEqual(0, code, stderr)
-                self.assertEqual(["alpha,two", "zeta,one"],
+                self.assertEqual([f"alpha,{kind}", f"zeta,{kind}"],
                                  self._aggregate(kind).read_text().splitlines())
 
     def test_unions_a_second_file_into_the_aggregate(self):
         for kind in self.KINDS:
             with self.subTest(kind=kind):
-                self._classify(kind, f"{kind}.1.pairs", ["zeta,one"])
-                self._classify(kind, f"{kind}.2.pairs", ["alpha,two", "zeta,one"])
-                self.assertEqual(["alpha,two", "zeta,one"],
+                self._classify(kind, f"{kind}.1.pairs", [f"zeta,{kind}"])
+                self._classify(kind, f"{kind}.2.pairs",
+                               [f"alpha,{kind}", f"zeta,{kind}"])
+                self.assertEqual([f"alpha,{kind}", f"zeta,{kind}"],
                                  self._aggregate(kind).read_text().splitlines())
 
     def test_each_kind_has_its_own_aggregate(self):
@@ -310,16 +312,36 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(["alpha,two", "mid,three"],
                          reviewed.read_text().splitlines())
 
-    def test_warns_when_a_pair_lands_in_both_aggregates(self):
-        self._classify("no", "n.pairs", ["cheese,map", "diamond,throat"])
-        _, _, stderr = self._classify("yes", "y.pairs",
-                                      ["cheese,map", "alpha,two"])
-        self.assertIn("1 pair(s) now classified both YES and NO", stderr)
-        self.assertIn("cheese,map", stderr)
-        # A warning, not a refusal: there is no un-classify, so the reversal
-        # the user just asked for still lands.
-        self.assertEqual(["alpha,two", "cheese,map"],
-                         self._aggregate("yes").read_text().splitlines())
+    def test_refuses_an_input_that_conflicts_with_the_opposing_aggregate(self):
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                root = self.root / kind
+                root.mkdir()
+                fx.make_wf(root)
+                opposite = "no" if kind == "yes" else "yes"
+                current = config.classified(root, kind)
+                other = config.classified(root, opposite)
+                fx.write_pairs(current, ["already,here"])
+                fx.write_pairs(other, ["cheese,map", "diamond,throat"])
+                src = fx.write_pairs(
+                    root / "input.pairs", ["alpha,two", "cheese,map"])
+
+                code, stdout, stderr = fx.run_wf(
+                    "-d", str(root), "classify", kind, str(src))
+
+                self.assertEqual(1, code)
+                self.assertEqual("", stdout)
+                self.assertIn(f"Cannot classify {kind.upper()}", stderr)
+                self.assertIn(
+                    f"1 input pair(s) already classified {opposite.upper()}",
+                    stderr)
+                self.assertIn("cheese,map", stderr)
+                # Preflight is atomic: neither the conflicting pair nor the
+                # otherwise-new pair may leak into the requested aggregate.
+                self.assertEqual(["already,here"],
+                                 current.read_text().splitlines())
+                self.assertEqual(["cheese,map", "diamond,throat"],
+                                 other.read_text().splitlines())
 
     def test_is_silent_when_the_aggregates_do_not_overlap(self):
         self._classify("no", "n.pairs", ["cheese,map"])
