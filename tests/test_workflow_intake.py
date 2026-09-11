@@ -343,6 +343,26 @@ class ClassifyTests(unittest.TestCase):
                 self.assertEqual(["cheese,map", "diamond,throat"],
                                  other.read_text().splitlines())
 
+    def test_refuses_a_reversed_opposing_pair(self):
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                root = self.root / f"reversed-{kind}"
+                root.mkdir()
+                fx.make_wf(root)
+                opposite = "no" if kind == "yes" else "yes"
+                fx.write_pairs(config.classified(root, opposite),
+                               ["cheese,map"])
+                src = fx.write_pairs(root / "input.pairs",
+                                     ["alpha,two", "map,cheese"])
+
+                code, stdout, stderr = fx.run_wf(
+                    "-d", str(root), "classify", kind, str(src))
+
+                self.assertEqual(1, code)
+                self.assertEqual("", stdout)
+                self.assertIn("map,cheese", stderr)
+                self.assertEqual("", config.classified(root, kind).read_text())
+
     def test_is_silent_when_the_aggregates_do_not_overlap(self):
         self._classify("no", "n.pairs", ["cheese,map"])
         _, _, stderr = self._classify("yes", "y.pairs", ["alpha,two"])

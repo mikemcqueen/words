@@ -12,7 +12,7 @@
 
 from pathlib import Path
 
-from workflow import config
+from workflow import classify, config
 
 
 NAME = "classify"
@@ -40,6 +40,18 @@ def is_done(ctx) -> bool:
 
 
 def run_step(ctx) -> None:
+    # Check every surviving source before either aggregate changes. Besides
+    # keeping this batch atomic on a contradiction, this closes the other path
+    # into classified/ around the same directional-pair invariant as the
+    # standalone `wf classify` command.
+    for kind in KINDS:
+        source = ctx.artifact("p2", kind)
+        if source.exists():
+            other = config.classified(ctx.root, classify.OPPOSITE[kind])
+            conflicts = classify.contradictions(source, other)
+            if conflicts:
+                raise ValueError(classify.contradiction_message(kind, conflicts))
+
     # Per kind, because archive moves them one at a time: a crash between the
     # two leaves one gone, and re-running must fold what is left rather than
     # reach for what is not.
