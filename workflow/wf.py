@@ -5,7 +5,7 @@ from pathlib import Path
 
 from workflow import (
     best, classify, command, complete, dictionary, dispatch, extract,
-    filter_pairs, init, log, notes, show, submit, usage, wipe,
+    filter_pairs, history, init, log, notes, show, submit, usage, wipe,
     eval as evaluate,
 )
 
@@ -40,6 +40,7 @@ COMMANDS = {
                                    {"words": dictionary.REMOVE_WORDS}),
     "gen":      command.Dispatcher("gen      — generate a derived artifact (dict)",
                                    {"dict": dictionary.GEN_DICT}),
+    "history":  history.COMMAND,
     "best":     best.COMMAND,
     # Unregistered until it is brought up to the steps architecture -- it is
     # the last pre-`steps/` command and now names its output differently from
