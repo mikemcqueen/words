@@ -30,6 +30,7 @@ class RowTests(unittest.TestCase):
         self.results = self.root / "results"
         self.results.mkdir()
         self.target = state.one_target(self.opts.dir, "s2", "u-cdef", 4, 4)
+        self._write(self.best / "idx" / state.INDEX_NAME, "index\n", 10)
 
     # ------------------------------------------------------------- placement
 
@@ -68,7 +69,7 @@ class RowTests(unittest.TestCase):
         return self._write(self.dir / "best.pairs", text, mtime)
 
     def _search_pairs(self, text="a,b\n", mtime=60) -> Path:
-        """The pair list gen dfs.best published beside its results."""
+        """A legacy pre-migration dfs.best pair receipt."""
         return self._write(self.dir / "dfs.best.pairs", text, mtime)
 
     def _target_no(self, text="a,b\n", mtime=50) -> Path:
@@ -109,10 +110,9 @@ class RowTests(unittest.TestCase):
     def _steady(self) -> None:
         """The fixed point every row below is perturbed away from.
 
-        The bag under u-cdef is `ab`, and `a,b` is a confirmed pair it can
-        spell -- so the union dfs.best searches with is non-empty without any
-        best.pairs, which nothing generates and which need not be there at all.
-        dfs.best.pairs records that the search actually used it.
+        A target-local BEST promotion makes the refine stage distinct from the
+        sentence search. Its successful completion is recorded by the marker;
+        the legacy dfs.best.pairs file is deliberately irrelevant.
         """
         self._letters()
         self._seed()
@@ -122,7 +122,9 @@ class RowTests(unittest.TestCase):
         self._dfs("seed", 20)
         self._top(mtime=30, marker=70)
         self._archived(mtime=40)
+        self._best_pairs(mtime=10)
         self._dfs("best", 60)
+        self._write(generation.stamp(self.dir / "dfs.best"), "", 60)
         self._search_pairs("a,b\n")
 
     def _inputs(self) -> state.Inputs:
@@ -189,6 +191,8 @@ class RowTests(unittest.TestCase):
 
         for source in ("seed", "best"):
             with self.subTest(source=source):
+                if source == "best":
+                    self._best_pairs(mtime=10)
                 self._dfs(source)
                 result = self._require_state(state._no_frontier(self._inputs()))
                 self.assertEqual("top.segments missing", result.message)
@@ -197,15 +201,26 @@ class RowTests(unittest.TestCase):
                              f"--source {source}"},
                     self._commands(result))
                 (self.dir / f"dfs.{source}").unlink()
+                if source == "best":
+                    (self.dir / "best.pairs").unlink()
 
         self._dfs("seed")
         self._dfs("best")
+        self._best_pairs(mtime=10)
         result = self._require_state(state._no_frontier(self._inputs()))
         self.assertEqual("top.segments missing", result.message)
         self.assertEqual(
             {"seed": "wf best gen s2 -u cdef -g 4 top.segments --source seed",
              "best": "wf best gen s2 -u cdef -g 4 top.segments --source best"},
             self._commands(result))
+
+        # Deleting both target-local sources makes a leftover dfs.best
+        # inapplicable as a frontier source.
+        (self.dir / "dfs.seed").unlink()
+        (self.dir / "best.pairs").unlink()
+        result = self._require_state(state._no_frontier(self._inputs()))
+        self.assertEqual("no search results yet", result.message)
+        self.assertEqual(["next"], [choice.label for choice in result.choices])
 
         self._top()
         self.assertIsNone(state._no_frontier(self._inputs()))
@@ -268,41 +283,11 @@ class RowTests(unittest.TestCase):
             {"refine": "wf best prepare s2 -u cdef -g 4 --source best"},
             self._commands(result))
 
-    def test_no_usable_pairs_offers_a_widen_before_either_search(self):
+    def test_legacy_dfs_best_pairs_is_ignored(self):
         self._steady()
-        self._top("a,b\nc,d\n", mtime=30, source="best", marker=70)
-        # Two standing pairs, neither spellable from the `ab` bag.
-        self._classified("yes", text="x,y\nz,w\n")
-
-        result = self._require_state(state._no_usable_pairs(self._inputs()))
-        self.assertEqual("no allowed bonus pair fits this target's letters",
-                         result.message)
-        self.assertEqual(
-            "(2 pairs remain after exclusions, none spellable here)",
-            result.detail)
-        # The widen carries the recorded source and the frontier it already
-        # has, and it is the only row that renders a count.
-        self.assertEqual(
-            {"widen": "wf best gen s2 -u cdef -g 4 top.segments "
-                      "--source best -n 1002"},
-            self._commands(result))
-        self.assertEqual(
-            (f"or retract NO verdicts in {config.classified(self.root, 'no')}",
-             "   and run: wf best review s2 -u cdef -g 4",
-             f"or add pairs by hand to {self.dir / 'best.pairs'}"),
-            result.note)
-
-        # A reseed joins it only when the seed search is actually behind, and
-        # a refine never does: dfs.best refuses a set this bag cannot spell.
-        self._classified("no", 90)
-        result = self._require_state(state._no_usable_pairs(self._inputs()))
-        self.assertEqual(
-            ["widen", "reseed"], [choice.label for choice in result.choices])
-
-        # And a hand-edited best.pairs is a way back into the union that needs
-        # no review at all.
-        self._best_pairs("b,a\n")
-        self.assertIsNone(state._no_usable_pairs(self._inputs()))
+        self._search_pairs("completely,different\n", mtime=90)
+        self.assertEqual([], self._inputs().best_search_needed)
+        self.assertEqual("converged", self._state().message)
 
     def test_top_segments_behind_ignores_a_dfs_file_that_is_itself_stale(self):
         self._steady()
@@ -355,10 +340,11 @@ class RowTests(unittest.TestCase):
         self.assertEqual(["refine"],
                          [choice.label for choice in result.choices])
 
-        # And a union this bag cannot spell takes the refine off the table
-        # entirely.
+        # Pair contents are Nutrimatic's concern; the missing target-local
+        # search remains actionable regardless of what this bag can spell.
         self._classified("yes", text="x,y\n")
-        self.assertIsNone(state._next_search(self._inputs()))
+        result = self._require_state(state._next_search(self._inputs()))
+        self.assertEqual("dfs.best missing", result.message)
 
     def test_the_frontier_falls_behind_a_classify_until_a_regen(self):
         self._steady()
@@ -537,6 +523,34 @@ class RowTests(unittest.TestCase):
         self.assertEqual(["dictionary changed"], inputs.seed_search_needed)
         self.assertEqual(["dictionary changed"], inputs.best_search_needed)
 
+    def test_declared_global_sources_date_both_searches(self):
+        self._steady()
+        sources = (
+            (self._seed(), "seed changed"),
+            (self._letters(), "letters changed"),
+            (self.best / "idx" / state.INDEX_NAME, "index changed"),
+            (self._dictionary(), "dictionary changed"),
+            (self._classified("yes", text="a,b\n"),
+             "confirmed-YES set changed"),
+            (self._classified("no"), "hard-NO set changed"),
+        )
+        for path, reason in sources:
+            with self.subTest(reason=reason):
+                os.utime(path, (90, 90))
+                inputs = self._inputs()
+                self.assertIn(reason, inputs.seed_search_needed)
+                self.assertIn(reason, inputs.best_search_needed)
+                os.utime(path, (10, 10))
+
+    def test_a_legacy_best_without_a_marker_is_stale_once(self):
+        self._steady()
+        marker = generation.stamp(self.dir / "dfs.best")
+        marker.unlink()
+        self.assertEqual(["generation marker missing"],
+                         self._inputs().best_search_needed)
+        generation.mark_generated(self.dir / "dfs.best")
+        self.assertEqual([], self._inputs().best_search_needed)
+
     def test_a_review_is_still_offered_after_a_removal(self):
         """The frontier is unreviewed even where its bytes did not move.
 
@@ -588,22 +602,18 @@ class RowTests(unittest.TestCase):
         self._dfs("seed")
         self._classified("yes", text="a,b\n")
         self._classified("no")
-        for row in (state._review_needed, state._no_usable_pairs,
-                    state._frontier_outdated):
+        for row in (state._review_needed, state._frontier_outdated):
             with self.subTest(row=row.__name__):
                 with self.assertRaises(FileNotFoundError):
                     row(self._inputs())
 
         self._top()
         self.assertIsNone(state._frontier_outdated(self._inputs()))
-        self.assertIsNone(state._no_usable_pairs(self._inputs()))
 
-        # best.pairs is optional, so its absence is not a state -- but present
-        # and not a regular file is an error rather than a silent omission
-        # from the union.
+        # best.pairs is optional, but a non-file under that name is an error.
         self.dir.joinpath("best.pairs").mkdir()
         with self.assertRaises(ValueError):
-            state._no_usable_pairs(self._inputs())
+            _ = self._inputs().best_search_needed
 
     def test_search_conditions_refuse_to_answer_without_a_seed(self):
         self._letters()
@@ -620,7 +630,6 @@ class RowTests(unittest.TestCase):
              "_review_queued", "_review_evaluating",
              "_no_frontier",
              "_review_needed",
-             "_no_usable_pairs",
              "_top_segments_behind_dfs",
              "_frontier_outdated",
              "_dictionary_stale",
@@ -652,79 +661,86 @@ class RowTests(unittest.TestCase):
         self.assertEqual("review needed (frontier from seed)",
                          self._state().message)
 
-    def test_a_finished_search_outranks_a_frontier_behind_a_classify(self):
+    def test_a_classify_stales_a_search_before_its_frontier_is_reused(self):
         self._steady()
-        # A classify after the frontier's marker, and a finished dfs.seed the
-        # frontier was never generated from. Generating from the newer DFS
-        # satisfies both conditions at once, so the row naming it goes first;
-        # the other would regenerate from the recorded source, bump the marker
-        # past the finished search, and lose those hours.
+        # Classified YES is now a declared search source, so the finished
+        # search is itself stale and is not offered as a frontier source.
         self._classified("yes", 90, text="a,b\n")
         os.utime(self.results / "dfs.seed.out", (80, 80))
         self.assertTrue(self._inputs().frontier_outdated)
-        self.assertEqual("dfs.seed generated after top.segments",
-                         self._state().message)
+        self.assertEqual(
+            "top.segments behind its inputs (confirmed-YES set changed)",
+            self._state().message)
 
-    def test_no_usable_pairs_outranks_an_available_reseed(self):
+    def test_unspellable_pair_contents_do_not_block_search_choices(self):
         self._steady()
-        self._classified("yes", text="x,y\n")
-        self._classified("no", 45)
-        self.assertEqual("no allowed bonus pair fits this target's letters",
-                         self._state().message)
+        self._classified("yes", 90, text="x,y\n")
+        result = self._require_state(state._next_search(self._inputs()))
+        self.assertEqual(["reseed", "refine"],
+                         [choice.label for choice in result.choices])
 
-    def test_an_absent_best_pairs_is_not_a_state_and_a_hand_edit_is_read(self):
+    def test_target_source_presence_controls_whether_refine_exists(self):
         self._steady()
+        (self.dir / "best.pairs").unlink()
+        os.utime(self.results / "dfs.best.out", (90, 90))
         self.assertFalse((self.dir / "best.pairs").exists())
         self.assertEqual("converged", self._state().message)
+        self.assertFalse(self._inputs().top_segments_behind("best"))
 
-        # A pair the bag can spell, added by hand and confirmed nowhere: the
-        # union dfs.best would search with is no longer the one it used.
-        self._best_pairs("b,a\n")
-        self.assertEqual("dfs.best out of date (usable pair set changed)",
+        self._best_pairs("b,a\n", mtime=90)
+        self.assertEqual("dfs.best out of date (target-BEST set changed)",
                          self._state().message)
 
-        # And one it cannot spell changes nothing, because it could not have
-        # changed a score either.
-        self._best_pairs("tiger,lily\n")
-        self.assertEqual("converged", self._state().message)
+    def test_removing_the_last_target_source_invalidates_a_best_frontier(self):
+        for source in ("best.pairs", "no.pairs"):
+            with self.subTest(source=source):
+                self._steady()
+                (self.dir / "best.pairs").unlink()
+                if source == "best.pairs":
+                    self._best_pairs(mtime=10)
+                else:
+                    self._target_no(mtime=10)
+                self._top(mtime=30, source="best", marker=70)
+
+                (self.dir / source).unlink()
+                inputs = self._inputs()
+                self.assertIsNone(state._review_needed(inputs))
+                result = self._require_state(state._frontier_outdated(inputs))
+                self.assertEqual(
+                    "top.segments behind its inputs "
+                    "(target-local sources removed)", result.message)
+                self.assertEqual(
+                    {"next": "wf best gen s2 -u cdef -g 4 top.segments "
+                             "--source seed"},
+                    self._commands(result))
+                self.assertEqual(result, self._state())
+
+                self.dir.joinpath("best.pairs").unlink(missing_ok=True)
+                self.dir.joinpath("no.pairs").unlink(missing_ok=True)
 
     # ------------------------------------------------- target-local no.pairs
 
-    def test_a_local_exclusion_leaves_the_effective_bonus_set(self):
-        """The one pair the bag can spell, excluded for this target alone.
-
-        classified/yes is untouched -- the pair keeps its global verdict and
-        stays eligible everywhere else -- so what changes is the set this
-        target's dfs.best may weight with.
-        """
+    def test_a_local_exclusion_does_not_change_global_verdicts(self):
         self._steady()
-        self.assertEqual((1, 1, True), self._inputs().usable_pairs)
-
         self._target_no("a,b\n", mtime=50)
-        allowed, usable, current = self._inputs().usable_pairs
-        self.assertEqual((0, 0, False), (allowed, usable, current))
         self.assertEqual(
             "a,b\n", config.classified(self.root, "yes").read_text())
+        self.assertEqual([], self._inputs().seed_search_needed)
 
-    def test_an_unsorted_local_exclusion_is_still_subtracted(self):
-        """comm under-subtracts in silence on an unsorted right-hand side."""
+    def test_local_exclusion_contents_are_not_normalized_by_status(self):
         self._steady()
-        self._classified("yes", text="a,b\nb,a\n")
-        self._search_pairs("a,b\nb,a\n")
-        self.assertEqual((2, 2, True), self._inputs().usable_pairs)
+        local = self._target_no("b,a\na,b\nb,a\n", mtime=50)
+        self.assertEqual([], self._inputs().best_search_needed)
+        self.assertEqual("b,a\na,b\nb,a\n", local.read_text())
 
-        self._target_no("b,a\na,b\n", mtime=50)
-        self.assertEqual((0, 0, False), self._inputs().usable_pairs)
-
-    def test_a_newer_local_exclusion_dates_both_searches(self):
+    def test_a_newer_local_exclusion_dates_only_the_complete_search(self):
         self._steady()
         # Excluding a pair the bag cannot spell leaves a usable bonus set, so
         # both searches are still worth offering -- and both are now behind.
         self._classified("yes", text="a,b\ntiger,lily\n")
-        self._search_pairs("a,b\n")
         self._target_no("tiger,lily\n", mtime=90)
         inputs = self._inputs()
-        self.assertEqual(["target-NO set changed"], inputs.seed_search_needed)
+        self.assertEqual([], inputs.seed_search_needed)
         self.assertEqual(["target-NO set changed"], inputs.best_search_needed)
 
         # And an older one says nothing at all.
@@ -742,7 +758,6 @@ class RowTests(unittest.TestCase):
                          self._state().message)
 
         self._classified("yes", text="a,b\ntiger,lily\n")
-        self._search_pairs("a,b\n")
         self._target_no("tiger,lily\n", mtime=90)
         # The frontier is obsolete rather than unreviewed, so the review row
         # stands down and the regeneration is what is offered.
@@ -767,7 +782,6 @@ class RowTests(unittest.TestCase):
         self._steady()
         self._top(mtime=45, marker=45)
         self._classified("yes", text="a,b\ntiger,lily\n")
-        self._search_pairs("a,b\n")
         self._target_no("tiger,lily\n", mtime=90)
         self.assertIsNone(state._review_needed(self._inputs()))
 
@@ -784,42 +798,28 @@ class RowTests(unittest.TestCase):
         self._target_no("tiger,lily\n", mtime=90)
         generation.mark_generated(self.dir / "top.segments", "seed\n")
         # The archived round is still newer than the frontier it read, so the
-        # frontier has been reviewed and stays reviewed. What the exclusion
-        # left behind is the searches, which is the row that wins.
+        # frontier has been reviewed and stays reviewed. Only the complete
+        # search loads this target-local source.
         self.assertIsNone(state._review_needed(self._inputs()))
         self.assertEqual(
-            "dfs.seed out of date (target-NO set changed); "
             "dfs.best out of date (target-NO set changed)",
             self._state().message)
 
-    def test_no_usable_pairs_wins_and_names_the_local_file(self):
+    def test_local_exclusion_contents_do_not_create_a_dead_end_state(self):
         self._steady()
         self._top("a,b\nc,d\n", mtime=30, source="best", marker=70)
         self._target_no("a,b\n", mtime=90)
 
-        # The local exclusion took the last spellable pair, so the dead-end
-        # row wins over the search staleness it also created.
         result = self._state()
-        self.assertEqual("no allowed bonus pair fits this target's letters",
+        self.assertEqual(
+            "top.segments behind its inputs (target-NO set changed)",
+            result.message)
+        generation.mark_generated(self.dir / "top.segments", "best\n")
+        result = self._state()
+        self.assertEqual("dfs.best out of date (target-NO set changed)",
                          result.message)
-        self.assertEqual(
-            "(0 pairs remain after exclusions, none spellable here)",
-            result.detail)
-        self.assertIn(f"or retract target-local exclusions in "
-                      f"{self.dir / 'no.pairs'}", result.note)
-        # And no refine is offered: dfs.best refuses an empty bonus set.
-        self.assertEqual(["widen", "reseed"],
+        self.assertEqual(["refine"],
                          [choice.label for choice in result.choices])
-
-        # With no local file the remedy is not named at all.
-        (self.dir / "no.pairs").unlink()
-        self._classified("yes", text="x,y\n")
-        result = self._require_state(state._no_usable_pairs(self._inputs()))
-        self.assertEqual(
-            (f"or retract NO verdicts in {config.classified(self.root, 'no')}",
-             "   and run: wf best review s2 -u cdef -g 4",
-             f"or add pairs by hand to {self.dir / 'best.pairs'}"),
-            result.note)
 
     def test_an_open_review_outranks_a_newer_local_exclusion(self):
         self._steady()
@@ -844,15 +844,11 @@ class RowTests(unittest.TestCase):
 
     # ----------------------------------------------------- shared renderers
 
-    def test_both_rows_that_offer_a_reseed_render_the_same_command(self):
+    def test_classified_yes_change_offers_both_searches(self):
         self._steady()
-        self._classified("yes", text="x,y\n")
-        self._classified("no", 90)
-        empty = self._commands(state._no_usable_pairs(self._inputs()))
-
-        self._classified("yes", text="a,b\n")
+        self._classified("yes", 90, text="x,y\n")
         following = self._commands(state._next_search(self._inputs()))
-        self.assertEqual(empty["reseed"], following["reseed"])
+        self.assertEqual(["reseed", "refine"], list(following))
 
     def test_both_rows_that_offer_a_generation_render_the_same_command(self):
         self._letters()
@@ -936,8 +932,6 @@ class RowTests(unittest.TestCase):
         self.assertTrue(verdicts["_no_frontier"].fired)
         self.assertEqual(("top.segments",), verdicts["_review_needed"].unmet)
         self.assertEqual(("top.segments", "seed"),
-                         verdicts["_no_usable_pairs"].unmet)
-        self.assertEqual(("top.segments", "seed"),
                          verdicts["_top_segments_behind_dfs"].unmet)
         self.assertEqual(("top.segments",),
                          verdicts["_frontier_outdated"].unmet)
@@ -954,7 +948,6 @@ class RowTests(unittest.TestCase):
         self._top()
         verdicts = self._labels()
         self.assertEqual((), verdicts["_review_needed"].unmet)
-        self.assertEqual((), verdicts["_no_usable_pairs"].unmet)
         self.assertEqual((), verdicts["_top_segments_behind_dfs"].unmet)
         self.assertEqual((), verdicts["_frontier_outdated"].unmet)
 
