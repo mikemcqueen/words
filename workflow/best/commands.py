@@ -133,11 +133,11 @@ class Gen(command.Action):
                              ("SENTENCE", "sentence identifier under .wf/best "
                               "(for example, s2)"),
                              ("STAGE", "artifact to generate: dfs.seed "
-                              "(provisional DFS results), top.segments "
+                              "(DFS results using the sentence seed plus "
+                              "classified YES), top.segments "
                               "(frequent pairs from the DFS results named by "
-                              "--source), or dfs.best (DFS results weighted "
-                              "by the confirmed-YES pairs this target's "
-                              "letters can spell)"),
+                              "--source), or dfs.best (DFS results also using "
+                              "target-local BEST promotion)"),
                          ))
 
     def parser(self):
@@ -348,8 +348,8 @@ def _names_local_no(target) -> str:
     """Where a refusal says which target-local file did some of the excluding.
 
     Only when there is one: an operator who has never written a no.pairs is
-    not sent looking for it. With `_no_usable_pairs` this is where a message
-    that says "or excluded" says what did the excluding.
+    not sent looking for it. This is where a review refusal that says "or
+    excluded" says what did the excluding.
     """
     local_no = target_no_pairs(target)
     if local_no is None:
@@ -418,9 +418,9 @@ class Review(command.Action):
             scratch = Path(tmp)
             collated = setops.merge([top_segments], scratch / "top.pairs")
             # Both standing sets come out, not just the hard-NO one. A YES
-            # verdict is global and reaches --pairs directly from
-            # classified/yes, so re-asking about a pair that already has one
-            # buys nothing. It is a no-op against a -y-filtered frontier.
+            # verdict is global and reaches dfs-anagrams through --wfroot, so
+            # re-asking about a pair that already has one buys nothing. It is
+            # a no-op against a -y-filtered frontier.
             #
             # The target-local exclusions come out here too, and this is only
             # mostly covered by the -r the generation passes: a frontier made
@@ -496,7 +496,7 @@ class Review(command.Action):
         for line in render_choices(choices):
             print(line)
         if not choices:
-            print("  converged: both searches are up to date")
+            print("  converged: no declared search source has changed")
         return 0
 
 

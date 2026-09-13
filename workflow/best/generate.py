@@ -2,14 +2,13 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 
 from pathlib import Path
 
 from workflow import config, fs, generation, log, setops
 from workflow.best.state import (
-    Target, build_search_pairs, search_pair_sources, target_no_pairs,
+    INDEX_NAME, Target, target_no_pairs,
 )
 
 
@@ -17,9 +16,6 @@ DFS_LIMIT = 1_000_000
 # What top-segments itself defaults -n to. Named here because `prepare` passes
 # its own cutoff explicitly and has to pass the one the primitive would have.
 TOP_LIMIT = 1000
-INDEX_NAME = "wiki-merged.2.index"
-
-
 def _command_not_found(name: str) -> FileNotFoundError:
     return FileNotFoundError(f"command not found: {name}")
 
@@ -53,13 +49,14 @@ def _dfs_name(target: Target, seed: Path, limit: int, final: bool) -> str:
             f"{limit}.{target.letter_set}")
 
 
-def _display_dfs(argv: list[str], target: Target) -> None:
+def _display_dfs(argv: list[str], target: Target, bag_position: int) -> None:
     displayed = [shlex.quote(arg) for arg in argv]
     if target.letter_form == "u":
         # Under u- the positional is the frozen bag, a hundred characters that
         # would bury the rest. Under o- it is the label's own letters, which
         # are short and are shown literally.
-        displayed[2] = f'"$(cat {shlex.quote(str(target.letters))})"'
+        displayed[bag_position] = (
+            f'"$(cat {shlex.quote(str(target.letters))})"')
     print("Running dfs-anagrams:", file=sys.stderr)
     print(f"  {' '.join(displayed)}", file=sys.stderr)
 
@@ -86,25 +83,8 @@ def _publish_link(link: Path, destination: Path) -> None:
     tmp.replace(link)
 
 
-def _exclusions(target: Target) -> list[str]:
-    """The --exclude-pairs flags a search runs with, root set first.
-
-    Both legs take both sets. The root directory resolves to the global
-    hard-NO verdicts; the target-local file, where the operator has written
-    one, drops pairs that are good English but wrong for this bag or this
-    segmentation. dfs-anagrams accepts the flag repeatedly as long as only
-    one argument is a directory, which is what the root is and the local file
-    is not.
-    """
-    argv = ["--exclude-pairs", str(target.root)]
-    target_no = target_no_pairs(target)
-    if target_no is not None:
-        argv.extend(["--exclude-pairs", str(target_no)])
-    return argv
-
-
 def _dfs_inputs(target: Target, results_dir: Path,
-                final: bool) -> tuple[Path, Path, Path, list[Path], list[str]]:
+                final: bool) -> Path:
     """Everything a DFS run reads, checked before anything is created."""
     _require_command("dfs-anagrams")
     index = target.best_dir / "idx" / INDEX_NAME
@@ -118,20 +98,22 @@ def _dfs_inputs(target: Target, results_dir: Path,
     seed = target.seed()
     if seed is None:
         raise FileNotFoundError(f"seed missing: {target.seed_glob}")
+    fs.raise_if_not_file(seed)
+    fs.raise_if_not_file(config.classified(target.root, "yes"))
     fs.raise_if_not_file(config.classified(target.root, "no"))
     fs.raise_if_not_dir(results_dir)
-    # Resolved here with the rest, so a no.pairs that is a directory or a
-    # dangling symlink stops the run before it creates anything rather than
-    # being handed to dfs-anagrams, which aborts on a file it cannot open.
-    exclusions = _exclusions(target)
-    # The final leg unions its --pairs out of several files rather than
-    # reading one, so what the run reads is a list either way.
     if final:
-        sources = search_pair_sources(target)
-    else:
-        fs.raise_if_not_file(seed)
-        sources = [seed]
-    return index, dictionary, seed, sources, exclusions
+        # Both are optional hand-placed inputs. Resolve them here so a
+        # directory or dangling symlink fails before a target or result is
+        # created, even though dfs-anagrams will discover the paths itself.
+        best_pairs = fs.optional_file(target.artifact("best.pairs"))
+        no_pairs = target_no_pairs(target)
+        if best_pairs is None and no_pairs is None:
+            raise ValueError(
+                f"dfs.best would repeat dfs.seed for {target.address}; add "
+                f"{target.artifact('best.pairs')} or "
+                f"{target.artifact('no.pairs')} to make it differ")
+    return seed
 
 
 def gen_dfs(target: Target, *, final: bool, force: bool,
@@ -151,38 +133,16 @@ def gen_dfs(target: Target, *, final: bool, force: bool,
     anything is created.
     """
     results_dir = Path(results_dir or "results").resolve()
-    # The scratch directory wraps the whole run so the union outlives input
-    # validation and the search that reads it.
-    with tempfile.TemporaryDirectory(prefix="wf-dfs-pairs-") as tmp:
-        _run_dfs(target, Path(tmp), final=final, force=force,
-                 results_dir=results_dir, count=count, dry_run=dry_run)
+    _run_dfs(target, final=final, force=force, results_dir=results_dir,
+             count=count, dry_run=dry_run)
 
 
-def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
+def _run_dfs(target: Target, *, final: bool, force: bool,
              results_dir: Path, count: int | None, dry_run: bool) -> None:
-    index, dictionary, seed, sources, exclusions = _dfs_inputs(
-        target, results_dir, final)
+    seed = _dfs_inputs(target, results_dir, final)
     sentence_results = results_dir / target.sentence
     if sentence_results.exists():
         fs.raise_if_not_dir(sentence_results)
-
-    if final:
-        pairs, allowed = build_search_pairs(target, scratch_dir)
-        if fs.line_count(pairs) == 0:
-            # dfs-anagrams given a --pairs nothing in it can spell is a
-            # strictly worse dfs.seed: the same search with the pair bonuses
-            # switched off. There is no case where spending hours on it is
-            # right, so the refusal lands here with the other input checks,
-            # before anything is created.
-            named = " or ".join(str(source) for source in sources)
-            raise ValueError(
-                f"no pair in {named} survives exclusions and letter-bag "
-                f"filtering for {target.address} ({allowed} pairs remain "
-                f"after exclusions); dfs.best would search without pair "
-                f"bonuses. Review more of top.segments, or add pairs to "
-                f"{target.artifact('best.pairs')}")
-    else:
-        pairs = seed
 
     if not target.target_dir.exists() and not force:
         fs.raise_if_not_dir(target.target_dir)
@@ -195,28 +155,18 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
     else:
         letters = target.letters.read_text().rstrip("\r\n")
         bag = [letters, "-u", target.named_letters]
+    selected_target = target.address if final else target.sentence
     argv = [
-        "dfs-anagrams", str(index), *bag,
+        "dfs-anagrams", *bag,
+        "--wfroot", str(target.root),
+        "-t", selected_target,
         "-m", str(target.min_words),
-        "-S", "20",
+        "-g", str(target.segment_count),
         "-p", "10000000",
         "-n", str(limit),
-        "--word-bonus", "1",
-        "--dict", str(dictionary),
-        "--pairs", str(pairs),
-        *exclusions,
-        "-x", "2",
-        "-g", str(target.segment_count),
     ]
-    _display_dfs(argv, target)
+    _display_dfs(argv, target, 1)
     if dry_run:
-        if final:
-            # The union is built in a scratch directory that this command's
-            # own exit removes, so the printed --pairs path is a description
-            # of the search rather than a file to re-run it against.
-            log.warn(f"dry run: --pairs is a temporary union of "
-                     f"{fs.line_count(pairs)} of {allowed} allowed pairs, "
-                     f"removed when this command exits")
         return
     # The directories are created here, after the print rather than with the
     # checks above: -f still creates any missing part of
@@ -232,21 +182,13 @@ def _run_dfs(target: Target, scratch_dir: Path, *, final: bool, force: bool,
     scratch.replace(rendered)
     artifact = "dfs.best" if final else "dfs.seed"
     _publish_link(target.artifact(artifact), rendered)
+    if final:
+        # Last in the publication sequence: a crash before this point leaves
+        # the marker missing or old, so status offers the search once more.
+        generation.mark_generated(target.artifact("dfs.best"))
     elapsed = _format_duration(time.monotonic() - started)
     log.success(f"Generated {fs.line_count(rendered)} results in {elapsed} "
                 f"→ {rendered}")
-    if final:
-        # After the search, not before. Written first, an interrupted run
-        # would leave a dfs.best.pairs describing a search that never
-        # finished, matching whatever Inputs recomputes, and status would call
-        # the previous dfs.best current. Written last, a crash between the two
-        # leaves the record behind, status re-offers the search, and the state
-        # heals -- the ordering gen_top_segments spells out for its own marker.
-        # merge over an already-sorted file, taken for its atomic write-aside
-        # and rename rather than for the sort.
-        published = setops.merge([pairs], target.artifact("dfs.best.pairs"))
-        log.success(f"Searched with {fs.line_count(published)} of {allowed} "
-                    f"allowed pairs → {target.address}/dfs.best.pairs")
 
 
 def gen_top_segments(target: Target, *, source: str,

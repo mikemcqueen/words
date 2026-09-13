@@ -1,6 +1,4 @@
-import filecmp
 import re
-import tempfile
 
 from collections import Counter
 from collections.abc import Callable
@@ -8,7 +6,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from workflow import config, fs, generation, setops
+from workflow import config, fs, generation
 
 
 SHAPES = (
@@ -23,6 +21,7 @@ SHAPES = (
 # which is what such a sentence holds there instead.
 LETTER_SET_DEPTH = 1
 UNIVERSE_DEPTH = 2
+INDEX_NAME = "wiki-merged.2.index"
 
 
 @dataclass(frozen=True)
@@ -295,37 +294,6 @@ def check_letter_set(target: Target) -> None:
                              f"as {sibling.name}")
 
 
-# ------------------------------------------------------------- search pairs
-
-
-def search_bag(target: Target) -> str:
-    """The multiset of letters this target's search may spend, sorted."""
-    fs.raise_if_not_file(target.letters)
-    working = _working_bag(target.letter_set,
-                           _bag(target.letters.read_text()))
-    if working is None:
-        # check_letter_set guarantees this at creation time, but it returns
-        # early for a letter set that already exists -- so an established
-        # target whose letters file was edited under it reaches here.
-        raise ValueError(
-            f"{target.address}: {target.letter_set} names no proper subset "
-            f"of {target.sentence}/letters")
-    return working
-
-
-def search_pair_sources(target: Target) -> list[Path]:
-    """The pair files unioned into --pairs, in display order."""
-    confirmed_yes = config.classified(target.root, "yes")
-    fs.raise_if_not_file(confirmed_yes)
-    sources = [confirmed_yes]
-    # Optional, so absence is not an error -- but a directory or a dangling
-    # symlink under that name is, rather than a silent omission.
-    best_pairs = fs.optional_file(target.artifact("best.pairs"))
-    if best_pairs is not None:
-        sources.append(best_pairs)
-    return sources
-
-
 def target_no_pairs(target: Target) -> Path | None:
     """This target's hand-managed exclusions, or None where it has none.
 
@@ -336,49 +304,6 @@ def target_no_pairs(target: Target) -> Path | None:
     classified/no, which is the set that answers for every target at once.
     """
     return fs.optional_file(target.artifact("no.pairs"))
-
-
-def build_search_pairs(target: Target, scratch: Path) -> tuple[Path, int]:
-    """The pairs dfs.best may use, and how many stood before the bag filter.
-
-    Both merges are what normalise a hand-edited file: best.pairs and
-    no.pairs may be unsorted and may hold duplicates, and setops.diff shells
-    out to comm, which requires LC_ALL=C order on both sides and
-    under-subtracts in silence rather than failing when it does not get it.
-
-    Subtracting the hard-NO set is redundant against dfs-anagrams itself --
-    emit tests exclude_pairs and returns before it reaches the pair flag --
-    but it is what makes the returned count honest, and it keeps the file
-    meaning what its name says. The target-local set is subtracted for the
-    same reason and passed to the search for the first one.
-
-    The bag filter is the load-bearing step, and it is safe because
-    enumeration is bounded by the letter bag: a pair the bag cannot spell is
-    never emitted, never looked up, and cannot affect a score whether it is
-    in the set or out of it. The input is already sorted-unique and a filter
-    preserves order, so the result is still a set comm and filecmp can read.
-    """
-    yes_union = setops.merge(search_pair_sources(target),
-                             scratch / "union.yes.pairs")
-    no_union = config.classified(target.root, "no")
-    target_no = target_no_pairs(target)
-    if target_no is not None:
-        no_union = setops.merge([no_union, target_no],
-                                scratch / "union.no.pairs")
-    allowed = setops.diff(yes_union, no_union, scratch / "allowed.pairs")
-    bag = search_bag(target)
-    filtered = scratch / "dfs.best.pairs"
-    with allowed.open() as source, filtered.open("w") as out:
-        for line in source:
-            # Every line in the classified sets and in a best.pairs matches
-            # ^[a-z]*,[a-z]*$, so the comma is the only non-letter to strip;
-            # _bag drops whitespace for anything hand-typed.
-            pair = line.strip()
-            if not pair:
-                continue
-            if _without(bag, _bag(pair.replace(",", ""))) is not None:
-                out.write(f"{pair}\n")
-    return filtered, fs.line_count(allowed)
 
 
 # ----------------------------------------------------------- generation clock
@@ -620,11 +545,10 @@ class Inputs:
     a row reaching one out of order fails loudly instead of quietly.
 
     The conditions and the command strings live here rather than in the rows
-    because several rows share them: `_no_usable_pairs` and `_next_search`
-    both offer a reseed, `_no_frontier` and `_top_segments_behind_dfs` both
-    offer a top.segments generation, and `_frontier_outdated` and
-    `Review._converged` share one condition. Two renderings of one command is
-    the drift `eval_p2_command` exists to prevent.
+    because several rows share them: `_no_frontier` and
+    `_top_segments_behind_dfs` both offer a top.segments generation, and
+    `_frontier_outdated` and `Review._converged` share one condition. Two
+    renderings of one command is the drift `eval_p2_command` exists to prevent.
     """
 
     target: Target
@@ -641,11 +565,21 @@ class Inputs:
 
     @cached_property
     def hard_no(self) -> Path:
-        return config.classified(self.target.root, "no")
+        path = config.classified(self.target.root, "no")
+        fs.raise_if_not_file(path)
+        return path
 
     @cached_property
     def confirmed_yes(self) -> Path:
-        return config.classified(self.target.root, "yes")
+        path = config.classified(self.target.root, "yes")
+        fs.raise_if_not_file(path)
+        return path
+
+    @cached_property
+    def index(self) -> Path:
+        path = self.target.best_dir / "idx" / INDEX_NAME
+        fs.raise_if_not_file(path)
+        return path
 
     @cached_property
     def base_dictionary(self) -> Path:
@@ -705,12 +639,21 @@ class Inputs:
     def target_no(self) -> Path | None:
         """This target's own exclusions, or None where it has none.
 
-        Optional the way the dictionary is, and dated the same way: nothing
-        creates it, so its absence is the ordinary case and only its mtime
-        answers for it. Deleting one is therefore not a timestamp event --
-        see `best_search_needed`, which notices the removal by content.
+        Nothing creates it, so its absence is the ordinary case and only its
+        mtime answers for it. Deleting it while best.pairs remains is therefore
+        not a timestamp event; deleting both suppresses the refine stage.
         """
         return target_no_pairs(self.target)
+
+    @cached_property
+    def target_best(self) -> Path | None:
+        """This target's hand-placed BEST promotions, when present."""
+        return fs.optional_file(self.target.artifact("best.pairs"))
+
+    @cached_property
+    def refine_applicable(self) -> bool:
+        """Whether the complete target loads anything the sentence does not."""
+        return self.target_best is not None or self.target_no is not None
 
     @cached_property
     def seed(self) -> Path | None:
@@ -736,9 +679,15 @@ class Inputs:
         return top_segments_source(self.target)
 
     @cached_property
+    def frontier_source_applicable(self) -> bool:
+        """Whether the recorded frontier source remains a distinct search."""
+        return self.source != "best" or self.refine_applicable
+
+    @cached_property
     def dfs_present(self) -> tuple[str, ...]:
         return tuple(source for source in SOURCES
-                     if self.dfs(source).exists())
+                     if self.dfs(source).exists()
+                     and (source != "best" or self.refine_applicable))
 
     # ------------------------------------------------------------- conditions
 
@@ -752,40 +701,21 @@ class Inputs:
         reasons = []
         if _newer(self.seed, dfs_seed):
             reasons.append("seed changed")
+        if _newer(self.target.letters, dfs_seed):
+            reasons.append("letters changed")
+        if _newer(self.index, dfs_seed):
+            reasons.append("index changed")
         # The derived file itself, not its marker: an effective dictionary
         # change invalidates the search, while a rebuild whose output is
         # byte-identical advances only the marker and must not offer hours of
         # redundant work.
         if _newer(self.dictionary, dfs_seed):
             reasons.append("dictionary changed")
+        if _newer(self.confirmed_yes, dfs_seed):
+            reasons.append("confirmed-YES set changed")
         if _newer(self.hard_no, dfs_seed):
             reasons.append("hard-NO set changed")
-        if self.target_no is not None and _newer(self.target_no, dfs_seed):
-            reasons.append("target-NO set changed")
         return reasons
-
-    @cached_property
-    def usable_pairs(self) -> tuple[int, int, bool]:
-        """(allowed pairs, how many this bag spells, whether dfs.best used them).
-
-        Allowed means what survives both NO sets -- the root's classified/no
-        and this target's own no.pairs -- before the letter bag is consulted.
-
-        status never writes the list: it is recomputed into a temp directory
-        and compared against the one gen_dfs published. gen_dfs is the only
-        writer, and only on a run that finished.
-
-        filecmp caches by (path, size, mtime) on both sides, which is what
-        setops._place has to clear because it reuses one temp path. Here the
-        directory name is unique per call, so no two comparisons can share a
-        key and there is nothing to clear.
-        """
-        with tempfile.TemporaryDirectory(prefix="wf-usable-pairs-") as tmp:
-            pairs, allowed = build_search_pairs(self.target, Path(tmp))
-            stored = self.target.artifact("dfs.best.pairs")
-            current = (stored.is_file()
-                       and filecmp.cmp(pairs, stored, shallow=False))
-            return allowed, fs.line_count(pairs), current
 
     @cached_property
     def frontier_outdated(self) -> list[str]:
@@ -799,6 +729,8 @@ class Inputs:
         """
         generated = generation.generated(self.top_segments)
         reasons = []
+        if not self.frontier_source_applicable:
+            reasons.append("target-local sources removed")
         if _newer(self.confirmed_yes, generated):
             reasons.append("confirmed-YES set changed")
         if _newer(self.hard_no, generated):
@@ -811,28 +743,33 @@ class Inputs:
 
     @cached_property
     def best_search_needed(self) -> list[str]:
-        # No pair this bag can spell makes dfs.best a strictly worse dfs.seed,
-        # so there is no such search to offer and no reason to date one.
-        _, usable, current = self.usable_pairs
-        if usable == 0:
+        # With no target-local source, the complete target loads exactly what
+        # the sentence target does, so dfs.best would repeat dfs.seed.
+        if not self.refine_applicable:
             return []
         dfs_best = self.dfs("best")
         if not dfs_best.exists():
             return ["missing"]
         reasons = []
-        # A content comparison, not a clock comparison, and that is the point:
-        # classified/yes is one file shared by every target, so a YES recorded
-        # for one bag must not mark every other target's dfs.best stale and
-        # offer hours that would reproduce the same file byte for byte. An
-        # absent dfs.best.pairs reads as changed -- there is no record of what
-        # the run used, and re-running is the only way to get one.
-        if not current:
-            reasons.append("usable pair set changed")
-        if _newer(self.dictionary, dfs_best):
+        marker = generation.stamp(dfs_best)
+        if not marker.exists():
+            return ["generation marker missing"]
+        fs.raise_if_not_file(marker)
+        if _newer(self.seed, marker):
+            reasons.append("seed changed")
+        if _newer(self.target.letters, marker):
+            reasons.append("letters changed")
+        if _newer(self.index, marker):
+            reasons.append("index changed")
+        if _newer(self.dictionary, marker):
             reasons.append("dictionary changed")
-        if _newer(self.hard_no, dfs_best):
+        if _newer(self.confirmed_yes, marker):
+            reasons.append("confirmed-YES set changed")
+        if _newer(self.hard_no, marker):
             reasons.append("hard-NO set changed")
-        if self.target_no is not None and _newer(self.target_no, dfs_best):
+        if self.target_best is not None and _newer(self.target_best, marker):
+            reasons.append("target-BEST set changed")
+        if self.target_no is not None and _newer(self.target_no, marker):
             reasons.append("target-NO set changed")
         return reasons
 
@@ -848,7 +785,8 @@ class Inputs:
         frontier on results the next row is about to call stale.
         """
         dfs = self.dfs(source)
-        if not dfs.exists() or self.search_needed(source):
+        if (source == "best" and not self.refine_applicable
+                or not dfs.exists() or self.search_needed(source)):
             return False
         return _newer(dfs, generation.generated(self.top_segments))
 
@@ -1003,7 +941,8 @@ def _review_needed(inputs: Inputs) -> State | None:
     top_segments = inputs.top_segments
     generated = generation.generated(top_segments)
     target_no = inputs.target_no
-    if (newest > top_segments.stat().st_mtime_ns
+    if (not inputs.frontier_source_applicable
+            or newest > top_segments.stat().st_mtime_ns
             or _newer(inputs.dictionary, generated)
             or (target_no is not None and _newer(target_no, generated))):
         return None
@@ -1012,50 +951,6 @@ def _review_needed(inputs: Inputs) -> State | None:
                else inputs.review_command())
     return State(f"review needed (frontier from {inputs.source})",
                  choices=(Choice("next", command),))
-
-
-def _no_usable_pairs(inputs: Inputs) -> State | None:
-    """No pair left standing after the exclusions fits this target's letters.
-
-    The union goes green as soon as anyone anywhere says YES, so the dead-end
-    test is whether any pair the exclusions leave standing is spellable from
-    this bag. Fires whenever none is, not only at a dead end: widening the
-    frontier is orders of magnitude cheaper than either search, and a wider
-    frontier means more review candidates, more YES verdicts, and more union
-    entries -- so the operator should see it before reaching for hours of DFS.
-    """
-    # The frontier is read before the early return, not after it, so the
-    # accessor that reports an absent top.segments is the preceding line
-    # rather than something a declining row would skip past.
-    frontier = fs.line_count(inputs.top_segments)
-    allowed, usable, _ = inputs.usable_pairs
-    if usable != 0:
-        return None
-    choices = [Choice("widen", inputs.gen_top_command(
-        inputs.source, frontier + WIDEN_STEP))]
-    if inputs.seed_search_needed:
-        choices.append(Choice("reseed", inputs.prepare_command("seed")))
-    # No refine: gen dfs.best and prepare --source best both refuse a pair set
-    # this bag cannot spell. And no command retracts a verdict -- classify is
-    # union-only -- so the way back is prose. A hand-edit of the hard-NO set
-    # does not reopen the review either, which is why the review is named with
-    # it; hand-adding to best.pairs needs no review at all.
-    note = [f"or retract NO verdicts in {inputs.hard_no}",
-            f"   and run: {inputs.review_command()}"]
-    if inputs.target_no is not None:
-        # Named only when it is there: an operator who has never written one
-        # would be sent to retract from a file that does not exist. This and
-        # the two review refusals are where the feature is discoverable.
-        note.append(f"or retract target-local exclusions in "
-                    f"{inputs.target_no}")
-    note.append(f"or add pairs by hand to "
-                f"{inputs.target.artifact('best.pairs')}")
-    return State(
-        "no allowed bonus pair fits this target's letters",
-        detail=f"({allowed} pairs remain after exclusions, "
-               f"none spellable here)",
-        choices=tuple(choices),
-        note=tuple(note))
 
 
 def _top_segments_behind_dfs(inputs: Inputs) -> State | None:
@@ -1081,9 +976,10 @@ def _frontier_outdated(inputs: Inputs) -> State | None:
     reasons = inputs.frontier_outdated
     if not reasons:
         return None
+    source = inputs.source if inputs.frontier_source_applicable else "seed"
     return State(
         f"top.segments behind its inputs ({', '.join(reasons)})",
-        choices=_top_segments_choices(inputs, (inputs.source,)))
+        choices=_top_segments_choices(inputs, (source,)))
 
 
 def _dictionary_stale(inputs: Inputs) -> State | None:
@@ -1157,22 +1053,20 @@ ROWS = (
     Row(_no_frontier, provides="top.segments"),
     # G3 -- frontier not yet reviewed
     Row(_review_needed, requires=("top.segments", "dictionary")),
-    # G4 -- the dead end: no standing pair this bag can spell
-    Row(_no_usable_pairs, requires=("top.segments", "seed")),
-    # G5 -- a finished search whose frontier was never generated. Above G6
+    # G4 -- a finished search whose frontier was never generated. Above G5
     # because generating from the newer DFS satisfies both conditions at once,
     # where a regen from the recorded source would bump the marker past the
     # finished search and lose it.
     Row(_top_segments_behind_dfs, requires=("top.segments", "seed")),
-    # G6 -- a classify, or a dictionary edit, the frontier has not been
+    # G5 -- a classify, or a dictionary edit, the frontier has not been
     # rebuilt against. Below _review_needed so a freshly generated frontier
     # gets reviewed rather than immediately regenerated, and above the
     # searches so the seconds are offered before the hours.
     Row(_frontier_outdated, requires=("top.segments", "dictionary")),
-    # G7 -- the derived dictionary is behind the records it derives from.
+    # G6 -- the derived dictionary is behind the records it derives from.
     # Above _next_search so the seconds are offered before the hours.
     Row(_dictionary_stale, requires=("base_dictionary", "dictionary")),
-    # G8 -- start the next search
+    # G7 -- start the next search
     Row(_next_search, requires=("seed",)),
 )
 
@@ -1185,9 +1079,8 @@ def derive_state(target: Target) -> State:
         if state is not None:
             return state
     # Not "up to date", which would read as a lost write: the frontier has
-    # been rebuilt against the classified sets as they stand, and no pair the
-    # last dfs.best could use has changed, so re-running either search
-    # reproduces what is already there.
+    # been rebuilt against the declared source files as they stand, and none
+    # has changed since its search, so re-running reproduces what is there.
     return State("converged")
 
 
