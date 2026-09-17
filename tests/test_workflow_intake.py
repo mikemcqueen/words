@@ -374,6 +374,33 @@ class ClassifyTests(unittest.TestCase):
                                       ["alpha,two", "zeta,one"])
         self.assertIn("1 new, 2 total", stdout)
 
+    def test_dry_run_reports_counts_without_updating_the_aggregate(self):
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                root = self.root / f"dry-run-{kind}"
+                root.mkdir()
+                fx.make_wf(root)
+                aggregate = config.classified(root, kind)
+                fx.write_pairs(aggregate, [f"zeta,{kind}"])
+                before = aggregate.stat().st_mtime_ns
+                src = fx.write_pairs(
+                    root / "input.pairs",
+                    [f"alpha,{kind}", f"alpha,{kind}", f"zeta,{kind}"],
+                )
+
+                code, stdout, stderr = fx.run_wf(
+                    "-d", str(root), "--dry-run", "classify", kind, str(src))
+
+                self.assertEqual(0, code, stderr)
+                self.assertIn(
+                    f"Would classify {kind.upper()}: 1 new, 2 total → "
+                    f"{kind}.pairs",
+                    stdout,
+                )
+                self.assertEqual([f"zeta,{kind}"],
+                                 aggregate.read_text().splitlines())
+                self.assertEqual(before, aggregate.stat().st_mtime_ns)
+
     def test_a_missing_input_is_an_error(self):
         with self.assertRaises(FileNotFoundError):
             fx.run_wf("-d", str(self.root), "classify", "no",
