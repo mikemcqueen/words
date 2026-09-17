@@ -90,6 +90,13 @@ class Classify(command.Action):
 
         dst = config.classified(opts.dir, self.kind)
         before = fs.line_count(dst) if dst.exists() else 0
+        if opts.dry_run:
+            current = set(dst.read_text().splitlines()) if dst.exists() else set()
+            total = len(current | set(src.read_text().splitlines()))
+            log.success(f"Would classify {self.kind.upper()}: "
+                        f"{total - before} new, {total} total → {dst.name}")
+            return 0
+
         config.fold_classified(opts.dir, self.kind, src)
         total = fs.line_count(dst)
 
