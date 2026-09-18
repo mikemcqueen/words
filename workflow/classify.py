@@ -62,6 +62,17 @@ def contradiction_message(kind: str, pairs: list[str]) -> str:
             f"{OPPOSITE[kind].upper()}: {shown}{more}")
 
 
+def fold(root: Path, kind: str, src: Path) -> Path:
+    """Fold src into a classified set and report its new and total counts."""
+    dst = config.classified(root, kind)
+    before = fs.line_count(dst) if dst.exists() else 0
+    config.fold_classified(root, kind, src)
+    total = fs.line_count(dst)
+    log.success(f"Classified {kind.upper()}: {total - before} new, "
+                f"{total} total → {dst.name}")
+    return dst
+
+
 class Classify(command.Action):
     def __init__(self, kind: str, label: str):
         super().__init__(
@@ -97,11 +108,7 @@ class Classify(command.Action):
                         f"{total - before} new, {total} total → {dst.name}")
             return 0
 
-        config.fold_classified(opts.dir, self.kind, src)
-        total = fs.line_count(dst)
-
-        log.success(f"Classified {self.kind.upper()}: {total - before} new, "
-                    f"{total} total → {dst.name}")
+        fold(opts.dir, self.kind, src)
         return 0
 
 

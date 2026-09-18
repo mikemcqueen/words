@@ -135,6 +135,18 @@ class P2RecipeTests(unittest.TestCase):
         self.assertEqual(["alpha,two", "beta,five", "mid,three"],
                          (self._slot("classified", "yes") / "yes.pairs").read_text().splitlines())
 
+    def test_reports_classified_new_and_total_counts(self):
+        fx.write_pairs(config.classified(self.root, "yes"),
+                       ["alpha,two"])
+        fx.write_pairs(config.classified(self.root, "no"),
+                       ["zeta,one"])
+
+        code, stdout, stderr = self._complete()
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Classified YES: 2 new, 3 total → yes.pairs", stdout)
+        self.assertIn("Classified NO: 1 new, 2 total → no.pairs", stdout)
+
     def test_the_notes_are_parsed_requiring_both_checkboxes(self):
         # Without --two-checkboxes a malformed one-box row parses as NO by
         # default, and NO is now a verdict that sticks.

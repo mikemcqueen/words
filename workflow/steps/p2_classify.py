@@ -58,4 +58,4 @@ def run_step(ctx) -> None:
     for kind in KINDS:
         source = ctx.artifact("p2", kind)
         if source.exists():
-            config.fold_classified(ctx.root, kind, source)
+            classify.fold(ctx.root, kind, source)
