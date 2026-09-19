@@ -9,6 +9,10 @@ HIGH PRIORITY >>
 
 << HIGH PRIORITY
 
+* src.filter: when a PAIRS file is supplied, check each pair in either order
+  and output the orientation with the best YES result. Currently the PAIRS
+  lookup matches only the exact order stored in the results file.
+
 * time for a new 26-sep-notes.md
 
 * complete_yes move notes to backup/processed notebook once command successfully

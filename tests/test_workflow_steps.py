@@ -140,8 +140,8 @@ class ExtractRecipeTests(unittest.TestCase):
         code, _, stderr = self._extract()
         self.assertEqual(0, code, stderr)
         self.assertEqual(
-            ["mixed,split", "yes,divergent", "yes,edge",
-             "yes,high", "yes,one", "yes,rvsonly"],
+            ["divergent,yes", "mixed,split", "rvsonly,yes",
+             "yes,edge", "yes,high", "yes,one"],
             self.dest.read_text().splitlines())
 
     def test_rerunning_refuses_to_clobber_the_output(self):
