@@ -17,6 +17,8 @@ import numpy as np
 DEFAULT_DATA = Path(__file__).parent / "data" / "cluedata"
 DEFAULT_INDEX = Path(__file__).parent / "data" / "index"
 WORD = re.compile(rb"[a-z0-9]+")
+ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
+ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
 FORMAT_VERSION = 1
 U32_MAX = np.iinfo(np.uint32).max
 
@@ -199,7 +201,11 @@ def validate_index(data_path: Path, index_path: Path) -> None:
 
 def query(data_path: Path, index_path: Path, input_path: str | None,
           query_text: str | None,
-          json_output: bool = False, show_results: bool = False) -> None:
+          json_output: bool = False, show_results: bool = False,
+          adjacent: bool = False) -> None:
+    if (adjacent and input_path is None
+            and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
+        raise ValueError("two words required for --adjacent")
     validate_index(data_path, index_path)
     tokens = (index_path / "tokens.txt").read_bytes().splitlines()
     word_ids = {word: i for i, word in enumerate(tokens)}
@@ -220,7 +226,17 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
         ) as data:
             for line in source:
                 raw_query = line.rstrip(b"\r\n")
-                if input_path is None:
+                if adjacent:
+                    pattern = (ADJACENT_QUERY if input_path is None
+                               else ADJACENT_FILE_QUERY)
+                    if pattern.fullmatch(raw_query) is None:
+                        raise ValueError("two words required for --adjacent")
+                    separator = b" " if input_path is None else b","
+                    first_word, second_word = raw_query.lower().split(separator)
+                    phrases = (first_word + b" " + second_word,
+                               second_word + b" " + first_word)
+                    words = {first_word, second_word}
+                elif input_path is None:
                     words = set(raw_query.lower().replace(b"'", b"").split(b" "))
                     words.discard(b"")
                 else:
@@ -239,14 +255,21 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         break
                 if not len(matches):
                     continue
-                if input_path is not None:
-                    print(raw_query.decode("utf-8", errors="replace"))
-                    if not show_results:
-                        continue
+                printed_query = False
                 for clue_id in matches:
                     clue_id = int(clue_id)
                     offset = int(clue_off[clue_id])
                     clue = data[offset + 1 : offset + 1 + data[offset]]
+                    if adjacent:
+                        clue_lower = clue.lower()
+                        if (phrases[0] not in clue_lower
+                                and phrases[1] not in clue_lower):
+                            continue
+                    if input_path is not None and not printed_query:
+                        print(raw_query.decode("utf-8", errors="replace"))
+                        printed_query = True
+                    if input_path is not None and not show_results:
+                        break
                     decoded_refs = [
                         {"answer": answers[int(ref) >> 1].decode("latin-1"),
                          "bit": int(ref) & 1}
