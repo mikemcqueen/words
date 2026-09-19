@@ -1,4 +1,5 @@
 import argparse
+import math
 import numpy as np
 import sys
 
@@ -28,6 +29,23 @@ def _build_prob_mask(block, yes: bool, pmin: float, pmax: float, use_max: bool):
     return (labels != yes_label).all(axis=1)
 
 
+def _yes_prob_mask_and_scores(block, pmin: float, pmax: float, use_max: bool):
+    labels = np.asarray(block.labels())[0]   # shape (rows, dirs)
+    probs = np.asarray(block.probs())[0]
+    yes_label = compare_native.LABEL_YES
+    if use_max:
+        scores = np.where(labels == yes_label, probs, 0.0).max(axis=1)
+        return (scores >= pmin) & (scores < pmax), scores
+
+    in_band = (
+        (labels == yes_label)
+        & (probs >= pmin)
+        & (probs < pmax)
+    )
+    scores = np.where(in_band, probs, -np.inf).max(axis=1)
+    return in_band.any(axis=1), scores
+
+
 def _pmax(pmin: float, prng: float) -> float:
     # [pmin, pmin+rng) unless pmin+rng == 1.0, then [pmin, 1.0] inclusive
     pmax = pmin + prng
@@ -50,9 +68,26 @@ def _load_pair_set(path: str) -> set:
     return pairs
 
 
+def _canonical_pair(pair: str) -> tuple[str, bool]:
+    """Return an unordered-pair key and whether pair is reversed from it."""
+    fields = pair.split(",")
+    if len(fields) != 2:
+        raise ValueError(f"cannot deduplicate malformed pair: {pair!r}")
+    if fields[0] <= fields[1]:
+        return pair, False
+    return f"{fields[1]},{fields[0]}", True
+
+
+def _oriented_pair(canonical: str, is_reversed: bool) -> str:
+    if not is_reversed:
+        return canonical
+    left, right = canonical.split(",")
+    return f"{right},{left}"
+
+
 def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
                    pmin = 0.5, prng = 1.0, use_max = False,
-                   report_pair_load = True):
+                   report_pair_load = True, dedupe = None):
     """Write pairs matching the label/probability band to out_file.
 
     `paths` is a *corpus*: each file gets its own reader. A path list handed
@@ -61,6 +96,10 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
 
     `pairs_path` optionally restricts output to members of that pair set;
     None skips the identity mask.
+
+    YES pairs are deduplicated by default. `dedupe=False` emits every matching
+    row. Deduplication keeps the spelling whose matching row has the highest
+    in-band score. The score sign stores its orientation.
     """
     if isinstance(paths, (str, Path)):
         # A bare path would iterate per character; each "file" then fails to open
@@ -69,6 +108,10 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     paths = list(paths)
     if not paths:
         raise SystemExit("no result files to filter")
+    if dedupe is None:
+        dedupe = yes
+    if dedupe and not yes:
+        raise ValueError("dedupe requires yes=True")
 
     pmax = _pmax(pmin, prng)
     pair_set = None
@@ -83,6 +126,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     # empty result reported as success -- which is what it did for the
     # single-file callers this function absorbed.
     readable = 0
+    best = {} if dedupe else None
 
     for results_file in paths:
         try:
@@ -93,17 +137,36 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
         readable += 1
 
         for block in prefetch(blocks):
-            mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
+            if dedupe:
+                mask, scores = _yes_prob_mask_and_scores(
+                    block, pmin, pmax, use_max)
+            else:
+                mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
             if pair_set is not None:
                 mask &= np.fromiter(
                     (p in pair_set for p in block.pairs()),
                     dtype=bool, count=block.size,
                 )
             for idx in np.flatnonzero(mask):
-                out_file.write(block.pair_at(idx) + "\n")
+                pair = block.pair_at(idx)
+                if not dedupe:
+                    out_file.write(pair + "\n")
+                    continue
+
+                canonical, is_reversed = _canonical_pair(pair)
+                score = float(scores[idx])
+                previous = best.get(canonical)
+                if previous is None or score > abs(previous):
+                    best[canonical] = math.copysign(
+                        score, -1.0 if is_reversed else 1.0)
 
     if not readable:
         raise SystemExit(f"no readable result files among {len(paths)}")
+
+    if dedupe:
+        for canonical, signed_score in best.items():
+            is_reversed = math.copysign(1.0, signed_score) < 0.0
+            out_file.write(_oriented_pair(canonical, is_reversed) + "\n")
 
 
 def _filter_args(args):
@@ -112,17 +175,24 @@ def _filter_args(args):
         paths = sorted(Path(args.dir).glob("*.jsonl"))
         if not paths:
             raise SystemExit(f"no .jsonl files in {args.dir}")
+        if args.file is None:
+            print("WARNING: no pairs file supplied - displaying all pairs",
+                  file=sys.stderr)
         filter_results(paths, args.yes, sys.stdout, pairs_path=args.file,
-                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max)
+                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
+                       dedupe=args.yes and not args.ignore_ordering)
     else:
         filter_results([args.file], args.yes, sys.stdout,
-                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max)
+                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
+                       dedupe=args.yes and not args.ignore_ordering)
 
 
 def _parse_args():
     parser = argparse.ArgumentParser(
         description="Filter eval results by prob/label, optionally restricted to a pair list.")
-    parser.add_argument("file", help="results .jsonl, or pair list when --dir is given")
+    parser.add_argument(
+        "file", nargs="?",
+        help="results .jsonl, or optional pair list when --dir is given")
     parser.add_argument("-d", "--dir", default=None, metavar="RESULTS_DIR",
                         help="directory of .jsonl results; positional becomes the pair list")
 
@@ -133,7 +203,13 @@ def _parse_args():
     parser.add_argument("--pm", "--prob-min", dest="prob_min", type=float, default=0.5)
     parser.add_argument("--pr", "--prob-range", dest="prob_range", type=float, default=1.0)
     parser.add_argument("--any", dest="any", action="store_true")
-    return parser.parse_args()
+    parser.add_argument(
+        "--ignore-ordering", action="store_true",
+        help="emit every matching YES row, including reversed pair orderings")
+    args = parser.parse_args()
+    if args.file is None and args.dir is None:
+        parser.error("file is required unless --dir is given")
+    return args
 
 
 def main():
