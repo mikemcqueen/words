@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Query the whole-word cluedata clue index.
+
+    python cluer/query_index.py "new york"
+    python cluer/query_index.py -f terms.txt
+    python cluer/query_index.py -f terms.txt -r
+    python cluer/query_index.py -f - < terms.txt
+    python cluer/query_index.py -a PEAR
+
+Space-separated QUERY words, or comma-separated words on each line of FILE,
+can occur anywhere in a clue, in any order. -f prints each input pair that
+matches at least one clue; -r also prints its matching clues after the pair.
+QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
+changes result lines to JSON, including the query and answer reference low
+bits. Queries with no matches emit nothing. -a finds an exact answer and
+prints its linked clues.
+"""
+
+import argparse
+from pathlib import Path
+
+from index import DEFAULT_DATA, DEFAULT_INDEX, query, query_answer
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("query", nargs="?", metavar="QUERY",
+                        help="space-separated clue words to find (all required)")
+    parser.add_argument("-f", "--file", metavar="FILE",
+                        help="one comma-separated query per line, or - for stdin")
+    parser.add_argument("-r", "--results", action="store_true",
+                        help="with -f, print matching clues after each pair")
+    parser.add_argument("-a", "--answer", metavar="ANSWER",
+                        help="find clues linked to this exact answer")
+    parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
+                        help="cluedata file (default: cluer/data/cluedata)")
+    parser.add_argument("--index", type=Path, default=DEFAULT_INDEX,
+                        help="index directory (default: cluer/data/index)")
+    parser.add_argument("--json", action="store_true",
+                        help="format displayed clue results as JSON")
+    args = parser.parse_args()
+    if sum(value is not None for value in
+           (args.query, args.file, args.answer)) != 1:
+        parser.error("provide exactly one of QUERY, -f/--file, or -a/--answer")
+    if args.results and args.file is None:
+        parser.error("--results requires -f/--file")
+    try:
+        if args.answer is not None:
+            query_answer(args.data, args.index, args.answer,
+                         json_output=args.json)
+        else:
+            query(args.data, args.index, args.file, args.query,
+                  json_output=args.json, show_results=args.results)
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        parser.exit(1, f"{parser.prog}: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()
