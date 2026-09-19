@@ -36,16 +36,20 @@ def _yes_prob_mask_and_scores(block, pmin: float, pmax: float, use_max: bool):
     probs = np.asarray(block.probs())[0]
     yes_label = compare_native.LABEL_YES
     if use_max:
-        scores = np.where(labels == yes_label, probs, 0.0).max(axis=1)
-        return (scores >= pmin) & (scores < pmax), scores
-
-    in_band = (
-        (labels == yes_label)
-        & (probs >= pmin)
-        & (probs < pmax)
-    )
-    scores = np.where(in_band, probs, -np.inf).max(axis=1)
-    return in_band.any(axis=1), scores
+        direction_scores = np.where(labels == yes_label, probs, 0.0)
+    else:
+        in_band = (
+            (labels == yes_label)
+            & (probs >= pmin)
+            & (probs < pmax)
+        )
+        direction_scores = np.where(in_band, probs, -np.inf)
+    winners = direction_scores.argmax(axis=1)
+    scores = direction_scores[np.arange(len(winners)), winners]
+    mask = ((scores >= pmin) & (scores < pmax) if use_max
+            else in_band.any(axis=1))
+    reverse_wins = np.asarray(block.directions())[winners] == "rvs"
+    return mask, scores, reverse_wins
 
 
 def _pmax(pmin: float, prng: float) -> float:
@@ -101,8 +105,9 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     None skips the identity mask.
 
     YES pairs are deduplicated by default. `dedupe=False` emits every matching
-    row. Deduplication keeps the spelling whose matching row has the highest
-    in-band score. The score sign stores its orientation.
+    row in its stored orientation. Deduplication keeps the orientation whose
+    matching direction has the highest in-band score. The score sign stores
+    that orientation.
 
     `sample` limits output to a uniform sample of the final matching rows.
     """
@@ -160,7 +165,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
 
         for block in prefetch(blocks):
             if dedupe:
-                mask, scores = _yes_prob_mask_and_scores(
+                mask, scores, reverse_wins = _yes_prob_mask_and_scores(
                     block, pmin, pmax, use_max)
             else:
                 mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
@@ -176,6 +181,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
                     continue
 
                 canonical, is_reversed = _canonical_pair(pair)
+                is_reversed ^= bool(reverse_wins[idx])
                 score = float(scores[idx])
                 previous = best.get(canonical)
                 if previous is None or score > abs(previous):

@@ -87,8 +87,8 @@ class FilterMaskTests(unittest.TestCase):
     def test_yes_band_includes_the_edge_and_excludes_just_below(self):
         got = self._filter(True, pmin=0.9, prng=0.1)
         self.assertEqual(
-            ["yes,high", "yes,edge", "yes,one", "yes,rvsonly",
-             "mixed,split", "yes,divergent"],
+            ["yes,high", "yes,edge", "yes,one", "rvsonly,yes",
+             "mixed,split", "divergent,yes"],
             got)
 
     def test_no_filter_keeps_only_rows_with_no_yes_direction(self):
@@ -241,6 +241,26 @@ class FilterDedupeTests(unittest.TestCase):
 
         self.assertEqual(["two,one"], self._filter([results], use_max=False))
 
+    def test_reverse_direction_orients_the_winning_pair(self):
+        results = fx.write_results(self.dir / "reverse.jsonl", [
+            fx.row("woods,golfer", 0,
+                   fwd=("YES", 0.5798160952129298),
+                   rvs=("YES", 0.8776006087596036)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.86), rvs=("YES", 0.89)),
+        ])
+        out = io.StringIO()
+        filter_results([results], True, out, pmin=0.85, prng=0.15,
+                       use_max=True)
+        self.assertEqual(["golfer,woods", "one,two"],
+                         out.getvalue().splitlines())
+
+        out = io.StringIO()
+        filter_results([results], True, out, pmin=0.85, prng=0.15,
+                       use_max=True, dedupe=False)
+        self.assertEqual(["woods,golfer", "two,one"],
+                         out.getvalue().splitlines())
+
     def test_no_filter_rejects_dedupe(self):
         with self.assertRaisesRegex(ValueError, "dedupe requires yes=True"):
             filter_results([self.dir / "unused.jsonl"], False, io.StringIO(),
@@ -282,8 +302,8 @@ class ExtractP1YesSnapshotTests(unittest.TestCase):
 
     def test_extracts_the_yes_band_across_the_whole_corpus(self):
         self.assertEqual(
-            ["mixed,split", "yes,divergent", "yes,edge",
-             "yes,high", "yes,one", "yes,rvsonly"],
+            ["divergent,yes", "mixed,split", "rvsonly,yes",
+             "yes,edge", "yes,high", "yes,one"],
             self._extract("all"))
 
     def test_extracts_from_a_single_named_result_file(self):
@@ -365,8 +385,8 @@ class UnifiedFilterTests(unittest.TestCase):
         # The reader treats a path list as *aligned* files and raises on a pair
         # mismatch, so filter_results must open one reader per file.
         self.assertEqual(
-            ["yes,high", "yes,edge", "yes,one", "yes,rvsonly",
-             "mixed,split", "yes,divergent"],
+            ["yes,high", "yes,edge", "yes,one", "rvsonly,yes",
+             "mixed,split", "divergent,yes"],
             self._filter([self.alpha, self.beta]))
 
     def test_pairs_path_restricts_output_to_set_members(self):
