@@ -95,6 +95,15 @@ class FilterMaskTests(unittest.TestCase):
         got = self._filter(False, pmin=0.9, prng=0.1)
         self.assertEqual(["no,both", "unknown,token"], got)
 
+    def test_sample_limits_streamed_no_matches(self):
+        with mock.patch("src.filter.random.randrange", return_value=0) as draw:
+            got = self._filter(False, sample=1)
+        self.assertEqual(["unknown,token"], got)
+        draw.assert_called_once_with(2)
+        self.assertEqual([], self._filter(False, sample=0))
+        self.assertEqual(["no,both", "unknown,token"],
+                         self._filter(False, sample=10))
+
     def test_use_max_is_inert_when_pmin_plus_prange_is_one(self):
         band = dict(pmin=0.9, prng=0.1)
         self.assertEqual(self._filter(True, **band),
@@ -151,6 +160,30 @@ class FilterDedupeTests(unittest.TestCase):
 
         self.assertEqual(["one,two"], self._filter([results], use_max=True))
 
+    def test_sample_uses_final_deduplicated_pairs(self):
+        results = fx.write_results(self.dir / "sample.jsonl", [
+            fx.row("one,two", 0,
+                   fwd=("YES", 0.86), rvs=("NO", 0.70)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.89), rvs=("NO", 0.70)),
+            fx.row("three,four", 2,
+                   fwd=("YES", 0.88), rvs=("NO", 0.70)),
+        ])
+
+        with mock.patch("src.filter.random.randrange", return_value=1) as draw:
+            got = self._filter([results], use_max=True, sample=1)
+        self.assertEqual(["two,one"], got)
+        draw.assert_called_once_with(2)
+
+        out = io.StringIO()
+        with mock.patch("sys.argv", ["filter", "--yes", "--pm", "0.85",
+                                     "--pr", "0.05", "--sample", "1",
+                                     str(results)]):
+            with mock.patch("src.filter.random.randrange", return_value=1):
+                with redirect_stdout(out):
+                    filter_main()
+        self.assertEqual(["two,one"], out.getvalue().splitlines())
+
     def test_default_deduplicates_and_opt_out_emits_both_spellings(self):
         results = fx.write_results(self.dir / "ordinary.jsonl", [
             fx.row("one,two", 0,
@@ -188,6 +221,15 @@ class FilterDedupeTests(unittest.TestCase):
 
         self.assertEqual(["two,one"], run())
         self.assertEqual(["one,two", "two,one"], run("--ignore-ordering"))
+
+    def test_cli_rejects_sample_with_ignore_ordering(self):
+        with mock.patch("sys.argv", ["filter", "--yes", "--sample", "1",
+                                     "--ignore-ordering", "unused.jsonl"]):
+            with redirect_stderr(io.StringIO()) as err:
+                with self.assertRaises(SystemExit) as exit:
+                    filter_main()
+        self.assertEqual(2, exit.exception.code)
+        self.assertIn("not allowed with argument", err.getvalue())
 
     def test_any_ranks_by_the_highest_score_inside_the_band(self):
         results = fx.write_results(self.dir / "any.jsonl", [

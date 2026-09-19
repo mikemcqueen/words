@@ -1,9 +1,11 @@
 import argparse
 import math
-import numpy as np
+import random
 import sys
 
 from pathlib import Path
+
+import numpy as np
 
 from src import compare_native
 from src.common import prefetch
@@ -87,7 +89,8 @@ def _oriented_pair(canonical: str, is_reversed: bool) -> str:
 
 def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
                    pmin = 0.5, prng = 1.0, use_max = False,
-                   report_pair_load = True, dedupe = None):
+                   report_pair_load = True, dedupe = None,
+                   sample: int | None = None):
     """Write pairs matching the label/probability band to out_file.
 
     `paths` is a *corpus*: each file gets its own reader. A path list handed
@@ -100,6 +103,8 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     YES pairs are deduplicated by default. `dedupe=False` emits every matching
     row. Deduplication keeps the spelling whose matching row has the highest
     in-band score. The score sign stores its orientation.
+
+    `sample` limits output to a uniform sample of the final matching rows.
     """
     if isinstance(paths, (str, Path)):
         # A bare path would iterate per character; each "file" then fails to open
@@ -112,6 +117,8 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
         dedupe = yes
     if dedupe and not yes:
         raise ValueError("dedupe requires yes=True")
+    if sample is not None and sample < 0:
+        raise ValueError("sample must be nonnegative")
 
     pmax = _pmax(pmin, prng)
     pair_set = None
@@ -127,6 +134,21 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     # single-file callers this function absorbed.
     readable = 0
     best = {} if dedupe else None
+    sampled = [] if sample is not None else None
+    seen = 0
+
+    def emit(pair):
+        nonlocal seen
+        if sampled is None:
+            out_file.write(pair + "\n")
+            return
+        seen += 1
+        if len(sampled) < sample:
+            sampled.append(pair)
+        elif sample:
+            slot = random.randrange(seen)
+            if slot < sample:
+                sampled[slot] = pair
 
     for results_file in paths:
         try:
@@ -150,7 +172,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
             for idx in np.flatnonzero(mask):
                 pair = block.pair_at(idx)
                 if not dedupe:
-                    out_file.write(pair + "\n")
+                    emit(pair)
                     continue
 
                 canonical, is_reversed = _canonical_pair(pair)
@@ -166,7 +188,9 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     if dedupe:
         for canonical, signed_score in best.items():
             is_reversed = math.copysign(1.0, signed_score) < 0.0
-            out_file.write(_oriented_pair(canonical, is_reversed) + "\n")
+            emit(_oriented_pair(canonical, is_reversed))
+    if sampled is not None:
+        out_file.writelines(pair + "\n" for pair in sampled)
 
 
 def _filter_args(args):
@@ -180,11 +204,13 @@ def _filter_args(args):
                   file=sys.stderr)
         filter_results(paths, args.yes, sys.stdout, pairs_path=args.file,
                        pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
-                       dedupe=args.yes and not args.ignore_ordering)
+                       dedupe=args.yes and not args.ignore_ordering,
+                       sample=args.sample)
     else:
         filter_results([args.file], args.yes, sys.stdout,
                        pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
-                       dedupe=args.yes and not args.ignore_ordering)
+                       dedupe=args.yes and not args.ignore_ordering,
+                       sample=args.sample)
 
 
 def _parse_args():
@@ -203,10 +229,16 @@ def _parse_args():
     parser.add_argument("--pm", "--prob-min", dest="prob_min", type=float, default=0.5)
     parser.add_argument("--pr", "--prob-range", dest="prob_range", type=float, default=1.0)
     parser.add_argument("--any", dest="any", action="store_true")
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--ignore-ordering", action="store_true",
         help="emit every matching YES row, including reversed pair orderings")
+    output.add_argument(
+        "--sample", type=int, metavar="N",
+        help="display a random sample of up to N matching pairs")
     args = parser.parse_args()
+    if args.sample is not None and args.sample < 0:
+        parser.error("--sample must be nonnegative")
     if args.file is None and args.dir is None:
         parser.error("file is required unless --dir is given")
     return args
