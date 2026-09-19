@@ -394,6 +394,39 @@ class UnifiedFilterTests(unittest.TestCase):
         self.assertEqual(["yes,high", "mixed,split"],
                          self._filter([self.alpha, self.beta], pairs_path=str(pairs)))
 
+    def test_pairs_path_matches_a_row_stored_in_reverse_order(self):
+        results = fx.write_results(self.dir / "reverse.jsonl", [
+            fx.row("tiger,woods", 0,
+                   fwd=("YES", 0.95), rvs=("NO", 0.70)),
+            fx.row("malformed", 1,
+                   fwd=("YES", 0.95), rvs=("NO", 0.70)),
+        ])
+        pairs = fx.write_pairs(self.dir / "keep.pairs", ["woods,tiger"])
+
+        self.assertEqual(["tiger,woods"],
+                         self._filter([results], pairs_path=str(pairs)))
+
+    def test_reverse_duplicates_share_one_lookup_key_and_both_rows_compete(self):
+        fx.write_results(self.dir / "first.jsonl", [
+            fx.row("woods,tiger", 0,
+                   fwd=("YES", 0.91), rvs=("NO", 0.70)),
+        ])
+        fx.write_results(self.dir / "second.jsonl", [
+            fx.row("tiger,woods", 0,
+                   fwd=("YES", 0.97), rvs=("NO", 0.70)),
+        ])
+        pairs = fx.write_pairs(self.dir / "keep.pairs",
+                               ["woods,tiger", "tiger,woods"])
+
+        out = io.StringIO()
+        with mock.patch("sys.argv", ["filter", "--yes", "--pm", "0.9",
+                                     "--pr", "0.1", "-d", str(self.dir),
+                                     str(pairs)]):
+            with redirect_stdout(out), redirect_stderr(io.StringIO()) as err:
+                filter_main()
+        self.assertEqual(["tiger,woods"], out.getvalue().splitlines())
+        self.assertIn("loaded 1 pairs", err.getvalue())
+
     def test_pairs_path_none_skips_the_identity_mask(self):
         self.assertEqual(self._filter([self.alpha]),
                          self._filter([self.alpha], pairs_path=None))

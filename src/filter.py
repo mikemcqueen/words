@@ -61,14 +61,14 @@ def _pmax(pmin: float, prng: float) -> float:
 
 
 def _load_pair_set(path: str) -> set:
-    """Load a pair-list file (one 'word1,word2' per line) into a set."""
+    """Load unordered pair keys from a pair-list file."""
     pairs = set()
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            pairs.add(line)
+            pairs.add(_pair_lookup_key(line))
             if len(pairs) > MAX_PAIR_SET:
                 raise SystemExit(f"pair set exceeds {MAX_PAIR_SET:,} entries (from {path})")
     return pairs
@@ -82,6 +82,14 @@ def _canonical_pair(pair: str) -> tuple[str, bool]:
     if fields[0] <= fields[1]:
         return pair, False
     return f"{fields[1]},{fields[0]}", True
+
+
+def _pair_lookup_key(pair: str) -> str:
+    # Preserve exact matching for malformed IDs, which the old mask accepted.
+    try:
+        return _canonical_pair(pair)[0]
+    except ValueError:
+        return pair
 
 
 def _oriented_pair(canonical: str, is_reversed: bool) -> str:
@@ -101,8 +109,8 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     straight to iter_projected_blocks means something else entirely -- aligned
     files holding the same pairs, one per host -- and raises on a pair mismatch.
 
-    `pairs_path` optionally restricts output to members of that pair set;
-    None skips the identity mask.
+    `pairs_path` optionally restricts output to unordered members of that pair
+    set; None skips the identity mask.
 
     YES pairs are deduplicated by default. `dedupe=False` emits every matching
     row in its stored orientation. Deduplication keeps the orientation whose
@@ -171,7 +179,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
                 mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
             if pair_set is not None:
                 mask &= np.fromiter(
-                    (p in pair_set for p in block.pairs()),
+                    (_pair_lookup_key(p) in pair_set for p in block.pairs()),
                     dtype=bool, count=block.size,
                 )
             for idx in np.flatnonzero(mask):
