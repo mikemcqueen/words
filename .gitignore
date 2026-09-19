@@ -9,6 +9,7 @@ out/**
 results*/**
 words/**
 wt/**
+tmp/**
 __pycache__/
 src/_compare_native*.so
 /prompts/sys

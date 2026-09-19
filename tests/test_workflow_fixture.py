@@ -8,12 +8,12 @@ import os
 import tempfile
 import unittest
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from pathlib import Path
 
-from src.filter import filter_results
+from src.filter import filter_results, main as filter_main
 from tests import wf_fixture as fx
 from workflow import bundle, config, init, names, notes
 from workflow.context import Context
@@ -106,6 +106,103 @@ class FilterMaskTests(unittest.TestCase):
         max_hits = self._filter(True, use_max=True, **band)
         self.assertIn("yes,divergent", any_hits)
         self.assertNotIn("yes,divergent", max_hits)
+
+
+@fx.requires_native
+class FilterDedupeTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def _filter(self, paths, **kwargs) -> list[str]:
+        out = io.StringIO()
+        filter_results(paths, True, out, pmin=0.85, prng=0.05,
+                       dedupe=True, **kwargs)
+        return out.getvalue().splitlines()
+
+    def test_keeps_highest_scoring_spelling_across_the_corpus(self):
+        alpha = fx.write_results(self.dir / "alpha.jsonl", [
+            fx.row("alpha,beta", 0,
+                   fwd=("YES", 0.86), rvs=("NO", 0.70)),
+            fx.row("delta,gamma", 1,
+                   fwd=("YES", 0.89), rvs=("NO", 0.70)),
+            fx.row("left,right", 2,
+                   fwd=("YES", 0.88), rvs=("NO", 0.70)),
+        ])
+        beta = fx.write_results(self.dir / "beta.jsonl", [
+            fx.row("beta,alpha", 0,
+                   fwd=("YES", 0.89), rvs=("NO", 0.70)),
+            fx.row("right,left", 1,
+                   fwd=("YES", 0.87), rvs=("NO", 0.70)),
+        ])
+
+        self.assertEqual(
+            ["beta,alpha", "delta,gamma", "left,right"],
+            self._filter([alpha, beta], use_max=True))
+
+    def test_equal_scores_keep_the_first_spelling(self):
+        results = fx.write_results(self.dir / "ties.jsonl", [
+            fx.row("one,two", 0,
+                   fwd=("YES", 0.88), rvs=("NO", 0.70)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.88), rvs=("NO", 0.70)),
+        ])
+
+        self.assertEqual(["one,two"], self._filter([results], use_max=True))
+
+    def test_default_deduplicates_and_opt_out_emits_both_spellings(self):
+        results = fx.write_results(self.dir / "ordinary.jsonl", [
+            fx.row("one,two", 0,
+                   fwd=("YES", 0.86), rvs=("NO", 0.70)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.89), rvs=("NO", 0.70)),
+        ])
+        out = io.StringIO()
+
+        filter_results([results], True, out, pmin=0.85, prng=0.05,
+                       use_max=True)
+        self.assertEqual(["two,one"], out.getvalue().splitlines())
+
+        out = io.StringIO()
+        filter_results([results], True, out, pmin=0.85, prng=0.05,
+                       use_max=True, dedupe=False)
+        self.assertEqual(["one,two", "two,one"],
+                         out.getvalue().splitlines())
+
+    def test_cli_ignore_ordering_turns_off_deduplication(self):
+        results = fx.write_results(self.dir / "cli.jsonl", [
+            fx.row("one,two", 0,
+                   fwd=("YES", 0.86), rvs=("NO", 0.70)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.89), rvs=("NO", 0.70)),
+        ])
+
+        def run(*flags):
+            out = io.StringIO()
+            with mock.patch("sys.argv", ["filter", "--yes", "--pm", "0.85",
+                                         "--pr", "0.05", *flags, str(results)]):
+                with redirect_stdout(out):
+                    filter_main()
+            return out.getvalue().splitlines()
+
+        self.assertEqual(["two,one"], run())
+        self.assertEqual(["one,two", "two,one"], run("--ignore-ordering"))
+
+    def test_any_ranks_by_the_highest_score_inside_the_band(self):
+        results = fx.write_results(self.dir / "any.jsonl", [
+            fx.row("one,two", 0,
+                   fwd=("YES", 0.86), rvs=("YES", 0.99)),
+            fx.row("two,one", 1,
+                   fwd=("YES", 0.88), rvs=("YES", 0.98)),
+        ])
+
+        self.assertEqual(["two,one"], self._filter([results], use_max=False))
+
+    def test_no_filter_rejects_dedupe(self):
+        with self.assertRaisesRegex(ValueError, "dedupe requires yes=True"):
+            filter_results([self.dir / "unused.jsonl"], False, io.StringIO(),
+                           dedupe=True)
 
 
 if __name__ == "__main__":
