@@ -204,7 +204,8 @@ def validate_index(data_path: Path, index_path: Path) -> None:
 def query(data_path: Path, index_path: Path, input_path: str | None,
           query_text: str | None,
           json_output: bool = False, show_results: bool = False,
-          adjacent: bool = False, exact: bool = False) -> None:
+          adjacent: bool = False, exact: bool = False,
+          forward: bool = False) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError("two words required for --adjacent")
@@ -245,15 +246,20 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     separator = b" " if input_path is None else b","
                     parts = raw_query.lower().split(separator)
                     words = set(parts)
-                    phrases = (parts[0],) if len(parts) == 1 else (
-                        parts[0] + b" " + parts[1],
-                        parts[1] + b" " + parts[0],
-                    )
+                    if len(parts) == 1:
+                        phrases = (parts[0],)
+                    else:
+                        phrases = (parts[0] + b" " + parts[1],)
+                        if not forward:
+                            phrases += (parts[1] + b" " + parts[0],)
                 elif input_path is None:
-                    words = set(raw_query.lower().replace(b"'", b"").split(b" "))
-                    words.discard(b"")
+                    ordered_words = [word for word in
+                                     raw_query.lower().replace(b"'", b"").split(b" ")
+                                     if word]
+                    words = set(ordered_words)
                 else:
-                    words = set(clean_words(raw_query))
+                    ordered_words = clean_words(raw_query)
+                    words = set(ordered_words)
                 if not words or any(word not in word_ids for word in words):
                     continue
                 ids = sorted((word_ids[word] for word in words),
@@ -278,8 +284,11 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                             continue
                     elif adjacent:
                         clue_lower = clue.lower()
-                        if (phrases[0] not in clue_lower
-                                and phrases[1] not in clue_lower):
+                        if not any(phrase in clue_lower for phrase in phrases):
+                            continue
+                    elif forward:
+                        clue_words = iter(clean_words(clue))
+                        if not all(word in clue_words for word in ordered_words):
                             continue
                     if input_path is not None and not printed_query:
                         print(raw_query.decode("utf-8", errors="replace"))
