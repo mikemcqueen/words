@@ -6,14 +6,18 @@
     python cluer/query_index.py -f terms.txt
     python cluer/query_index.py -f terms.txt -r
     python cluer/query_index.py -f - < terms.txt
+    python cluer/query_index.py -e "new york"
     python cluer/query_index.py -a PEAR
 
 Space-separated QUERY words, or comma-separated words on each line of FILE,
-can occur anywhere in a clue, in any order. -f prints each input pair that
-matches at least one clue; -r also prints its matching clues after the pair.
+can occur anywhere in a clue, in any order. -f prints each input query that
+matches at least one clue; -r also prints its matching clues after the query.
 With -j, QUERY must be two alphanumeric words separated by one space, or each
 FILE line must be two such words separated by a comma. Only clues containing
 either phrase order with a literal space match.
+With -e, one or two words use the same separators, and the entire clue must
+equal the word or either two-word order, ignoring case. -e and -j cannot be
+combined.
 QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
 changes result lines to JSON, including the query and answer reference low
 bits. Queries with no matches emit nothing. -a finds an exact answer and
@@ -35,9 +39,11 @@ def main() -> None:
     parser.add_argument("-f", "--file", metavar="FILE",
                         help="one comma-separated query per line, or - for stdin")
     parser.add_argument("-r", "--results", action="store_true",
-                        help="with -f, print matching clues after each pair")
+                        help="with -f, print matching clues after each query")
     parser.add_argument("-j", "--adjacent", action="store_true",
                         help="require two words adjacent in either order")
+    parser.add_argument("-e", "--exact", action="store_true",
+                        help="match the entire clue to one or two words")
     parser.add_argument("-a", "--answer", metavar="ANSWER",
                         help="find clues linked to this exact answer")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
@@ -52,8 +58,12 @@ def main() -> None:
         parser.error("provide exactly one of QUERY, -f/--file, or -a/--answer")
     if args.results and args.file is None:
         parser.error("--results requires -f/--file")
+    if args.exact and args.adjacent:
+        parser.error("--exact cannot be used with -j/--adjacent")
     if args.adjacent and args.answer is not None:
         parser.error("two words required for --adjacent")
+    if args.exact and args.answer is not None:
+        parser.error("--exact cannot be used with -a/--answer")
     try:
         if args.answer is not None:
             query_answer(args.data, args.index, args.answer,
@@ -61,7 +71,7 @@ def main() -> None:
         else:
             query(args.data, args.index, args.file, args.query,
                   json_output=args.json, show_results=args.results,
-                  adjacent=args.adjacent)
+                  adjacent=args.adjacent, exact=args.exact)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
 
