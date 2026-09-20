@@ -4,6 +4,7 @@
     python cluer/query_index.py "new york"
     python cluer/query_index.py -j "new york"
     python cluer/query_index.py -f terms.txt
+    python cluer/query_index.py -f terms.txt --forward
     python cluer/query_index.py -f terms.txt -r
     python cluer/query_index.py -f - < terms.txt
     python cluer/query_index.py -e "new york"
@@ -18,6 +19,8 @@ either phrase order with a literal space match.
 With -e, one or two words use the same separators, and the entire clue must
 equal the word or either two-word order, ignoring case. -e and -j cannot be
 combined.
+--forward requires words in input order. Without -j or -e, other clue words
+may appear between them. With -j or -e, only the input phrase order matches.
 QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
 changes result lines to JSON, including the query and answer reference low
 bits. Queries with no matches emit nothing. -a finds an exact answer and
@@ -44,6 +47,8 @@ def main() -> None:
                         help="require two words adjacent in either order")
     parser.add_argument("-e", "--exact", action="store_true",
                         help="match the entire clue to one or two words")
+    parser.add_argument("--forward", action="store_true",
+                        help="require clue words in input order")
     parser.add_argument("-a", "--answer", metavar="ANSWER",
                         help="find clues linked to this exact answer")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
@@ -64,6 +69,8 @@ def main() -> None:
         parser.error("two words required for --adjacent")
     if args.exact and args.answer is not None:
         parser.error("--exact cannot be used with -a/--answer")
+    if args.forward and args.answer is not None:
+        parser.error("--forward cannot be used with -a/--answer")
     try:
         if args.answer is not None:
             query_answer(args.data, args.index, args.answer,
@@ -71,7 +78,8 @@ def main() -> None:
         else:
             query(args.data, args.index, args.file, args.query,
                   json_output=args.json, show_results=args.results,
-                  adjacent=args.adjacent, exact=args.exact)
+                  adjacent=args.adjacent, exact=args.exact,
+                  forward=args.forward)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
 
