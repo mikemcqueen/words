@@ -19,6 +19,8 @@ DEFAULT_INDEX = Path(__file__).parent / "data" / "index"
 WORD = re.compile(rb"[a-z0-9]+")
 ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
 ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
+EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
+EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
 FORMAT_VERSION = 1
 U32_MAX = np.iinfo(np.uint32).max
 
@@ -202,10 +204,13 @@ def validate_index(data_path: Path, index_path: Path) -> None:
 def query(data_path: Path, index_path: Path, input_path: str | None,
           query_text: str | None,
           json_output: bool = False, show_results: bool = False,
-          adjacent: bool = False) -> None:
+          adjacent: bool = False, exact: bool = False) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError("two words required for --adjacent")
+    if (exact and input_path is None
+            and EXACT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
+        raise ValueError("one or two words required for --exact")
     validate_index(data_path, index_path)
     tokens = (index_path / "tokens.txt").read_bytes().splitlines()
     word_ids = {word: i for i, word in enumerate(tokens)}
@@ -226,16 +231,24 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
         ) as data:
             for line in source:
                 raw_query = line.rstrip(b"\r\n")
-                if adjacent:
-                    pattern = (ADJACENT_QUERY if input_path is None
-                               else ADJACENT_FILE_QUERY)
+                if adjacent or exact:
+                    if exact:
+                        pattern = (EXACT_QUERY if input_path is None
+                                   else EXACT_FILE_QUERY)
+                        error = "one or two words required for --exact"
+                    else:
+                        pattern = (ADJACENT_QUERY if input_path is None
+                                   else ADJACENT_FILE_QUERY)
+                        error = "two words required for --adjacent"
                     if pattern.fullmatch(raw_query) is None:
-                        raise ValueError("two words required for --adjacent")
+                        raise ValueError(error)
                     separator = b" " if input_path is None else b","
-                    first_word, second_word = raw_query.lower().split(separator)
-                    phrases = (first_word + b" " + second_word,
-                               second_word + b" " + first_word)
-                    words = {first_word, second_word}
+                    parts = raw_query.lower().split(separator)
+                    words = set(parts)
+                    phrases = (parts[0],) if len(parts) == 1 else (
+                        parts[0] + b" " + parts[1],
+                        parts[1] + b" " + parts[0],
+                    )
                 elif input_path is None:
                     words = set(raw_query.lower().replace(b"'", b"").split(b" "))
                     words.discard(b"")
@@ -260,7 +273,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     clue_id = int(clue_id)
                     offset = int(clue_off[clue_id])
                     clue = data[offset + 1 : offset + 1 + data[offset]]
-                    if adjacent:
+                    if exact:
+                        if clue.lower() not in phrases:
+                            continue
+                    elif adjacent:
                         clue_lower = clue.lower()
                         if (phrases[0] not in clue_lower
                                 and phrases[1] not in clue_lower):
