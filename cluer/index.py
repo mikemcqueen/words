@@ -292,21 +292,26 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
             for line in source:
                 raw_query = line.rstrip(b"\r\n")
                 if adjacent or exact:
-                    if exact:
-                        pattern = (EXACT_QUERY if input_path is None
-                                   else EXACT_FILE_QUERY)
-                        error = "one or two words required for --exact"
-                    else:
-                        pattern = (ADJACENT_QUERY if input_path is None
-                                   else ADJACENT_FILE_QUERY)
-                        error = (
-                            "two words required for --adjacent: "
-                            f"{raw_query.decode('utf-8', errors='replace')!r}"
-                        )
-                    if pattern.fullmatch(raw_query) is None:
-                        raise ValueError(error)
                     separator = b" " if input_path is None else b","
                     parts = raw_query.lower().split(separator)
+                    # Known words are all [a-z0-9]+, so the regex check is
+                    # only needed for lines with an unknown part.
+                    if not ((len(parts) == 2 or exact and len(parts) == 1)
+                            and all(part in word_ids for part in parts)):
+                        if exact:
+                            pattern = (EXACT_QUERY if input_path is None
+                                       else EXACT_FILE_QUERY)
+                            error = "one or two words required for --exact"
+                        else:
+                            pattern = (ADJACENT_QUERY if input_path is None
+                                       else ADJACENT_FILE_QUERY)
+                            error = (
+                                "two words required for --adjacent: "
+                                f"{raw_query.decode('utf-8', errors='replace')!r}"
+                            )
+                        if pattern.fullmatch(raw_query) is None:
+                            raise ValueError(error)
+                        continue
                     words = set(parts)
                     lead_word = parts[0]
                     if adjacent:
@@ -325,7 +330,11 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                                      if word]
                     words = set(ordered_words)
                 else:
-                    ordered_words = clean_words(raw_query)
+                    # A plain split gives the same words as clean_words when
+                    # every part is a known word; otherwise use the regex.
+                    ordered_words = raw_query.lower().split(b",")
+                    if not all(word in word_ids for word in ordered_words):
+                        ordered_words = clean_words(raw_query)
                     words = set(ordered_words)
                     lead_word = ordered_words[0] if ordered_words else None
                 if not words or any(word not in word_ids for word in words):
