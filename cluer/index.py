@@ -10,6 +10,7 @@ import sys
 import tempfile
 import uuid
 from array import array
+from itertools import islice, repeat
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,7 @@ EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
 EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
 FORMAT_VERSION = 2
 U32_MAX = np.iinfo(np.uint32).max
+ADJACENT_CHUNK = 65536
 
 
 def clean_words(text: bytes) -> list[bytes]:
@@ -214,6 +216,75 @@ def intersect(small: np.ndarray, big: np.ndarray) -> np.ndarray:
     return small[valid & (big[np.minimum(pos, len(big) - 1)] == small)]
 
 
+def in_sorted(keys: np.ndarray, table: np.ndarray) -> np.ndarray:
+    """Return a mask of which keys occur in the sorted array table."""
+    # Looking up sorted keys walks table in order, which is much faster
+    # than random lookups into a large table.
+    order = np.argsort(keys)
+    sorted_keys = keys[order]
+    found = np.zeros(len(keys), dtype=bool)
+    if len(table):
+        pos = np.minimum(np.searchsorted(table, sorted_keys), len(table) - 1)
+        found[order] = table[pos] == sorted_keys
+    return found
+
+
+def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]) -> np.ndarray:
+    """Return an (n, 2) array of word ids for "first,second" query lines.
+
+    An id is -1 for an unknown word, and both are -1 unless the line has
+    exactly one comma.
+    """
+    text = b"\n".join(queries).lower()
+    separators = np.frombuffer(text, dtype=np.uint8)
+    separators = separators[(separators == 0x2C) | (separators == 0x0A)]
+    if (len(separators) == 2 * len(queries) - 1
+            and (separators[0::2] == 0x2C).all()):
+        # Every line has exactly one comma, so one flat split lines up.
+        words = text.replace(b"\n", b",").split(b",")
+        return np.fromiter(map(word_ids.get, words, repeat(-1)),
+                           dtype=np.int64, count=len(words)).reshape(-1, 2)
+    ids = []
+    for query_line in queries:
+        parts = query_line.lower().split(b",")
+        ids.append((word_ids.get(parts[0], -1), word_ids.get(parts[1], -1))
+                   if len(parts) == 2 else (-1, -1))
+    return np.array(ids, dtype=np.int64).reshape(-1, 2)
+
+
+def print_adjacent_queries(source, word_ids: dict[bytes, int],
+                           bigrams: np.ndarray, forward: bool) -> None:
+    """Print -f -j query lines whose two words are adjacent in some clue.
+
+    Lines are checked a chunk at a time against the sorted bigram keys.
+    """
+    while lines := list(islice(source, ADJACENT_CHUNK)):
+        queries = [line.rstrip(b"\r\n") for line in lines]
+        ids = adjacent_ids(queries, word_ids)
+        known = (ids >= 0).all(axis=1)
+        # Known words are all [a-z0-9]+, so the regex check is only needed
+        # for lines with an unknown part.
+        end = len(queries)
+        for i in np.flatnonzero(~known):
+            if ADJACENT_FILE_QUERY.fullmatch(queries[i]) is None:
+                end = i
+                break
+        first = ids[:, 0].astype(np.uint64)
+        second = ids[:, 1].astype(np.uint64)
+        keys = first << np.uint64(32) | second
+        if not forward:
+            keys = np.concatenate((keys, second << np.uint64(32) | first))
+        found = known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0)
+        matches = [queries[i] for i in np.flatnonzero(found[:end])]
+        if matches:
+            print(b"\n".join(matches).decode("utf-8", errors="replace"))
+        if end < len(queries):
+            raise ValueError(
+                "two words required for --adjacent: "
+                f"{queries[end].decode('utf-8', errors='replace')!r}"
+            )
+
+
 def clue_word_index(postings: np.ndarray, starts: list[int],
                     clue_count: int) -> tuple[np.ndarray, np.ndarray]:
     """Invert postings into (clue_start, words): each clue's word ids."""
@@ -273,8 +344,9 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     clue_off = np.asarray(np.load(index_path / "clue_off.npy", mmap_mode="r"))
     ref_start = np.asarray(np.load(index_path / "ref_start.npy", mmap_mode="r"))
     refs = np.asarray(np.load(index_path / "refs.npy", mmap_mode="r"))
-    bigrams = (set(np.load(index_path / "bigrams.npy").tolist()) if adjacent
-               else set())
+    chunked = adjacent and input_path is not None and not show_results
+    bigrams = (set(np.load(index_path / "bigrams.npy").tolist())
+               if adjacent and not chunked else set())
     query_only = (input_path is not None and not show_results
                   and not (adjacent or exact or forward))
     clue_index = None
@@ -286,6 +358,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     else:
         source = sys.stdin.buffer if input_path == "-" else open(input_path, "rb")
     try:
+        if chunked:
+            print_adjacent_queries(source, word_ids,
+                                   np.load(index_path / "bigrams.npy"), forward)
+            return
         with data_path.open("rb") as stream, mmap.mmap(
             stream.fileno(), 0, access=mmap.ACCESS_READ
         ) as data:
@@ -342,9 +418,6 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                 if adjacent:
                     if not any(bigram_key(word_ids[first], word_ids[second])
                                in bigrams for first, second in phrases):
-                        continue
-                    if input_path is not None and not show_results:
-                        print(raw_query.decode("utf-8", errors="replace"))
                         continue
                 elif sorted_input and len(words) == 2:
                     # Consecutive lines usually share a lead word, so its
