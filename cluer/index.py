@@ -190,6 +190,30 @@ def intersect(small: np.ndarray, big: np.ndarray) -> np.ndarray:
     return small[valid & (big[np.minimum(pos, len(big) - 1)] == small)]
 
 
+def clue_word_index(postings: np.ndarray, starts: list[int],
+                    clue_count: int) -> tuple[np.ndarray, np.ndarray]:
+    """Invert postings into (clue_start, words): each clue's word ids."""
+    word_ids = np.repeat(np.arange(len(starts) - 1, dtype=np.uint32),
+                         np.diff(starts))
+    words = word_ids[np.argsort(postings, kind="stable")]
+    clue_start = np.zeros(clue_count + 1, dtype=np.int64)
+    np.cumsum(np.bincount(postings, minlength=clue_count), out=clue_start[1:])
+    return clue_start, words
+
+
+def neighbors(word_id: int, starts: list[int], postings: np.ndarray,
+              clue_start: np.ndarray, words: np.ndarray) -> bytes:
+    """Return a per-word-id mask of words sharing at least one clue with word_id."""
+    clues = postings[starts[word_id] : starts[word_id + 1]]
+    begin = clue_start[clues]
+    lengths = clue_start[clues + 1] - begin
+    positions = (np.arange(lengths.sum())
+                 + np.repeat(begin - (np.cumsum(lengths) - lengths), lengths))
+    mask = np.zeros(len(starts) - 1, dtype=np.uint8)
+    mask[words[positions]] = 1
+    return mask.tobytes()
+
+
 def validate_index(data_path: Path, index_path: Path) -> None:
     metadata = json.loads((index_path / "metadata.json").read_text())
     source_stat = data_path.stat()
@@ -205,7 +229,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
           query_text: str | None,
           json_output: bool = False, show_results: bool = False,
           adjacent: bool = False, exact: bool = False,
-          forward: bool = False) -> None:
+          forward: bool = False, sorted_input: bool = False) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError(
@@ -218,11 +242,18 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     tokens = (index_path / "tokens.txt").read_bytes().splitlines()
     word_ids = {word: i for i, word in enumerate(tokens)}
     answers = (index_path / "answers.txt").read_bytes().splitlines()
-    starts = np.load(index_path / "postings_start.npy", mmap_mode="r")
-    postings = np.load(index_path / "postings.npy", mmap_mode="r")
-    clue_off = np.load(index_path / "clue_off.npy", mmap_mode="r")
-    ref_start = np.load(index_path / "ref_start.npy", mmap_mode="r")
-    refs = np.load(index_path / "refs.npy", mmap_mode="r")
+    # Python ints for scalar reads; plain ndarray views skip np.memmap's
+    # per-index overhead while still reading the mapped pages.
+    starts = np.load(index_path / "postings_start.npy").tolist()
+    postings = np.asarray(np.load(index_path / "postings.npy", mmap_mode="r"))
+    clue_off = np.asarray(np.load(index_path / "clue_off.npy", mmap_mode="r"))
+    ref_start = np.asarray(np.load(index_path / "ref_start.npy", mmap_mode="r"))
+    refs = np.asarray(np.load(index_path / "refs.npy", mmap_mode="r"))
+    query_only = (input_path is not None and not show_results
+                  and not (adjacent or exact or forward))
+    clue_index = None
+    lead_id = None
+    lead_neighbors = b""
 
     if input_path is None:
         source = (query_text.encode("utf-8"),)
@@ -251,6 +282,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     separator = b" " if input_path is None else b","
                     parts = raw_query.lower().split(separator)
                     words = set(parts)
+                    lead_word = parts[0]
                     if len(parts) == 1:
                         phrases = (parts[0],)
                     else:
@@ -265,10 +297,27 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                 else:
                     ordered_words = clean_words(raw_query)
                     words = set(ordered_words)
+                    lead_word = ordered_words[0] if ordered_words else None
                 if not words or any(word not in word_ids for word in words):
                     continue
+                if sorted_input and len(words) == 2:
+                    # Consecutive lines usually share a lead word, so its
+                    # co-occurring words are computed once and reused.
+                    if clue_index is None:
+                        clue_index = clue_word_index(postings, starts,
+                                                     len(clue_off))
+                    if word_ids[lead_word] != lead_id:
+                        lead_id = word_ids[lead_word]
+                        lead_neighbors = neighbors(lead_id, starts, postings,
+                                                   *clue_index)
+                    other = next(word for word in words if word != lead_word)
+                    if not lead_neighbors[word_ids[other]]:
+                        continue
+                    if query_only:
+                        print(raw_query.decode("utf-8", errors="replace"))
+                        continue
                 ids = sorted((word_ids[word] for word in words),
-                             key=lambda i: int(starts[i + 1] - starts[i]))
+                             key=lambda i: starts[i + 1] - starts[i])
                 first = ids[0]
                 matches = postings[starts[first] : starts[first + 1]]
                 for word_id in ids[1:]:
@@ -278,6 +327,9 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     if not len(matches):
                         break
                 if not len(matches):
+                    continue
+                if query_only:
+                    print(raw_query.decode("utf-8", errors="replace"))
                     continue
                 printed_query = False
                 for clue_id in matches:

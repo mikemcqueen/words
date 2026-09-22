@@ -7,6 +7,7 @@
     python cluer/query_index.py -f terms.txt --forward
     python cluer/query_index.py -f terms.txt -r
     python cluer/query_index.py -f - < terms.txt
+    sort pairs.txt | python cluer/query_index.py -f - --sorted-input
     python cluer/query_index.py -e "new york"
     python cluer/query_index.py -a PEAR
 
@@ -25,6 +26,9 @@ QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
 changes result lines to JSON, including the query and answer reference low
 bits. Queries with no matches emit nothing. -a finds an exact answer and
 prints its linked clues.
+--sorted-input speeds up -f when lines sharing a first word are consecutive
+(for example, sorted input). Output is the same either way; unsorted input is
+only slower.
 """
 
 import argparse
@@ -49,6 +53,8 @@ def main() -> None:
                         help="match the entire clue to one or two words")
     parser.add_argument("--forward", action="store_true",
                         help="require clue words in input order")
+    parser.add_argument("--sorted-input", action="store_true",
+                        help="with -f, input lines are grouped by first word")
     parser.add_argument("-a", "--answer", metavar="ANSWER",
                         help="find clues linked to this exact answer")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
@@ -63,6 +69,8 @@ def main() -> None:
         parser.error("provide exactly one of QUERY, -f/--file, or -a/--answer")
     if args.results and args.file is None:
         parser.error("--results requires -f/--file")
+    if args.sorted_input and args.file is None:
+        parser.error("--sorted-input requires -f/--file")
     if args.exact and args.adjacent:
         parser.error("--exact cannot be used with -j/--adjacent")
     if args.adjacent and args.answer is not None:
@@ -79,7 +87,7 @@ def main() -> None:
             query(args.data, args.index, args.file, args.query,
                   json_output=args.json, show_results=args.results,
                   adjacent=args.adjacent, exact=args.exact,
-                  forward=args.forward)
+                  forward=args.forward, sorted_input=args.sorted_input)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
 
