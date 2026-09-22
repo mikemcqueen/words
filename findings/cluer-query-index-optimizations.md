@@ -8,9 +8,11 @@ lines. All of the query work happens in `query()` in `cluer/index.py`.
 | item | state |
 |---|---|
 | #1 memmap overhead | Done, commit `c03c51d`, always on |
+| #1 wasted work in plain `-f` | Done, commit `c03c51d` |
 | #2 neighbor sets | Done, commit `c03c51d`, behind `--sorted-input`, two-word `-f` lines (not `-j`) |
-| #3 per-line overhead | Not started |
-| #4 `-j` bigram table | Done, not yet committed; index format version 2 |
+| #3 regex per line | Done, commit `865ff56` |
+| #3 chunked stdin, `stdout.buffer.write` | Not started |
+| #4 `-j` bigram table | Done, commit `c475c92`; index format version 2 |
 | #4 `-e` clue set | Not wanted for now |
 | #5 parallelism | Not started |
 
@@ -89,12 +91,15 @@ job and also avoids first-touch page faults.
 | `ref_start.npy`, `refs.npy` | 13MB, 29MB | Only when printing results (`-r`, or a single QUERY) | No, unless running `-r` with lots of matches. `np.asarray` is harmless, though. |
 | `tokens.txt`, `answers.txt` | — | — | Already read into Python lists/dicts |
 
-### Wasted work in the plain `-f` path
+### Wasted work in the plain `-f` path (done, `c03c51d`)
 
 With no `-r` and no filters (`-j`/`-e`/`--forward`), the first matching clue
 still reads `clue_off` and slices its clue text (`index.py:285-286`) before
 the `break` at line 301. Neither value is used. Printing the query and moving
 on as soon as `matches` is non-empty skips that work.
+
+Done: with `-f` and no `-r`, the query is printed as soon as it matches
+(`query_only` in `cluer/index.py`).
 
 ## 2. Co-occurrence neighbor sets (the big win)
 
@@ -137,6 +142,15 @@ This is what's left once #2 is done.
 - `clean_words` runs a regex plus `replace` and `lower` on every line. For
   `-f` input that's known to be `word,word`,
   `line.rstrip().lower().split(b",")` is cheaper.
+
+  Done, commit `865ff56`: lines are split on commas, and the regex
+  (`clean_words` for plain `-f`, the `fullmatch` check for `-j`/`-e`) only
+  runs when a part isn't a known word. Output is unchanged, and bad
+  `-j`/`-e` lines still raise the same error. The regexes were already
+  compiled once at import. Only the pattern choice and error string were
+  rebuilt per line, and those now run only on the fallback. On the 200k
+  bench: plain unsorted 2.42s → 2.38s, `--sorted-input` 1.16s → 1.08s,
+  `-j` sorted 1.10s → 1.05s, `-e` sorted 3.49s → 3.46s (single runs).
 - Reading with `sys.stdin.buffer.read(1 << 24)` in chunks plus
   `splitlines()` beats iterating line by line.
 - Use `sys.stdout.buffer.write` instead of `print` + `decode`. That only
@@ -192,8 +206,7 @@ After #2, split stdin into chunks and run them through
 
 ## Next steps
 
-- Commit the bigram table.
 - Optionally, skip the `set` conversion for single `-j` queries.
-- #3 per-line overhead: now the largest per-line cost for plain
-  `--sorted-input` runs and for `-j`.
+- The rest of #3 (chunked stdin, `sys.stdout.buffer.write`): now the
+  largest per-line cost for plain `--sorted-input` runs and for `-j`.
 - #5 parallelism, if a single core is still too slow.
