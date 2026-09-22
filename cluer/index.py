@@ -208,7 +208,9 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
           forward: bool = False) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
-        raise ValueError("two words required for --adjacent")
+        raise ValueError(
+            f"two words required for --adjacent: {query_text!r}"
+        )
     if (exact and input_path is None
             and EXACT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError("one or two words required for --exact")
@@ -240,7 +242,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     else:
                         pattern = (ADJACENT_QUERY if input_path is None
                                    else ADJACENT_FILE_QUERY)
-                        error = "two words required for --adjacent"
+                        error = (
+                            "two words required for --adjacent: "
+                            f"{raw_query.decode('utf-8', errors='replace')!r}"
+                        )
                     if pattern.fullmatch(raw_query) is None:
                         raise ValueError(error)
                     separator = b" " if input_path is None else b","
