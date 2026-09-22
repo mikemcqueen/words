@@ -9,6 +9,7 @@ import struct
 import sys
 import tempfile
 import uuid
+from array import array
 from pathlib import Path
 
 import numpy as np
@@ -21,13 +22,30 @@ ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
 ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
 EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
 EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 U32_MAX = np.iinfo(np.uint32).max
 
 
 def clean_words(text: bytes) -> list[bytes]:
     """Apply make-index's ASCII word boundaries and apostrophe deletion."""
     return WORD.findall(text.replace(b"'", b"").lower())
+
+
+def adjacent_words(text: bytes) -> list[tuple[bytes, bytes]]:
+    """Return clean_words pairs separated by exactly one space."""
+    text = text.replace(b"'", b"").lower()
+    pairs = []
+    previous = None
+    for match in WORD.finditer(text):
+        if (previous is not None and match.start() == previous.end() + 1
+                and text[previous.end()] == 0x20):
+            pairs.append((previous.group(), match.group()))
+        previous = match
+    return pairs
+
+
+def bigram_key(first: int, second: int) -> int:
+    return first << 32 | second
 
 
 def read_u32(data: mmap.mmap, offset: int) -> int:
@@ -129,6 +147,7 @@ def build(data_path: Path, index_path: Path, replace: bool = False) -> None:
             )
 
             next_ref = 0
+            bigrams = array("Q")
             for clue_id, offset, clue, refs_offset, nrefs in scan(data):
                 clue_off[clue_id] = offset
                 ref_start[clue_id] = next_ref
@@ -142,11 +161,15 @@ def build(data_path: Path, index_path: Path, replace: bool = False) -> None:
                     pos = cursors[word_id]
                     postings[pos] = clue_id
                     cursors[word_id] = pos + 1
+                for first, second in adjacent_words(clue):
+                    bigrams.append(bigram_key(word_ids[first], word_ids[second]))
+            bigrams = np.unique(np.frombuffer(bigrams, dtype=np.uint64))
+            np.save(staging / "bigrams.npy", bigrams)
             ref_start[clue_count] = next_ref
             if not np.array_equal(cursors, starts[1:]):
                 raise ValueError("postings count changed during build")
-            for array in (clue_off, ref_start, refs, postings):
-                array.flush()
+            for mapped in (clue_off, ref_start, refs, postings):
+                mapped.flush()
             del clue_off, ref_start, refs, postings
 
             final_stat = data_path.stat()
@@ -162,6 +185,7 @@ def build(data_path: Path, index_path: Path, replace: bool = False) -> None:
                 "references": ref_count,
                 "postings": posting_count,
                 "words": len(tokens),
+                "bigrams": len(bigrams),
             }
             (staging / "metadata.json").write_text(json.dumps(metadata) + "\n")
             if index_path.exists():
@@ -249,6 +273,8 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     clue_off = np.asarray(np.load(index_path / "clue_off.npy", mmap_mode="r"))
     ref_start = np.asarray(np.load(index_path / "ref_start.npy", mmap_mode="r"))
     refs = np.asarray(np.load(index_path / "refs.npy", mmap_mode="r"))
+    bigrams = (set(np.load(index_path / "bigrams.npy").tolist()) if adjacent
+               else set())
     query_only = (input_path is not None and not show_results
                   and not (adjacent or exact or forward))
     clue_index = None
@@ -283,7 +309,11 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     parts = raw_query.lower().split(separator)
                     words = set(parts)
                     lead_word = parts[0]
-                    if len(parts) == 1:
+                    if adjacent:
+                        phrases = {(parts[0], parts[1])}
+                        if not forward:
+                            phrases.add((parts[1], parts[0]))
+                    elif len(parts) == 1:
                         phrases = (parts[0],)
                     else:
                         phrases = (parts[0] + b" " + parts[1],)
@@ -300,7 +330,14 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     lead_word = ordered_words[0] if ordered_words else None
                 if not words or any(word not in word_ids for word in words):
                     continue
-                if sorted_input and len(words) == 2:
+                if adjacent:
+                    if not any(bigram_key(word_ids[first], word_ids[second])
+                               in bigrams for first, second in phrases):
+                        continue
+                    if input_path is not None and not show_results:
+                        print(raw_query.decode("utf-8", errors="replace"))
+                        continue
+                elif sorted_input and len(words) == 2:
                     # Consecutive lines usually share a lead word, so its
                     # co-occurring words are computed once and reused.
                     if clue_index is None:
@@ -340,8 +377,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         if clue.lower() not in phrases:
                             continue
                     elif adjacent:
-                        clue_lower = clue.lower()
-                        if not any(phrase in clue_lower for phrase in phrases):
+                        if phrases.isdisjoint(adjacent_words(clue)):
                             continue
                     elif forward:
                         clue_words = iter(clean_words(clue))
