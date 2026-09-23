@@ -273,7 +273,8 @@ class P2RecipeTests(unittest.TestCase):
 
     def test_dry_run_says_how_to_fetch_edited_notes(self):
         _, _, stderr = self._complete("--dry-run")
-        self.assertIn(f"wf -f complete p2 {self.BUNDLE_NAME}", stderr)
+        self.assertIn(f"2 notes cached; `wf -f complete p2 "
+                      f"{self.BUNDLE_NAME}` to re-fetch", stderr)
 
     def test_a_run_after_a_dry_run_reuses_the_downloaded_notes(self):
         self._complete("--dry-run")

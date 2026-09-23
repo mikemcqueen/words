@@ -47,9 +47,9 @@ def _preview_p2(ctx) -> int:
             raise ValueError(message)
     for kind, source in sources.items():
         classify.preview(ctx.root, kind, source, sentence)
-    log.info(f"Dry run: nothing classified. The downloaded notes stay in the "
-             f"bundle; if you edit them, run `wf -f complete p2 "
-             f"{ctx.bundle_name}` to fetch them again.")
+    cached = len(p2_extract.inputs(ctx))
+    log.info(f"{cached} note{'' if cached == 1 else 's'} cached; "
+             f"`wf -f complete p2 {ctx.bundle_name}` to re-fetch")
     return 0
 
 
