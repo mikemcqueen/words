@@ -86,16 +86,32 @@ class DictionaryTests(unittest.TestCase):
         """The delta is against the removal union, not against the base.
 
         A removed word remains in words.big, so counting every submitted base
-        word would make a resubmission look effective.
+        word would make a resubmission look effective. A reviewed word is
+        refused outright, so the word has to be reopened first.
         """
         self._base()
         self._remove("junk.txt", "banana\n")
+        (self.reviewed_inputs / "junk.txt.reviewed.1").unlink()
+        self._gen()
         _, stdout, _ = self._remove("again.txt", "banana\n")
 
         self.assertIn("1 words submitted, 0 new to the removal union, "
                       "0 newly removed from the dictionary", stdout)
         self.assertEqual(["apple", "cherry", "date", "fig"],
                          self._lines(self.derived))
+
+    def test_a_submission_of_only_reviewed_words_is_refused(self):
+        self._base()
+        self._remove("junk.txt", "banana\n")
+        derived = self.derived.read_text()
+
+        with self.assertRaisesRegex(ValueError, "no unreviewed words"):
+            self._remove("again.txt", "banana\n")
+        self.assertEqual(["junk.txt.removed.1"],
+                         [p.name for p in self.removals.iterdir()])
+        self.assertEqual(["junk.txt.reviewed.1"],
+                         [p.name for p in self.reviewed_inputs.iterdir()])
+        self.assertEqual(derived, self.derived.read_text())
 
     def test_the_counter_is_global_and_the_stem_is_the_input_name(self):
         self._base()
@@ -172,13 +188,11 @@ class DictionaryTests(unittest.TestCase):
     # ------------------------------------------------------- the submission
 
     def test_a_count_prefixed_slice_and_a_bare_word_list_agree(self):
-        self._base()
-        self._remove("counted.txt", "  1234 banana\n\n    9 fig\n")
-        self._remove("bare.txt", "banana\nfig\n")
+        counted = self._submission("counted.txt", "  1234 banana\n\n    9 fig\n")
+        bare = self._submission("bare.txt", "banana\nfig\n")
 
-        self.assertEqual(
-            self._lines(self.removals / "counted.txt.removed.1"),
-            self._lines(self.removals / "bare.txt.removed.2"))
+        self.assertEqual(dictionary.read_words(counted),
+                         dictionary.read_words(bare))
 
     def test_a_row_that_is_not_a_word_is_refused_and_nothing_is_written(self):
         self._base()
@@ -225,6 +239,8 @@ class DictionaryTests(unittest.TestCase):
     def test_a_word_is_restored_only_once_every_generation_drops_it(self):
         self._base()
         self._remove("first.txt", "banana\nfig\n")
+        (self.reviewed_inputs / "first.txt.reviewed.1").unlink()
+        self._gen()
         self._remove("second.txt", "banana\n")
 
         # Trimming one occurrence leaves the word removed.
@@ -257,18 +273,6 @@ class DictionaryTests(unittest.TestCase):
 
         self.assertIn("banana", self._lines(self.derived))
         self.assertEqual(["banana"], self._lines(self.reviewed_words))
-
-    def test_deleting_a_reviewed_input_reopens_only_unshared_words(self):
-        self._base()
-        self._remove("first.txt", "banana\nfig\n")
-        self._remove("second.txt", "banana\n")
-
-        (self.reviewed_inputs / "first.txt.reviewed.1").unlink()
-        self._gen()
-        self.assertEqual(["banana"], self._lines(self.reviewed_words))
-        # The removals are untouched: they live in removed/ only.
-        self.assertEqual(["apple", "cherry", "date"],
-                         self._lines(self.derived))
 
     def test_the_kept_words_are_recoverable_without_a_kept_directory(self):
         """reviewed.words minus the removal union, over an overlapping run."""
