@@ -123,7 +123,10 @@ def _opening_time(bundle_dir: Path, source: Path) -> tuple[int, Path] | None:
     if filtered.exists():
         fs.raise_if_not_file(filtered)
         return filtered.stat().st_mtime_ns, filtered
-    if list(bundle_dir.iterdir()) == [source]:
+    # The sentence file is written beside an unfiltered source too.
+    held = [p for p in bundle_dir.iterdir()
+            if p.name != f"{bundle_dir.name}.sentence"]
+    if held == [source]:
         return bundle_dir.stat().st_mtime_ns, source
     return None
 
@@ -146,6 +149,9 @@ def _p2_open(root: Path, recognized) -> Event | None:
             f"filtered: {fs.line_count(evaluated)}, "
             f"notes: {notes.part_count(evaluated)}",
         ]
+        sentence = bundle.sentence(ctx)
+        if sentence is not None:
+            details.append(f"sentence: {sentence}")
         review = _review_detail(recognized, bundle_dir)
         if review is not None:
             details.append(review)

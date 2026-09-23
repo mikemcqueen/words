@@ -146,6 +146,38 @@ def has_source(ctx) -> bool:
     return bool(fs.globs(ctx.bundle_dir, source_globs(ctx)))
 
 
+def sentence_file(ctx) -> Path:
+    """Where `eval p2 -s N` records the sentence the bundle is scoped to."""
+    return ctx.bundle_dir / f"{ctx.bundle_name}.sentence"
+
+
+def record_sentence(ctx, sentence: str | None) -> None:
+    """Record the bundle's sentence, or clear one a reopened bundle left.
+
+    Written when the bundle is opened, because that is when it is filtered:
+    the verdicts it is completed into must be the ones it was filtered
+    against, so `complete` reads this rather than taking a flag of its own.
+    """
+    path = sentence_file(ctx)
+    if sentence is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(f"{sentence}\n")
+
+
+def sentence(ctx) -> str | None:
+    """The sentence this bundle is scoped to, or None for the global sets."""
+    path = sentence_file(ctx)
+    if not path.exists():
+        return None
+    fs.raise_if_not_file(path)
+    name = path.read_text().strip()
+    if name not in config.SENTENCES:
+        raise ValueError(f"{path} names {name!r}, not one of "
+                         f"{', '.join(config.SENTENCES)}")
+    return name
+
+
 def filtered(src: Path) -> Path:
     """The derivative `eval` writes when it drops reviewed pairs."""
     return src.with_name(src.name + ".filtered")
@@ -288,19 +320,22 @@ def done_pairs(ctx) -> Path:
 
 
 def filter_done(src_pairs: Path, ctx, *,
-                filter_completed: bool = True, pcomm: bool = False) -> Path:
+                filter_completed: bool = True, pcomm: bool = False,
+                sentence: str | None = None) -> Path:
     """Drop pairs the phase has already evaluated or classified.
 
     Returns the file to carry forward: the `.filtered` derivative when there is
     something to subtract, otherwise `src_pairs` untouched. P2 always consults
-    the workflow-global review verdicts and consults its done-set only when
-    ``filter_completed`` is true. P1 always consults its done-set.
+    the workflow-global review verdicts, and ``sentence``'s verdicts too when
+    one is given, and consults its done-set only when ``filter_completed`` is
+    true. P1 always consults its done-set.
     ``pcomm`` makes either phase's filter match pairs in either word order.
     """
     done = done_pairs(ctx)
     if ctx.phase == "p2":
-        classified = [config.classified(ctx.root, kind)
-                      for kind in ("yes", "no")]
+        scopes = (None,) if sentence is None else (None, sentence)
+        classified = [config.classified(ctx.root, kind, scope)
+                      for scope in scopes for kind in ("yes", "no")]
         for path in classified:
             fs.raise_if_not_file(path)
         completed = done if filter_completed and done.is_file() else None
@@ -312,7 +347,8 @@ def filter_done(src_pairs: Path, ctx, *,
         if not ctx.force:
             fs.raise_if_exists(dst)
         review_filter.filter_review_pairs(
-            src_pairs, ctx.root, dst, completed_pairs=completed, pcomm=pcomm)
+            src_pairs, ctx.root, dst, completed_pairs=completed, pcomm=pcomm,
+            sentence=sentence)
         return keep_if_changed(src_pairs, dst)
 
     if not done.is_file():

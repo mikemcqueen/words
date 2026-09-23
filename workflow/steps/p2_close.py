@@ -38,5 +38,7 @@ def is_done(ctx) -> bool:
 def run_step(ctx) -> None:
     for scratch in ctx.bundle_dir.glob("*.filtered"):
         scratch.unlink()
+    # Needed until `classify` has folded; nothing reads it after.
+    bundle.sentence_file(ctx).unlink(missing_ok=True)
     shutil.rmtree(p2_retrieve.partial_dir(ctx), ignore_errors=True)
     bundle.finish(ctx)

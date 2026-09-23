@@ -147,6 +147,72 @@ class P2RecipeTests(unittest.TestCase):
         self.assertIn("Classified YES: 2 new, 3 total → yes.pairs", stdout)
         self.assertIn("Classified NO: 1 new, 2 total → no.pairs", stdout)
 
+    # ---------------------------------------------------------------- sentence
+
+    def _scope(self, sentence):
+        (self.bundle_dir / f"{self.BUNDLE_NAME}.sentence").write_text(
+            f"{sentence}\n")
+
+    def _lines(self, kind, sentence=None):
+        return config.classified(self.root, kind, sentence) \
+            .read_text().splitlines()
+
+    def test_a_sentence_bundle_completes_into_that_sentences_sets(self):
+        self._scope("s8")
+        code, stdout, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["alpha,two", "beta,five", "mid,three"],
+                         self._lines("yes", "s8"))
+        self.assertEqual(["yankee,four", "zeta,one"], self._lines("no", "s8"))
+        self.assertEqual([], self._lines("yes"))
+        self.assertEqual([], self._lines("no"))
+        self.assertIn("Classified YES: 3 new, 3 total → s8/yes.pairs", stdout)
+        self.assertFalse(self.bundle_dir.exists())
+
+    def test_a_sentence_yes_may_stand_against_a_global_no(self):
+        self._scope("s8")
+        fx.write_pairs(config.classified(self.root, "no"), ["two,alpha"])
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertIn("alpha,two", self._lines("yes", "s8"))
+
+    def test_a_sentence_no_may_not_stand_against_a_global_yes(self):
+        self._scope("s8")
+        fx.write_pairs(config.classified(self.root, "yes"), ["one,zeta"])
+        with self.assertRaisesRegex(
+                ValueError, "Cannot classify NO: 1 input pair\\(s\\) already "
+                            "classified YES: zeta,one"):
+            self._complete()
+        self.assertEqual([], self._lines("yes", "s8"))
+        self.assertEqual([], self._lines("no", "s8"))
+        self.assertTrue(self.queued.is_file())
+
+    def test_a_sentence_verdict_may_not_contradict_the_same_sentence(self):
+        self._scope("s8")
+        fx.write_pairs(config.classified(self.root, "no", "s8"), ["alpha,two"])
+        with self.assertRaisesRegex(ValueError,
+                                    "already classified NO in s8: alpha,two"):
+            self._complete()
+        self.assertEqual([], self._lines("yes", "s8"))
+
+    def test_another_sentence_does_not_constrain_a_sentence_bundle(self):
+        self._scope("s8")
+        fx.write_pairs(config.classified(self.root, "no", "s3"), ["alpha,two"])
+        fx.write_pairs(config.classified(self.root, "yes", "s3"), ["zeta,one"])
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+
+    def test_a_global_bundle_is_not_checked_against_the_sentences(self):
+        fx.write_pairs(config.classified(self.root, "no", "s3"), ["alpha,two"])
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertIn("alpha,two", self._lines("yes"))
+
+    def test_an_unknown_sentence_in_the_bundle_is_refused(self):
+        self._scope("s10")
+        with self.assertRaisesRegex(ValueError, "names 's10'"):
+            self._complete()
+
     def test_the_notes_are_parsed_requiring_both_checkboxes(self):
         # Without --two-checkboxes a malformed one-box row parses as NO by
         # default, and NO is now a verdict that sticks.

@@ -12,7 +12,8 @@ from workflow import config, fs, setops
 def filter_review_pairs(src: Path, root: Path, dst: Path, *,
                         local_no_pairs: Path | None = None,
                         completed_pairs: Path | None = None,
-                        pcomm: bool = False) -> Path:
+                        pcomm: bool = False,
+                        sentence: str | None = None) -> Path:
     """Write the review candidates in ``src`` that still need a verdict.
 
     YES and NO are workflow-global standing verdicts.  A BEST target may add a
@@ -23,8 +24,12 @@ def filter_review_pairs(src: Path, root: Path, dst: Path, *,
 
     ``pcomm`` swaps ``comm -23`` for ``pcomm -23``, which treats ``a,b`` and
     ``b,a`` as the same pair.
+
+    ``sentence`` adds that sentence's YES and NO sets to the global ones.
     """
-    exclusions = [config.classified(root, kind) for kind in ("yes", "no")]
+    scopes = (None,) if sentence is None else (None, sentence)
+    exclusions = [config.classified(root, kind, scope)
+                  for scope in scopes for kind in ("yes", "no")]
     if local_no_pairs is not None:
         exclusions.append(local_no_pairs)
     if completed_pairs is not None:

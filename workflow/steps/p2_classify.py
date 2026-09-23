@@ -12,7 +12,7 @@
 
 from pathlib import Path
 
-from workflow import classify, config
+from workflow import bundle, classify, config
 
 
 NAME = "classify"
@@ -25,7 +25,11 @@ def inputs(ctx) -> list[Path]:
 
 
 def outputs(ctx) -> list[Path]:
-    return [config.classified(ctx.root, kind) for kind in KINDS]
+    # The bundle's sentence, when `eval p2 -s N` scoped it to one. Read from
+    # the bundle rather than a flag, so it is completed into the verdicts it
+    # was filtered against.
+    sentence = bundle.sentence(ctx)
+    return [config.classified(ctx.root, kind, sentence) for kind in KINDS]
 
 
 def is_done(ctx) -> bool:
@@ -44,13 +48,13 @@ def run_step(ctx) -> None:
     # keeping this batch atomic on a contradiction, this closes the other path
     # into classified/ around the same directional-pair invariant as the
     # standalone `wf classify` command.
+    sentence = bundle.sentence(ctx)
     for kind in KINDS:
         source = ctx.artifact("p2", kind)
         if source.exists():
-            other = config.classified(ctx.root, classify.OPPOSITE[kind])
-            conflicts = classify.contradictions(source, other)
-            if conflicts:
-                raise ValueError(classify.contradiction_message(kind, conflicts))
+            message = classify.conflict(ctx.root, kind, source, sentence)
+            if message:
+                raise ValueError(message)
 
     # Per kind, because archive moves them one at a time: a crash between the
     # two leaves one gone, and re-running must fold what is left rather than
@@ -58,4 +62,4 @@ def run_step(ctx) -> None:
     for kind in KINDS:
         source = ctx.artifact("p2", kind)
         if source.exists():
-            classify.fold(ctx.root, kind, source)
+            classify.fold(ctx.root, kind, source, sentence)

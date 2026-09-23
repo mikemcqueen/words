@@ -97,6 +97,63 @@ class P2QueueContractTests(unittest.TestCase):
             ["keep,new", "p2,done"], filtered.read_text().splitlines())
         self.assertEqual(filtered, prepare.call_args.args[0])
 
+    def test_eval_sentence_also_filters_that_sentences_verdicts(self):
+        self._submit("review", pairs=("keep,new", "s8,yes", "s8,no",
+                                      "s3,no", "global,no"))
+        fx.write_pairs(config.classified(self.root, "no"), ["global,no"])
+        fx.write_pairs(config.classified(self.root, "yes", "s8"), ["s8,yes"])
+        fx.write_pairs(config.classified(self.root, "no", "s8"), ["s8,no"])
+        fx.write_pairs(config.classified(self.root, "no", "s3"), ["s3,no"])
+
+        with mock.patch.object(evaluate.EvalYes, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", "-s", "8", "review")
+
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "review"
+        filtered = bundle_dir / "review.pairs.filtered"
+        self.assertEqual(["keep,new", "s3,no"],
+                         filtered.read_text().splitlines())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+        self.assertEqual("s8\n",
+                         (bundle_dir / "review.sentence").read_text())
+
+    def test_eval_sentence_is_recorded_when_nothing_is_filtered(self):
+        self._submit("review", pairs=("keep,new",))
+        code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p2",
+                                    "--sentence", "2", "review")
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "review"
+        self.assertEqual(["review.pairs", "review.sentence"],
+                         sorted(p.name for p in bundle_dir.iterdir()))
+
+    def test_eval_without_sentence_ignores_sentence_verdicts(self):
+        self._submit("review", pairs=("keep,new", "s8,yes"))
+        fx.write_pairs(config.classified(self.root, "yes", "s8"), ["s8,yes"])
+        code, _, stderr = self._eval("review")
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p2", "eval"]) / "review"
+        self.assertEqual(["review.pairs"],
+                         [p.name for p in bundle_dir.iterdir()])
+
+    def test_eval_refuses_an_unknown_sentence_before_opening(self):
+        self._submit("review")
+        for bad in ("0", "10"):
+            with self.subTest(sentence=bad):
+                with self.assertRaisesRegex(ValueError,
+                                            f"sentence {bad} is not one of"):
+                    fx.run_wf("-d", str(self.root), "eval", "p2",
+                              "-s", bad, "review")
+                self.assertEqual(["review.pairs"], self._queued())
+
+    def test_eval_refuses_a_sentence_init_has_not_made_before_opening(self):
+        self._submit("review")
+        import shutil
+        shutil.rmtree(fx.slot(self.opts, ["classified", "s8"]))
+        with self.assertRaises((OSError, ValueError)):
+            fx.run_wf("-d", str(self.root), "eval", "p2", "-s", "8", "review")
+        self.assertEqual(["review.pairs"], self._queued())
+
     def test_eval_filter_completed_also_filters_p2_done(self):
         self._submit("review", pairs=("keep,new", "p2,done"))
         fx.write_pairs(
@@ -392,6 +449,91 @@ class ClassifyTests(unittest.TestCase):
                 self.assertEqual("", stdout)
                 self.assertIn("map,cheese", stderr)
                 self.assertEqual("", config.classified(root, kind).read_text())
+
+    def test_init_makes_every_sentence_set(self):
+        for sentence in config.SENTENCES:
+            for kind in self.KINDS:
+                self.assertEqual(
+                    "", config.classified(self.root, kind, sentence)
+                    .read_text())
+
+    def test_a_global_yes_may_stand_against_a_sentence_no(self):
+        fx.write_pairs(config.classified(self.root, "no", "s4"),
+                       ["cheese,map"])
+        code, _, stderr = self._classify("yes", "y.pairs", ["map,cheese"])
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["map,cheese"],
+                         self._aggregate("yes").read_text().splitlines())
+
+    def test_a_global_no_may_stand_against_a_sentence_yes(self):
+        fx.write_pairs(config.classified(self.root, "yes", "s4"),
+                       ["cheese,map"])
+        code, _, stderr = self._classify("no", "n.pairs", ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["cheese,map"],
+                         self._aggregate("no").read_text().splitlines())
+
+    def _classify_sentence(self, kind, sentence, name, pairs, *flags):
+        src = fx.write_pairs(self.root / name, pairs)
+        return fx.run_wf("-d", str(self.root), *flags, "classify", kind,
+                         "-s", sentence, str(src))
+
+    def test_sentence_folds_into_that_sentence_only(self):
+        for kind in self.KINDS:
+            with self.subTest(kind=kind):
+                code, stdout, stderr = self._classify_sentence(
+                    kind, "3", f"{kind}.pairs", [f"zeta,{kind}"])
+                self.assertEqual(0, code, stderr)
+                self.assertIn(f"→ s3/{kind}.pairs", stdout)
+                self.assertEqual(
+                    [f"zeta,{kind}"],
+                    config.classified(self.root, kind, "s3")
+                    .read_text().splitlines())
+                self.assertEqual("", self._aggregate(kind).read_text())
+                self.assertEqual(
+                    "", config.classified(self.root, kind, "s4").read_text())
+
+    def test_sentence_yes_may_stand_against_a_global_no(self):
+        fx.write_pairs(self._aggregate("no"), ["cheese,map"])
+        code, _, stderr = self._classify_sentence(
+            "yes", "3", "y.pairs", ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["cheese,map"],
+                         config.classified(self.root, "yes", "s3")
+                         .read_text().splitlines())
+
+    def test_sentence_no_is_refused_against_a_global_yes(self):
+        fx.write_pairs(self._aggregate("yes"), ["cheese,map"])
+        code, _, stderr = self._classify_sentence(
+            "no", "3", "n.pairs", ["map,cheese"])
+        self.assertEqual(1, code)
+        self.assertIn("already classified YES: map,cheese", stderr)
+        self.assertEqual(
+            "", config.classified(self.root, "no", "s3").read_text())
+
+    def test_sentence_verdicts_oppose_within_their_sentence(self):
+        fx.write_pairs(config.classified(self.root, "no", "s3"),
+                       ["cheese,map"])
+        code, _, stderr = self._classify_sentence(
+            "yes", "3", "y.pairs", ["cheese,map"])
+        self.assertEqual(1, code)
+        self.assertIn("already classified NO in s3", stderr)
+        code, _, stderr = self._classify_sentence(
+            "yes", "4", "y.pairs", ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+
+    def test_sentence_dry_run_names_the_sentence_set(self):
+        code, stdout, stderr = self._classify_sentence(
+            "no", "3", "n.pairs", ["cheese,map"], "--dry-run")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Would classify NO: 1 new, 1 total → s3/no.pairs",
+                      stdout)
+        self.assertEqual(
+            "", config.classified(self.root, "no", "s3").read_text())
+
+    def test_an_unknown_sentence_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "sentence 10 is not one of"):
+            self._classify_sentence("yes", "10", "y.pairs", ["cheese,map"])
 
     def test_is_silent_when_the_aggregates_do_not_overlap(self):
         self._classify("no", "n.pairs", ["cheese,map"])

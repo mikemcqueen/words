@@ -115,17 +115,30 @@ class EvalYes(Eval):
         p.add_argument(
             "--filter-completed", action="store_true",
             help="also filter pairs already present in p2_done.pairs")
+        p.add_argument(
+            "-s", "--sentence", type=int, metavar="N",
+            help="scope the review to sentence N: filter against "
+                 "classified/sN as well as the global sets, and complete "
+                 "into classified/sN only")
         notes.add_checked(p)
         notes.add_yes_pairs(p)
         return p
 
     def check(self, opts) -> None:
         notes.check_yes_pairs(opts)
+        if opts.sentence is not None:
+            sentence = config.sentence_name(opts.sentence)
+            for kind in ("yes", "no"):
+                fs.raise_if_not_file(
+                    config.classified(opts.dir, kind, sentence))
 
     def filter(self, pairs: Path, ctx, opts) -> Path:
+        sentence = (None if opts.sentence is None
+                    else config.sentence_name(opts.sentence))
+        bundle.record_sentence(ctx, sentence)
         return bundle.filter_done(
             pairs, ctx, filter_completed=opts.filter_completed,
-            pcomm=opts.pcomm)
+            pcomm=opts.pcomm, sentence=sentence)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         notes.make(pairs, opts)
