@@ -153,18 +153,29 @@ class EvalWords(command.Action):
         super().__init__(summary="words   — evaluate dictionary words for manual review",
                          positional="NAME")
 
-    def run(self, command_text, opts, argv) -> int:
-        if not argv:
-            return usage.missing_argument(self.format_help(command_text))
-        if len(argv) > 1:
-            return usage.invalid_argument(argv[1],
-                                          self.format_help(command_text))
-
-        bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", argv[0])
+    def check(self, opts) -> None:
+        """What must hold before anything is opened; see `Eval.check`."""
         reviewed = config.reviewed_words(opts.dir)
         if not reviewed.is_file():
             raise ValueError(f"dictionary reviewed words not generated: {reviewed}; "
                              f"run `wf gen dict`")
+
+    def parser(self):
+        p = argparse.ArgumentParser(add_help=False)
+        notes.add_checked(p)
+        return p
+
+    def run(self, command_text, opts, argv) -> int:
+        rest = self.parse(opts, argv)
+        if not rest:
+            return usage.missing_argument(self.format_help(command_text))
+        if len(rest) > 1:
+            return usage.invalid_argument(rest[1],
+                                          self.format_help(command_text))
+
+        self.check(opts)
+        bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", rest[0])
+        reviewed = config.reviewed_words(opts.dir)
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)
 

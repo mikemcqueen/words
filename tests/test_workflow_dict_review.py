@@ -109,6 +109,36 @@ class DictionaryReviewTests(unittest.TestCase):
         self.assertEqual(" 7 banana\n 6 cherry\n", filtered.read_text())
         self.assertEqual(notes.ONE_CHECKBOX, make.call_args.args[2])
 
+    def _note_create_argv(self, *argv):
+        """Run a words command with `note` faked; return its --create argv."""
+        calls = []
+        def fake(args, **kwargs):
+            if args[0] != "note":
+                return _REAL_RUN(args, **kwargs)
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0)
+        with mock.patch.object(notes.subprocess, "run", fake):
+            code, _, stderr = self.run_cli(*argv)
+        self.assertEqual(0, code, stderr)
+        return [c for c in calls if "--create" in c]
+
+    def test_eval_and_notes_pass_checked_to_note_create(self):
+        self.submit()
+        for argv in (("eval", "words", self.NAME, "--checked", "yes"),
+                     ("notes", "words", "--checked", "YES", self.NAME)):
+            with self.subTest(command=argv[0]):
+                created = self._note_create_argv(*argv)
+                self.assertTrue(created)
+                for args in created:
+                    self.assertIn("--checkbox", args)
+                    self.assertEqual(
+                        "YES", args[args.index("--checked") + 1])
+
+    def test_eval_without_checked_passes_none(self):
+        self.submit()
+        for args in self._note_create_argv("eval", "words", self.NAME):
+            self.assertNotIn("--checked", args)
+
     def test_eval_failure_leaves_the_source_queued(self):
         self.submit(" 4 Apple\n")
         queued = config.path(self.root, ["dict", "queued"]) / self.NAME
