@@ -492,7 +492,7 @@ class ClassifyTests(unittest.TestCase):
                 code, stdout, stderr = self._classify_sentence(
                     kind, "3", f"{kind}.pairs", [f"zeta,{kind}"])
                 self.assertEqual(0, code, stderr)
-                self.assertIn(f"→ s3/{kind}.pairs", stdout)
+                self.assertIn(f"→ s3/{kind}/{kind}.pairs", stdout)
                 self.assertEqual(
                     [f"zeta,{kind}"],
                     config.classified(self.root, kind, "s3")
@@ -534,7 +534,7 @@ class ClassifyTests(unittest.TestCase):
         code, stdout, stderr = self._classify_sentence(
             "no", "3", "n.pairs", ["cheese,map"], "--dry-run")
         self.assertEqual(0, code, stderr)
-        self.assertIn("Would classify NO: 1 new, 1 total → s3/no.pairs",
+        self.assertIn("Would classify NO: 1 new, 1 total → s3/no/no.pairs",
                       stdout)
         self.assertEqual(
             "", config.classified(self.root, "no", "s3").read_text())
@@ -574,7 +574,7 @@ class ClassifyTests(unittest.TestCase):
                 self.assertEqual(0, code, stderr)
                 self.assertIn(
                     f"Would classify {kind.upper()}: 1 new, 2 total → "
-                    f"{kind}.pairs",
+                    f"{kind}/{kind}.pairs",
                     stdout,
                 )
                 self.assertEqual([f"zeta,{kind}"],

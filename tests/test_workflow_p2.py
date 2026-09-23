@@ -144,8 +144,8 @@ class P2RecipeTests(unittest.TestCase):
         code, stdout, stderr = self._complete()
 
         self.assertEqual(0, code, stderr)
-        self.assertIn("Classified YES: 2 new, 3 total → yes.pairs", stdout)
-        self.assertIn("Classified NO: 1 new, 2 total → no.pairs", stdout)
+        self.assertIn("Classified YES: 2 new, 3 total → yes/yes.pairs", stdout)
+        self.assertIn("Classified NO: 1 new, 2 total → no/no.pairs", stdout)
 
     # ---------------------------------------------------------------- sentence
 
@@ -166,7 +166,8 @@ class P2RecipeTests(unittest.TestCase):
         self.assertEqual(["yankee,four", "zeta,one"], self._lines("no", "s8"))
         self.assertEqual([], self._lines("yes"))
         self.assertEqual([], self._lines("no"))
-        self.assertIn("Classified YES: 3 new, 3 total → s8/yes.pairs", stdout)
+        self.assertIn("Classified YES: 3 new, 3 total → s8/yes/yes.pairs", stdout)
+        self.assertIn("Classified NO: 2 new, 2 total → s8/no/no.pairs", stdout)
         self.assertFalse(self.bundle_dir.exists())
 
     def test_a_sentence_yes_may_stand_against_a_global_no(self):
