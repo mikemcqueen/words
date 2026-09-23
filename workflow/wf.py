@@ -5,8 +5,8 @@ from pathlib import Path
 
 from workflow import (
     best, classify, command, complete, dictionary, dispatch, extract,
-    filter_pairs, history, init, log, notes, show, submit, usage, wipe,
-    eval as evaluate,
+    filter_pairs, history, init, log, notes, review, show, submit, usage,
+    wipe, eval as evaluate,
 )
 
 
@@ -22,6 +22,8 @@ COMMANDS = {
                                     "words": evaluate.WORDS}),
     "notes":    command.Dispatcher("notes    — recreate evaluation notes (p2|words)",
                                    {"p2": notes.P2, "words": notes.WORDS}),
+    "review":   command.Dispatcher("review   — submit and evaluate pairs (p1|p2)",
+                                   {"p1": review.P1, "p2": review.P2}),
     "complete": command.Dispatcher("complete — complete evaluation (p1|p2|words)",
                                    {"p1": complete.P1, "p2": complete.P2,
                                     "words": complete.WORDS}),

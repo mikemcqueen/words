@@ -4,8 +4,8 @@ import tempfile
 from pathlib import Path
 
 from workflow import (
-    classify, command, config, fs, log, names, notes, review, setops, submit,
-    usage,
+    classify, command, config, fs, log, names, notes, review_filter, setops,
+    submit, usage,
     complete as complete_phase, eval as evaluate,
 )
 from workflow.best import generate
@@ -426,7 +426,7 @@ class Review(command.Action):
             # mostly covered by the -r the generation passes: a frontier made
             # before the exclusion was written is still reviewable, and would
             # otherwise re-ask every pair in it.
-            review_file = review.filter_review_pairs(
+            review_file = review_filter.filter_review_pairs(
                 collated, target.root, scratch / review_name,
                 local_no_pairs=target_no_pairs(target))
             if fs.line_count(review_file) == 0:
@@ -447,7 +447,7 @@ class Review(command.Action):
             # The target-local exclusions have no cover at all here: nothing
             # filtered the supplied file, so without this a one-off keeps
             # asking about pairs the operator excluded.
-            reviewed = review.filter_review_pairs(
+            reviewed = review_filter.filter_review_pairs(
                 canonical, target.root, scratch / "reviewed.pairs",
                 local_no_pairs=target_no_pairs(target))
             if fs.line_count(reviewed) == 0:
