@@ -202,6 +202,20 @@ def stage_diff(a: Path, b: Path, dst: Path, staged: Path,
     return stage(_diff_argv(a, b), Path(dst), staged, stable_mtime=stable_mtime)
 
 
+def pair_diff(a: Path, b: Path, dst: Path) -> Path:
+    """diff over word,word pairs, with either word order counting as equal.
+
+    `pcomm -23` rather than `comm -23`: comm sees `a,b` and `b,a` as different
+    lines, so a verdict recorded in one order never removes the other. pcomm
+    needs no sorted input and keeps a's lines in a's order, duplicates
+    included, so when nothing was removed its result matches a -- byte for
+    byte, as long as a has no `\r` and ends in a newline.
+    It holds one file in memory, so it is slower than comm and used only where
+    a caller asks for it.
+    """
+    return _place(["pcomm", "-23", str(a), str(b)], Path(dst))
+
+
 def common(a: Path, b: Path, dst: Path, stable_mtime: bool = False) -> Path:
     """Intersection: the lines in both a and b. Both inputs must be sets."""
     return _place(["comm", "-12", str(a), str(b)], Path(dst),
