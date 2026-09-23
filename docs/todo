@@ -162,6 +162,13 @@ HIGH PRIORITY >>
 * compare.py: compute_pair_diff (explicit 2-way) i think the "new" calculations are based on an
   "anchored" bias but this isn't an anchored diff, so the new_* results look wrong.
 
+* cluer/query_index: `-e "new york"` also matches the clue "York New" (either order is
+  accepted unless --forward), which is kinda dumb. and in a plain `-f` file,
+  `new york,city` is searched as three separate words (new, york, city), not as the
+  phrase "new york" plus city, which is also kinda dumb.
+  * probably standardize: "," splits into individual words, and " " (space) requires
+    the words to appear exactly as written, in that order.
+
 --less important--
 
 * packaging: investigate renaming src -> words.
