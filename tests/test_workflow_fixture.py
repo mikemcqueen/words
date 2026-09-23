@@ -544,6 +544,13 @@ class ProducedNameTests(unittest.TestCase):
         self.assertIn("filtered 2 NO pairs", stderr)
         self.assertNotIn("loaded 9 pairs", stderr)
 
+    def test_dry_run_is_refused_before_anything_is_published(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "--dry-run is not valid for complete p1"):
+            fx.run_wf("-d", str(self.root), "--dry-run",
+                      "complete", "p1", self.PAIRS)
+        self.assertEqual([], self._produced())
+
     # `wf filter` is unregistered until it is brought up to the steps
     # architecture -- see the TODO in workflow/filter_pairs.py.
 #     def test_a_different_band_renders_a_different_bundle_name(self):

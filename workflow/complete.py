@@ -8,7 +8,8 @@
 
 import shlex
 
-from workflow import bundle, command, context, fs, log, names, steps, usage
+from workflow import (bundle, classify, command, context, fs, log, names,
+                      steps, usage)
 from workflow.steps import merge as merge_step
 from workflow.steps import p1_advance, p1_archive, p1_extract
 from workflow.steps import p2_archive, p2_classify, p2_close, p2_extract
@@ -21,6 +22,35 @@ def _cleanup_warning(ctx) -> None:
     log.warn(f"Publication completed, but cleanup failed for {path}. Do not "
              f"rerun completion. Remove the disposable bundle manually:\n"
              f"rm -rf -- {shlex.quote(path)}")
+
+
+def _preview_p2(ctx) -> int:
+    """`--dry-run complete p2`: report what classify would fold, and stop.
+
+    retrieve and extract run for real -- there is nothing to preview until the
+    notes are downloaded and parsed -- but they only write inside the bundle,
+    and the real run would do them first anyway. Everything from classify on
+    is only reported. What they leave is reused by the next run, so notes
+    edited after a dry run need -f to be fetched again.
+    """
+    steps.run_steps([p2_retrieve, p2_extract], ctx)
+    sentence = bundle.sentence(ctx)
+    # The sources classify would fold: absent once a previous run's archive
+    # has taken them, and then there is nothing left to classify.
+    sources = {kind: ctx.artifact("p2", kind) for kind in p2_classify.KINDS
+               if ctx.artifact("p2", kind).exists()}
+    if not sources:
+        log.info("skip classify: already done")
+    for kind, source in sources.items():
+        message = classify.conflict(ctx.root, kind, source, sentence)
+        if message:
+            raise ValueError(message)
+    for kind, source in sources.items():
+        classify.preview(ctx.root, kind, source, sentence)
+    log.info(f"Dry run: nothing classified. The downloaded notes stay in the "
+             f"bundle; if you edit them, run `wf -f complete p2 "
+             f"{ctx.bundle_name}` to fetch them again.")
+    return 0
 
 
 class Complete(command.Action):
@@ -36,6 +66,10 @@ class Complete(command.Action):
             return usage.missing_argument(self.format_help(command))
         if len(argv) > 1:
             return usage.invalid_argument(argv[1], self.format_help(command))
+        # Refused rather than ignored: only p2 has a preview, and every other
+        # recipe would run for real under a flag that promised it would not.
+        if opts.dry_run and self.phase != "p2":
+            raise ValueError(f"--dry-run is not valid for complete {self.phase}")
 
         # The positional names the bundle directory, and every
         # artifact inside is found by prefix so nothing takes a name apart.
@@ -52,6 +86,9 @@ class Complete(command.Action):
         # archive.
         if not ctx.force and not steps.is_done(self.archive, ctx):
             fs.raise_if_any_exist(self.archive.outputs(ctx))
+
+        if opts.dry_run and self.phase == "p2":
+            return _preview_p2(ctx)
 
         if self.phase == "p2":
             archive_index = self.steps.index(self.archive)
@@ -102,6 +139,8 @@ class CompleteWords(command.Action):
         if len(argv) > 1:
             return usage.invalid_argument(argv[1],
                                           self.format_help(command_text))
+        if opts.dry_run:
+            raise ValueError("--dry-run is not valid for complete words")
         bundle_name = names.check_name(argv[0], "bundle name")
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)

@@ -139,6 +139,17 @@ class DictionaryReviewTests(unittest.TestCase):
         for args in self._note_create_argv("eval", "words", self.NAME):
             self.assertNotIn("--checked", args)
 
+    def test_complete_refuses_dry_run_before_retrieving(self):
+        self.submit()
+        self.evaluate()
+        fake = FakeWordNotes({"aa": {"yes": ["2 apple"], "no": []}})
+        with self.assertRaisesRegex(ValueError,
+                                    "--dry-run is not valid for complete words"):
+            self.complete(fake, "--dry-run")
+        self.assertEqual([], fake.fetched)
+        self.assertTrue((config.path(self.root, ["dict", "eval"])
+                         / self.NAME).exists())
+
     def test_eval_failure_leaves_the_source_queued(self):
         self.submit(" 4 Apple\n")
         queued = config.path(self.root, ["dict", "queued"]) / self.NAME

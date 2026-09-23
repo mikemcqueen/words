@@ -234,6 +234,61 @@ class P2RecipeTests(unittest.TestCase):
         self.assertEqual([], self.notes.fetched)
         self.assertTrue(self.queued.is_file())
 
+    # ---------------------------------------------------------------- dry run
+
+    def test_dry_run_reports_what_classify_would_fold(self):
+        fx.write_pairs(config.classified(self.root, "yes"), ["alpha,two"])
+        code, stdout, stderr = self._complete("--dry-run")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Would classify YES: 2 new, 3 total → yes/yes.pairs",
+                      stdout)
+        self.assertIn("Would classify NO: 2 new, 2 total → no/no.pairs",
+                      stdout)
+        self.assertNotIn("Completed", stdout)
+
+    def test_dry_run_changes_nothing_outside_the_bundle(self):
+        self._complete("--dry-run")
+        self.assertEqual([], self._lines("yes"))
+        self.assertEqual([], self._lines("no"))
+        self.assertFalse((self._slot("p2", "done") / "p2_done.pairs").exists())
+        self.assertTrue(self.queued.is_file())
+        for kind in ("yes", "no"):
+            self.assertTrue(self.ctx.artifact("p2", kind).is_file())
+
+    def test_dry_run_reports_into_the_bundles_sentence(self):
+        self._scope("s8")
+        code, stdout, stderr = self._complete("--dry-run")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Would classify YES: 3 new, 3 total → s8/yes/yes.pairs",
+                      stdout)
+        self.assertIn("Would classify NO: 2 new, 2 total → s8/no/no.pairs",
+                      stdout)
+        self.assertEqual([], self._lines("yes", "s8"))
+
+    def test_dry_run_refuses_a_contradiction_as_the_real_run_would(self):
+        fx.write_pairs(config.classified(self.root, "yes"), ["one,zeta"])
+        with self.assertRaisesRegex(ValueError, "already classified YES"):
+            self._complete("--dry-run")
+        self.assertEqual([], self._lines("no"))
+
+    def test_dry_run_says_how_to_fetch_edited_notes(self):
+        _, _, stderr = self._complete("--dry-run")
+        self.assertIn(f"wf -f complete p2 {self.BUNDLE_NAME}", stderr)
+
+    def test_a_run_after_a_dry_run_reuses_the_downloaded_notes(self):
+        self._complete("--dry-run")
+        code, _, stderr = self._complete()
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(1, self.notes.fetched.count(f"{self.queued.name}.aa"))
+        self.assertEqual(["alpha,two", "beta,five", "mid,three"],
+                         self._lines("yes"))
+        self.assertFalse(self.bundle_dir.exists())
+
+    def test_a_forced_dry_run_fetches_the_notes_again(self):
+        self._complete("--dry-run")
+        self._complete("-f", "--dry-run")
+        self.assertEqual(2, self.notes.fetched.count(f"{self.queued.name}.aa"))
+
     # ---------------------------------------------------------------- resume
 
     def test_retrieve_is_atomic_so_a_partial_fetch_is_not_mistaken_for_done(self):
