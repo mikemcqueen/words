@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config, wf, eval as evaluate
+from workflow import config, dictionary, notes, wf, eval as evaluate
 
 
 class ReviewTests(unittest.TestCase):
@@ -125,6 +125,103 @@ class ReviewTests(unittest.TestCase):
         with self.assertRaises((OSError, ValueError)):
             self._review("p2", str(src))
         self.assertEqual([], self._names("p2", "eval"))
+
+
+class ReviewWordsTests(unittest.TestCase):
+    NAME = "top.s7.m4.g5.words"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.opts, _ = fx.make_wf(self.root)
+        config.base_dictionary(self.root).write_text(
+            "apple\nbanana\ncherry\n")
+        dictionary.gen_dict(self.root)
+        self.src = self.root / "ranked.words"
+        self.src.write_text(" 9 banana\n 2 apple\n")
+
+    def _review(self, *argv):
+        with mock.patch.object(notes, "make", return_value=[]) as make:
+            code, _, stderr = fx.run_wf("-d", str(self.root), "review",
+                                        "words", *argv)
+        return code, stderr, make
+
+    def _names(self, slot):
+        return sorted(p.name for p in fx.slot(self.opts, ["dict", slot]).iterdir())
+
+    def test_queues_and_opens_the_bundle_under_the_as_name(self):
+        config.reviewed_words(self.root).write_text("apple\n")
+        for argv in ((str(self.src), "--as", self.NAME),
+                     ("--as", self.NAME + ".b", str(self.src))):
+            code, stderr, make = self._review(*argv)
+            self.assertEqual(0, code, stderr)
+            name = argv[1] if argv[0] == "--as" else self.NAME
+            filtered = (fx.slot(self.opts, ["dict", "eval"]) / name
+                        / f"{name}.filtered")
+            self.assertEqual(" 9 banana\n", filtered.read_text())
+            self.assertEqual(filtered, make.call_args.args[0])
+        self.assertEqual([], self._names("queued"))
+
+    def test_as_goes_to_submit_and_checked_to_eval(self):
+        code, stderr, make = self._review("--checked", "yes", str(self.src),
+                                          "--as", self.NAME)
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([self.NAME], self._names("eval"))
+        self.assertEqual("YES", make.call_args.args[1].checked)
+
+    def test_help_lists_as_and_eval_flags(self):
+        code, stdout, stderr = fx.run_wf("help", "review", "words")
+        self.assertEqual(0, code, stderr)
+        for flag in ("--as NAME", "--checked TYPE"):
+            self.assertIn(flag, stdout)
+
+    def test_the_file_given_twice_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "given more than once"):
+            self._review(str(self.src), "--as", str(self.src))
+        self.assertEqual([], self._names("queued"))
+
+    def test_checked_no_is_accepted(self):
+        code, stderr, make = self._review(str(self.src), "--checked", "NO")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual("NO", make.call_args.args[1].checked)
+
+    def test_without_as_the_file_name_is_the_bundle(self):
+        code, stderr, _ = self._review(str(self.src))
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["ranked.words"], self._names("eval"))
+
+    def test_missing_reviewed_words_is_refused_before_anything_is_queued(self):
+        config.reviewed_words(self.root).unlink()
+        with self.assertRaisesRegex(ValueError, "run `wf gen dict`"):
+            self._review(str(self.src))
+        self.assertEqual([], self._names("queued"))
+
+    def test_dry_run_is_refused_before_anything_is_queued(self):
+        with self.assertRaisesRegex(ValueError,
+                                    "--dry-run is not valid for review"):
+            fx.run_wf("-d", str(self.root), "--dry-run", "review", "words",
+                      str(self.src))
+        self.assertEqual([], self._names("queued"))
+
+    def test_missing_and_extra_files_report_usage(self):
+        code, stderr, _ = self._review()
+        self.assertEqual(2, code)
+        self.assertIn("missing required argument", stderr)
+        code, stderr, _ = self._review(str(self.src), str(self.src))
+        self.assertEqual(2, code)
+        self.assertIn("invalid argument", stderr)
+        self.assertEqual([], self._names("queued"))
+
+    def test_an_eval_failure_names_the_queued_file(self):
+        self.src.write_text(" 4 Apple\n")
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(ValueError):
+            wf.main(["-d", str(self.root), "review", "words", str(self.src),
+                     "--as", self.NAME])
+        self.assertEqual([self.NAME], self._names("queued"))
+        self.assertIn(f"{self.NAME} is still queued; continue with "
+                      f"`wf eval words {self.NAME}`", stderr.getvalue())
 
 
 if __name__ == "__main__":

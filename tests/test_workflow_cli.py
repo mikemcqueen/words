@@ -199,8 +199,8 @@ class WorkflowCliTests(unittest.TestCase):
     def test_words_lifecycle_help_uses_public_scope_and_exact_operands(self):
         expected = {
             ("submit", "words"): "[--as NAME] FILE",
-            ("eval", "words"): "NAME",
-            ("notes", "words"): "NAME",
+            ("eval", "words"): "[--checked TYPE] NAME",
+            ("notes", "words"): "[--checked TYPE] NAME",
             ("complete", "words"): "NAME",
         }
         for (command, scope), tail in expected.items():
