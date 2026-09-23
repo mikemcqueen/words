@@ -105,6 +105,11 @@ def conflict(root: Path, kind: str, src: Path,
     return None
 
 
+def shown(root: Path, dst: Path) -> str:
+    """dst as reported: relative to classified/, e.g. s8/yes/yes.pairs."""
+    return dst.relative_to(config.path(root, ["classified"])).as_posix()
+
+
 def fold(root: Path, kind: str, src: Path,
          sentence: str | None = None) -> Path:
     """Fold src into a classified set and report its new and total counts."""
@@ -112,9 +117,8 @@ def fold(root: Path, kind: str, src: Path,
     before = fs.line_count(dst) if dst.exists() else 0
     config.fold_classified(root, kind, src, sentence)
     total = fs.line_count(dst)
-    where = f"{sentence}/{dst.name}" if sentence else dst.name
     log.success(f"Classified {kind.upper()}: {total - before} new, "
-                f"{total} total → {where}")
+                f"{total} total → {shown(root, dst)}")
     return dst
 
 
@@ -156,9 +160,9 @@ class Classify(command.Action):
         if opts.dry_run:
             current = set(dst.read_text().splitlines()) if dst.exists() else set()
             total = len(current | set(src.read_text().splitlines()))
-            where = f"{sentence}/{dst.name}" if sentence else dst.name
             log.success(f"Would classify {self.kind.upper()}: "
-                        f"{total - before} new, {total} total → {where}")
+                        f"{total - before} new, {total} total → "
+                        f"{shown(opts.dir, dst)}")
             return 0
 
         fold(opts.dir, self.kind, src, sentence)
