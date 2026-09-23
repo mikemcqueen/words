@@ -115,6 +115,36 @@ class P2QueueContractTests(unittest.TestCase):
         self.assertEqual(["keep,new"], filtered.read_text().splitlines())
         self.assertEqual(filtered, prepare.call_args.args[0])
 
+    def test_eval_pcomm_filters_verdicts_in_either_word_order(self):
+        self._submit("review", pairs=("keep,new", "known,yes", "no,known"))
+        fx.write_pairs(config.classified(self.root, "yes"), ["yes,known"])
+        fx.write_pairs(config.classified(self.root, "no"), ["known,no"])
+
+        with mock.patch.object(evaluate.EvalYes, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", "--pcomm", "review")
+
+        self.assertEqual(0, code, stderr)
+        source = (fx.slot(self.opts, ["p2", "eval"]) / "review"
+                  / "review.pairs")
+        filtered = source.with_name(source.name + ".filtered")
+        self.assertEqual(["keep,new"], filtered.read_text().splitlines())
+        self.assertEqual(filtered, prepare.call_args.args[0])
+
+    def test_eval_without_pcomm_keeps_reversed_verdicts(self):
+        self._submit("review", pairs=("keep,new", "known,yes"))
+        fx.write_pairs(config.classified(self.root, "yes"), ["yes,known"])
+
+        with mock.patch.object(evaluate.EvalYes, "prepare") as prepare:
+            code, _, stderr = fx.run_wf(
+                "-d", str(self.root), "eval", "p2", "review")
+
+        self.assertEqual(0, code, stderr)
+        source = (fx.slot(self.opts, ["p2", "eval"]) / "review"
+                  / "review.pairs")
+        self.assertFalse(source.with_name(source.name + ".filtered").exists())
+        self.assertEqual(source, prepare.call_args.args[0])
+
     def test_eval_rejects_the_removed_no_filter_option_before_opening(self):
         self._submit("review", pairs=("keep,new",))
 

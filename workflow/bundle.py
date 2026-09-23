@@ -288,13 +288,15 @@ def done_pairs(ctx) -> Path:
 
 
 def filter_done(src_pairs: Path, ctx, *,
-                filter_completed: bool = True) -> Path:
+                filter_completed: bool = True, pcomm: bool = False) -> Path:
     """Drop pairs the phase has already evaluated or classified.
 
     Returns the file to carry forward: the `.filtered` derivative when there is
     something to subtract, otherwise `src_pairs` untouched. P2 always consults
     the workflow-global review verdicts and consults its done-set only when
     ``filter_completed`` is true. P1 always consults its done-set.
+    ``pcomm`` makes the P2 filter match pairs in either word order; P1
+    ignores it.
     """
     done = done_pairs(ctx)
     if ctx.phase == "p2":
@@ -311,7 +313,7 @@ def filter_done(src_pairs: Path, ctx, *,
         if not ctx.force:
             fs.raise_if_exists(dst)
         review.filter_review_pairs(
-            src_pairs, ctx.root, dst, completed_pairs=completed)
+            src_pairs, ctx.root, dst, completed_pairs=completed, pcomm=pcomm)
         return keep_if_changed(src_pairs, dst)
 
     if not done.is_file():

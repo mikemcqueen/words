@@ -111,6 +111,9 @@ class EvalYes(Eval):
         p.add_argument(
             "--filter-completed", action="store_true",
             help="also filter pairs already present in p2_done.pairs")
+        p.add_argument(
+            "--pcomm", action="store_true",
+            help="filter with pcomm, matching pairs in either word order")
         notes.add_checked(p)
         notes.add_yes_pairs(p)
         return p
@@ -120,7 +123,8 @@ class EvalYes(Eval):
 
     def filter(self, pairs: Path, ctx, opts) -> Path:
         return bundle.filter_done(
-            pairs, ctx, filter_completed=opts.filter_completed)
+            pairs, ctx, filter_completed=opts.filter_completed,
+            pcomm=opts.pcomm)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         notes.make(pairs, opts)
