@@ -122,6 +122,17 @@ def fold(root: Path, kind: str, src: Path,
     return dst
 
 
+def preview(root: Path, kind: str, src: Path,
+            sentence: str | None = None) -> None:
+    """Report the counts fold would report, without folding."""
+    dst = config.classified(root, kind, sentence)
+    before = fs.line_count(dst) if dst.exists() else 0
+    current = set(dst.read_text().splitlines()) if dst.exists() else set()
+    total = len(current | set(src.read_text().splitlines()))
+    log.success(f"Would classify {kind.upper()}: {total - before} new, "
+                f"{total} total → {shown(root, dst)}")
+
+
 class Classify(command.Action):
     def __init__(self, kind: str, label: str):
         super().__init__(
@@ -155,14 +166,8 @@ class Classify(command.Action):
             log.error(message)
             return 1
 
-        dst = config.classified(opts.dir, self.kind, sentence)
-        before = fs.line_count(dst) if dst.exists() else 0
         if opts.dry_run:
-            current = set(dst.read_text().splitlines()) if dst.exists() else set()
-            total = len(current | set(src.read_text().splitlines()))
-            log.success(f"Would classify {self.kind.upper()}: "
-                        f"{total - before} new, {total} total → "
-                        f"{shown(opts.dir, dst)}")
+            preview(opts.dir, self.kind, src, sentence)
             return 0
 
         fold(opts.dir, self.kind, src, sentence)

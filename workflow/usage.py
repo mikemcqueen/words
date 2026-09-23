@@ -12,13 +12,13 @@ def make_global_parser() -> argparse.ArgumentParser:
                    help="workflow root directory (default: $WFROOT or cwd)")
     p.add_argument("-f", "--force", action="store_true",
                    help="force overwrite existing files")
-    # Honoured by classify and where best shells out to a long-running
-    # producer, and refused by name everywhere in `best` that would otherwise
+    # Honoured by classify, complete p2, and where best shells out to a
+    # long-running producer, and refused by name everywhere in `best` that would otherwise
     # ignore it: a flag that silently does nothing on a command that writes
     # state is worse than one that is not accepted there.
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="preview without changing state "
-                        "(classify; best DFS stages)")
+                        "(classify; complete p2; best DFS stages)")
     p.add_argument("-h", "--help", action="store_true",
                    help="show this help message")
     return p
