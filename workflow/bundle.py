@@ -19,7 +19,7 @@ import filecmp
 
 from pathlib import Path
 
-from workflow import config, fs, log, names, review, select, setops
+from workflow import config, fs, log, names, review_filter, select, setops
 
 
 def in_flight(ctx) -> bool:
@@ -311,7 +311,7 @@ def filter_done(src_pairs: Path, ctx, *,
         dst = filtered(src_pairs)
         if not ctx.force:
             fs.raise_if_exists(dst)
-        review.filter_review_pairs(
+        review_filter.filter_review_pairs(
             src_pairs, ctx.root, dst, completed_pairs=completed, pcomm=pcomm)
         return keep_if_changed(src_pairs, dst)
 
