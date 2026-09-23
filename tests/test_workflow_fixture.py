@@ -628,6 +628,24 @@ class BundleLifecycleTests(unittest.TestCase):
         self.assertEqual([self.PAIRS], [p.name for p in bundle_dir.iterdir()])
         self.assertEqual([], list(fx.slot(self.opts, ["p1", "queued"]).iterdir()))
 
+    def _eval_against_reversed_done(self, *flags):
+        fx.write_pairs(fx.slot(self.opts, ["p1", "done"]) / "p1_done.pairs",
+                       ["high,yes"])
+        code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1",
+                                    *flags, self.BUNDLE)
+        self.assertEqual(0, code, stderr)
+        bundle_dir = Context(root=self.opts.dir, phase="p1",
+                             bundle_name=self.BUNDLE).bundle_dir
+        return (bundle_dir / f"{self.PAIRS}.filtered").read_text().splitlines()
+
+    def test_eval_pcomm_filters_done_pairs_in_either_word_order(self):
+        filtered = self._eval_against_reversed_done("--pcomm")
+        self.assertEqual(sorted(p for p in fx.pairs_of(fx.BAND_ROWS)
+                                if p != "yes,high"), filtered)
+
+    def test_eval_without_pcomm_keeps_reversed_done_pairs(self):
+        self.assertIn("yes,high", self._eval_against_reversed_done())
+
     def test_naming_the_queued_file_opens_the_same_bundle(self):
         # The suffix comes off: the directory is named for the bundle either way.
         self.assertEqual(self._eval(self.PAIRS),

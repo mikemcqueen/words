@@ -110,7 +110,7 @@ class WorkflowCliTests(unittest.TestCase):
         self.assertIn("invalid argument: 'balls'", stderr)
         self.assertIn("p1 — evaluate pairs", stderr)
         self.assertIn(
-            "usage: wf eval p1 [-d DIR] [-f] [--dry-run] [-h] BUNDLE-NAME",
+            "usage: wf eval p1 [-d DIR] [-f] [--dry-run] [-h] [--pcomm] BUNDLE-NAME",
             stderr,
         )
 

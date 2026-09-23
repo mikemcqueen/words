@@ -30,7 +30,11 @@ class Eval(command.Action):
         self.ready_for = ready_for
 
     def parser(self):
-        return argparse.ArgumentParser(add_help=False)
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument(
+            "--pcomm", action="store_true",
+            help="filter with pcomm, matching pairs in either word order")
+        return p
 
     def check(self, opts) -> None:
         """Whatever this phase must know is good before the bundle is opened.
@@ -47,7 +51,7 @@ class Eval(command.Action):
 
     def filter(self, pairs: Path, ctx, opts) -> Path:
         """Apply this phase's review-history filter."""
-        return bundle.filter_done(pairs, ctx)
+        return bundle.filter_done(pairs, ctx, pcomm=opts.pcomm)
 
     def _run(self, command, opts, argv, prepared: Path | None = None) -> int:
         rest = self.parse(opts, argv)
@@ -111,9 +115,6 @@ class EvalYes(Eval):
         p.add_argument(
             "--filter-completed", action="store_true",
             help="also filter pairs already present in p2_done.pairs")
-        p.add_argument(
-            "--pcomm", action="store_true",
-            help="filter with pcomm, matching pairs in either word order")
         notes.add_checked(p)
         notes.add_yes_pairs(p)
         return p
