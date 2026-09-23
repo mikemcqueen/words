@@ -63,6 +63,23 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(f"r{i}.pairs.filtered", filtered.name)
             self.assertEqual(["keep,new"], filtered.read_text().splitlines())
 
+    def test_p2_sentence_reaches_eval(self):
+        fx.write_pairs(config.classified(self.root, "yes", "s8"),
+                       ["known,yes"])
+        src = self._pairs("top.1000", pairs=("keep,new", "known,yes"))
+        code, stderr, prepare = self._review("p2", "-s", "8", str(src))
+        self.assertEqual(0, code, stderr)
+        filtered = prepare.call_args.args[0]
+        self.assertEqual(["keep,new"], filtered.read_text().splitlines())
+        self.assertEqual("s8\n", (filtered.parent / "top.1000.sentence")
+                         .read_text())
+
+    def test_an_unknown_sentence_is_refused_before_anything_is_queued(self):
+        src = self._pairs("top.1000")
+        with self.assertRaisesRegex(ValueError, "sentence 10 is not one of"):
+            self._review("p2", "--sentence", "10", str(src))
+        self.assertEqual([], self._names("p2", "queued"))
+
     def test_dry_run_is_refused_before_anything_is_queued(self):
         src = self._pairs("top.1000")
         with self.assertRaisesRegex(ValueError,

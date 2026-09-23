@@ -79,9 +79,8 @@ _PHASE3 = {
 # content would answer that question wrongly, so a no-op fold must leave it
 # alone. The phase done-sets carry no such flag -- nothing dates them, and
 # p1_done.pairs is large enough that the compare would not be free.
-_CLASSIFIED = {
-    "description": "Classified pairs (and their results?)",
-    "parts": {
+def _verdict_parts() -> dict:
+    return {
         "yes": {
             "description": "yes",
             "stable_mtime": True
@@ -93,6 +92,23 @@ _CLASSIFIED = {
         "all": {
             "description": "all"
         }
+    }
+
+
+# The sentences a p2 review can be scoped to with `-s N`. Each holds verdicts
+# that answer for that sentence alone, in the same shape as the global sets
+# beside it, so every fold and filter works on either unchanged.
+SENTENCES = tuple(f"s{n}" for n in range(1, 10))
+
+
+_CLASSIFIED = {
+    "description": "Classified pairs (and their results?)",
+    "parts": {
+        **_verdict_parts(),
+        **{sentence: {
+            "description": f"verdicts for sentence {sentence}",
+            "parts": _verdict_parts()
+        } for sentence in SENTENCES}
     }
 }
 
@@ -244,14 +260,29 @@ def path(root_dir: Path, parts: list[str]) -> Path:
     return path
 
 
-def classified(root_dir: Path, kind: str) -> Path:
-    """A global classified set: .wf/classified/<kind>/<kind>.pairs.
+def sentence_name(number: int) -> str:
+    """The sentence `-s N` names: s<N>, checked against the layout."""
+    name = f"s{number}"
+    if name not in SENTENCES:
+        raise ValueError(f"sentence {number} is not one of "
+                         f"{SENTENCES[0]}..{SENTENCES[-1]}")
+    return name
+
+
+def _classified_parts(kind: str, sentence: str | None) -> list[str]:
+    return (["classified", kind] if sentence is None
+            else ["classified", sentence, kind])
+
+
+def classified(root_dir: Path, kind: str, sentence: str | None = None) -> Path:
+    """A classified set: .wf/classified/[<sentence>/]<kind>/<kind>.pairs.
 
     Bundle-independent by construction. These are the workflow's standing
     verdicts about pairs, not a record of any one review batch, which is why
-    they live beside the phases rather than inside one.
+    they live beside the phases rather than inside one. Without a sentence
+    the set is global; with one it answers for that sentence alone.
     """
-    return path(root_dir, ["classified", kind]) / f"{kind}.pairs"
+    return path(root_dir, _classified_parts(kind, sentence)) / f"{kind}.pairs"
 
 
 def base_dictionary(root_dir: Path) -> Path:
@@ -301,7 +332,8 @@ def stable_mtime(parts: list[str]) -> bool:
     return layout_args(parts).node.get("stable_mtime", False)
 
 
-def fold_classified(root_dir: Path, kind: str, src: Path) -> Path:
+def fold_classified(root_dir: Path, kind: str, src: Path,
+                    sentence: str | None = None) -> Path:
     """Union src into the standing classified set for kind.
 
     The one way to write those aggregates. Which write policy they need is a
@@ -310,6 +342,6 @@ def fold_classified(root_dir: Path, kind: str, src: Path) -> Path:
     verdict it is recording cannot get it wrong, and cannot be left behind if
     the policy changes.
     """
-    parts = ["classified", kind]
-    return setops.fold(src, classified(root_dir, kind),
+    parts = _classified_parts(kind, sentence)
+    return setops.fold(src, classified(root_dir, kind, sentence),
                        stable_mtime=stable_mtime(parts))

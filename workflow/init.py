@@ -28,8 +28,9 @@ def ensure_layout(parent: Path, child: str, layout, opts) -> None:
 
 def init(opts) -> None:
     ensure_layout(opts.dir, config.CONFIG_ROOT, config.CONFIG_LAYOUT, opts)
-    for kind in ("yes", "no"):
-        ensure_file(config.classified(opts.dir, kind))
+    for sentence in (None, *config.SENTENCES):
+        for kind in ("yes", "no"):
+            ensure_file(config.classified(opts.dir, kind, sentence))
 
 
 class Init(command.Action):
