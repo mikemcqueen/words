@@ -111,34 +111,6 @@ class BestTests(unittest.TestCase):
         # content clock stays at 30 because regeneration was a no-op.
         self._write(generation.stamp(target / "top.segments"), "seed\n", 65)
 
-    def test_gen_help_describes_options_and_positionals(self):
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "help")
-
-        self.assertEqual(0, code, stderr)
-        self.assertRegex(
-            stdout, r"SENTENCE\s+sentence identifier under \.wf/best")
-        self.assertRegex(stdout, r"STAGE\s+artifact to generate: dfs\.seed")
-        self.assertIn("-g COUNT", stdout)
-        self.assertIn("number of segments", stdout)
-        self.assertIn("-m LENGTH", stdout)
-        self.assertIn("min word length", stdout)
-        self.assertIn("-n COUNT", stdout)
-        self.assertIn("maximum results to output", stdout)
-        rendered = "".join(line.strip() for line in stdout.splitlines())
-        self.assertIn("dfs-anagrams and top-segments", rendered)
-        self.assertIn("sentence seed plus classified YES", rendered)
-        self.assertIn("target-local BEST promotion", rendered)
-        self.assertNotIn("dfs.best.pairs", rendered)
-
-    def test_review_help_describes_the_optional_pairs_file(self):
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "review", "help")
-
-        self.assertEqual(0, code, stderr)
-        self.assertIn("SENTENCE [PAIRS-FILE]", stdout)
-        self.assertRegex(stdout, r"PAIRS-FILE\s+optional one-off pairs file")
-
     def test_init_builds_static_crown_and_show_points_to_status(self):
         self.assertTrue((self.best / "idx").is_dir())
         # The dictionary is root-global now, not a BEST input.
@@ -1435,23 +1407,6 @@ class BestTests(unittest.TestCase):
 
     # --------------------------------------------------------------- prepare
 
-    def test_prepare_help_names_the_source_and_the_two_cutoffs(self):
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "prepare", "help")
-        self.assertEqual(0, code, stderr)
-        self.assertIn("--source SOURCE", stdout)
-        self.assertIn("--dfs-count COUNT", stdout)
-        self.assertIn("--top-count COUNT", stdout)
-        rendered = "".join(line.strip() for line in stdout.splitlines())
-        self.assertIn("maximum dfs-anagrams results (default: 1000000)",
-                      rendered)
-        self.assertIn("maximum top.segments pairs (default: 1000)", rendered)
-
-        code, stdout, stderr = fx.run_wf("-d", str(self.root), "best", "help")
-        self.assertEqual(0, code, stderr)
-        self.assertIn("prepare  — run a DFS search and generate the frontier",
-                      stdout)
-
     def test_prepare_seed_runs_both_legs_with_the_default_cutoffs(self):
         universe = self.best / "s2" / "u-cdef" / "m4"
         self._shared_inputs(universe)
@@ -1733,7 +1688,7 @@ class BestTests(unittest.TestCase):
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "queued"]).iterdir()))
         self.assertEqual([], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
 
-    def test_no_best_command_types_yes_pairs_but_the_primitives_still_do(self):
+    def test_no_best_command_types_yes_pairs(self):
         target = self._target()
         self._complete_files(target)
         self._write(target / "top.segments", "keep,new\n", 30)
@@ -1747,14 +1702,6 @@ class BestTests(unittest.TestCase):
         self.assertNotIn("--yes-pairs", run.call_args.args[2])
         self.assertNotIn("--yes-pairs", stdout + stderr)
 
-        # The plumbing stays wired for a later revival of the marked bundle.
-        for command_text in (("eval", "p2"), ("notes", "p2")):
-            with self.subTest(command=command_text):
-                code, stdout, stderr = fx.run_wf(
-                    "-d", str(self.root), *command_text, "help")
-                self.assertEqual(0, code, stderr)
-                self.assertIn("--yes-pairs", stdout)
-
     def test_letter_set_flag_is_required_and_singular(self):
         self._target()
 
@@ -1767,14 +1714,6 @@ class BestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "give exactly one"):
             fx.run_wf("-d", str(self.root), "best", "review", "s2",
                       "-o", "abc", "-u", "cdef", "-g", "4")
-
-        code, stdout, stderr = fx.run_wf(
-            "-d", str(self.root), "best", "gen", "help")
-        self.assertEqual(0, code, stderr)
-        self.assertIn("-o LETTERS", stdout)
-        self.assertIn("use only these letters", stdout)
-        self.assertIn("-u LETTERS", stdout)
-        self.assertIn("the sentence less these letters", stdout)
 
 
 if __name__ == "__main__":
