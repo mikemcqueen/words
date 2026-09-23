@@ -295,8 +295,7 @@ def filter_done(src_pairs: Path, ctx, *,
     something to subtract, otherwise `src_pairs` untouched. P2 always consults
     the workflow-global review verdicts and consults its done-set only when
     ``filter_completed`` is true. P1 always consults its done-set.
-    ``pcomm`` makes the P2 filter match pairs in either word order; P1
-    ignores it.
+    ``pcomm`` makes either phase's filter match pairs in either word order.
     """
     done = done_pairs(ctx)
     if ctx.phase == "p2":
@@ -323,7 +322,10 @@ def filter_done(src_pairs: Path, ctx, *,
     if not ctx.force:
         fs.raise_if_exists(dst)
 
-    setops.diff(src_pairs, done, dst)
+    if pcomm:
+        setops.pair_diff(src_pairs, done, dst)
+    else:
+        setops.diff(src_pairs, done, dst)
     log.info(f"{fs.line_count(dst)} filtered pairs")
     return dst
 
