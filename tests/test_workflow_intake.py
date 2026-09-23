@@ -45,6 +45,14 @@ class P2QueueContractTests(unittest.TestCase):
         self._submit("s6.pairs.90.10.p1.yes")
         self.assertEqual(["s6.pairs.90.10.p1.yes"], self._queued())
 
+    def test_as_replaces_the_file_name_and_keeps_the_suffix_rule(self):
+        for name in ("mine", "mine.b.pairs"):
+            src = fx.write_pairs(self.outside / "top.1000", ["alpha,two"])
+            code, _, stderr = fx.run_wf("-d", str(self.root), "submit", "p2",
+                                        "--as", name, str(src))
+            self.assertEqual(0, code, stderr)
+        self.assertEqual(["mine.b.pairs", "mine.pairs"], self._queued())
+
     def test_the_queued_copy_is_sorted_and_deduped(self):
         self._submit("top.1000", pairs=["zeta,one", "alpha,two", "alpha,two"])
         queued = fx.slot(self.opts, ["p2", "queued"]) / "top.1000.pairs"

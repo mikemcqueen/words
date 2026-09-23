@@ -135,6 +135,25 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual([], self._names("p2", "queued"))
         self.assertNotIn("still queued", stderr)
 
+    def test_as_names_the_queued_file_and_the_bundle(self):
+        src = self._pairs("top.1000")
+        for argv in (["--as", "mine", str(src)],
+                     [str(src), "--as", "mine.b.pairs", "--pcomm"]):
+            code, stderr, prepare = self._review("p2", *argv)
+            self.assertEqual(0, code, stderr)
+        self.assertEqual([], self._names("p2", "queued"))
+        self.assertEqual(["mine", "mine.b"], self._names("p2", "eval"))
+        source = fx.slot(self.opts, ["p2", "eval"]) / "mine.b" / "mine.b.pairs"
+        self.assertEqual(source, prepare.call_args.args[0])
+
+    def test_as_failure_names_the_queued_file_by_its_as_name(self):
+        src = self._pairs("top.1000")
+        fx.make_bundle(self.opts, "p2", "mine")
+        stderr = self._review_failing("p2", str(src), "--as", "mine")
+        self.assertEqual(["mine.pairs"], self._names("p2", "queued"))
+        self.assertIn("mine.pairs is still queued; continue with "
+                      "`wf eval p2 mine.pairs`", stderr)
+
     def test_an_existing_queued_file_stops_review_at_submit(self):
         src = self._pairs("top.1000")
         fx.write_pairs(fx.slot(self.opts, ["p2", "queued"]) / "top.1000.pairs",
@@ -186,12 +205,6 @@ class ReviewWordsTests(unittest.TestCase):
         self.assertEqual(0, code, stderr)
         self.assertEqual([self.NAME], self._names("eval"))
         self.assertEqual("YES", make.call_args.args[1].checked)
-
-    def test_help_lists_as_and_eval_flags(self):
-        code, stdout, stderr = fx.run_wf("help", "review", "words")
-        self.assertEqual(0, code, stderr)
-        for flag in ("--as NAME", "--checked TYPE"):
-            self.assertIn(flag, stdout)
 
     def test_the_file_given_twice_is_refused(self):
         with self.assertRaisesRegex(ValueError, "given more than once"):

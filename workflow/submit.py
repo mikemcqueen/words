@@ -34,13 +34,21 @@ class Submit(command.Action):
         self.phase = phase
         self.label = label
 
+    def parser(self):
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--as", dest="as_name", metavar="NAME",
+                            help="queue name, in place of the file's own "
+                                 "(the queue suffix is still added)")
+        return parser
+
     def prepare(self, src: Path) -> Path:
         return src
 
     def run(self, command, opts, argv) -> int:
-        src = _resolve_input(argv)
+        src = _resolve_input(self.parse(opts, argv))
+        chosen = opts.as_name if opts.as_name is not None else src.name
         dst = (config.path(opts.dir, [self.phase, "queued"])
-               / names.queue_name(self.phase, src.name))
+               / names.queue_name(self.phase, chosen))
         if not opts.force:
             fs.raise_if_exists(dst)
 

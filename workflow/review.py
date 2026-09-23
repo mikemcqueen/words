@@ -1,9 +1,9 @@
 # review.py
 #
-# `submit` then `eval` in one step. Nothing of its own: the pairs file goes to
-# the phase's submit, and the flags go to the phase's eval, which owns them.
-# For words, submit has a flag of its own: `--as` goes to submit, and every
-# other flag to eval.
+# `submit` then `eval` in one step. Nothing of its own: the file goes to the
+# phase's submit, and the flags go to the phase's eval, which owns them. The
+# one exception is submit's own flag: `--as` goes to submit, and every other
+# flag to eval.
 
 from pathlib import Path
 
@@ -22,7 +22,11 @@ class Review(command.Action):
         self.evaluator = evaluator
 
     def parser(self):
-        return self.evaluator.parser()
+        p = self.evaluator.parser()
+        p.add_argument("--as", dest="as_name", metavar="NAME",
+                       help="queue name, in place of the file's own "
+                            "(given to submit)")
+        return p
 
     def run(self, command, opts, argv) -> int:
         rest = self.parse(opts, argv)
@@ -44,12 +48,18 @@ class Review(command.Action):
                              f"`wf eval {self.phase}`")
         self.evaluator.check(opts)
 
-        code = self.submitter.run(f"submit {self.phase}", opts, [src])
+        submit_argv = [src]
+        if opts.as_name is not None:
+            submit_argv += ["--as", opts.as_name]
+        # Everything but --as is eval's; submit's own parser takes it out.
+        _, eval_argv = self.submitter.parser().parse_known_args(argv)
+        code = self.submitter.run(f"submit {self.phase}", opts, submit_argv)
         if code != 0:
             return code
 
-        queued = names.queue_name(self.phase, Path(src).name)
-        eval_argv = [queued if arg == src else arg for arg in argv]
+        chosen = opts.as_name if opts.as_name is not None else Path(src).name
+        queued = names.queue_name(self.phase, chosen)
+        eval_argv = [queued if arg == src else arg for arg in eval_argv]
         try:
             code = self.evaluator.run(f"eval {self.phase}", opts, eval_argv)
         except Exception:
