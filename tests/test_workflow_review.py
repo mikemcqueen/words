@@ -52,11 +52,12 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(source, prepare.call_args.args[0])
 
     def test_p2_flags_reach_eval_on_either_side_of_the_file(self):
-        fx.write_pairs(config.classified(self.root, "yes"), ["yes,known"])
+        fx.write_pairs(fx.slot(self.opts, ["p2", "done"]) / "p2_done.pairs",
+                       ["p2,done"])
         for i, place_flag_first in enumerate((True, False)):
-            src = self._pairs(f"r{i}", pairs=("keep,new", "known,yes"))
-            argv = (["--pcomm", str(src)] if place_flag_first
-                    else [str(src), "--pcomm"])
+            src = self._pairs(f"r{i}", pairs=("keep,new", "p2,done"))
+            argv = (["--filter-completed", str(src)] if place_flag_first
+                    else [str(src), "--filter-completed"])
             code, stderr, prepare = self._review("p2", *argv)
             self.assertEqual(0, code, stderr)
             filtered = prepare.call_args.args[0]
@@ -138,7 +139,7 @@ class ReviewTests(unittest.TestCase):
     def test_as_names_the_queued_file_and_the_bundle(self):
         src = self._pairs("top.1000")
         for argv in (["--as", "mine", str(src)],
-                     [str(src), "--as", "mine.b.pairs", "--pcomm"]):
+                     [str(src), "--as", "mine.b.pairs", "--filter-completed"]):
             code, stderr, prepare = self._review("p2", *argv)
             self.assertEqual(0, code, stderr)
         self.assertEqual([], self._names("p2", "queued"))

@@ -111,7 +111,8 @@ class EvalYes(Eval):
                          source_noun="pairs", ready_for="manual filtering")
 
     def parser(self):
-        p = super().parser()
+        # No --pcomm here: p2 always filters with pcomm.
+        p = argparse.ArgumentParser(add_help=False)
         p.add_argument(
             "--filter-completed", action="store_true",
             help="also filter pairs already present in p2_done.pairs")
@@ -138,7 +139,7 @@ class EvalYes(Eval):
         bundle.record_sentence(ctx, sentence)
         return bundle.filter_done(
             pairs, ctx, filter_completed=opts.filter_completed,
-            pcomm=opts.pcomm, sentence=sentence)
+            pcomm=True, sentence=sentence)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         notes.make(pairs, opts)
