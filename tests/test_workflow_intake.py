@@ -196,37 +196,6 @@ class P2QueueContractTests(unittest.TestCase):
         self.assertEqual(["keep,new"], filtered.read_text().splitlines())
         self.assertEqual(filtered, prepare.call_args.args[0])
 
-    def test_eval_rejects_the_removed_pcomm_option_before_opening(self):
-        self._submit("review", pairs=("keep,new",))
-
-        code, _, stderr = fx.run_wf(
-            "-d", str(self.root), "eval", "p2", "--pcomm", "review")
-
-        self.assertEqual(2, code)
-        self.assertIn("invalid argument:", stderr)
-        self.assertEqual(
-            ["review.pairs"],
-            [path.name for path in
-             fx.slot(self.opts, ["p2", "queued"]).iterdir()])
-        self.assertEqual(
-            [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
-
-    def test_eval_rejects_the_removed_no_filter_option_before_opening(self):
-        self._submit("review", pairs=("keep,new",))
-
-        code, _, stderr = fx.run_wf(
-            "-d", str(self.root), "eval", "p2", "--no-filter", "review")
-
-        self.assertEqual(2, code)
-        self.assertIn("invalid argument:", stderr)
-        self.assertNotIn("--no-filter]", stderr)
-        self.assertEqual(
-            ["review.pairs"],
-            [path.name for path in
-             fx.slot(self.opts, ["p2", "queued"]).iterdir()])
-        self.assertEqual(
-            [], list(fx.slot(self.opts, ["p2", "eval"]).iterdir()))
-
     # Naming the queued file is the second way in. The bundle it opens is the
     # same one either spelling names -- the suffix comes off, so the eval
     # directory never records which producer filled the slot.

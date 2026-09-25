@@ -30,11 +30,7 @@ class Eval(command.Action):
         self.ready_for = ready_for
 
     def parser(self):
-        p = argparse.ArgumentParser(add_help=False)
-        p.add_argument(
-            "--pcomm", action="store_true",
-            help="filter with pcomm, matching pairs in either word order")
-        return p
+        return argparse.ArgumentParser(add_help=False)
 
     def check(self, opts) -> None:
         """Whatever this phase must know is good before the bundle is opened.
@@ -51,7 +47,7 @@ class Eval(command.Action):
 
     def filter(self, pairs: Path, ctx, opts) -> Path:
         """Apply this phase's review-history filter."""
-        return bundle.filter_done(pairs, ctx, pcomm=opts.pcomm)
+        return bundle.filter_done(pairs, ctx)
 
     def _run(self, command, opts, argv, prepared: Path | None = None) -> int:
         rest = self.parse(opts, argv)
@@ -111,7 +107,6 @@ class EvalYes(Eval):
                          source_noun="pairs", ready_for="manual filtering")
 
     def parser(self):
-        # No --pcomm here: p2 always filters with pcomm.
         p = argparse.ArgumentParser(add_help=False)
         p.add_argument(
             "--filter-completed", action="store_true",
@@ -139,7 +134,7 @@ class EvalYes(Eval):
         bundle.record_sentence(ctx, sentence)
         return bundle.filter_done(
             pairs, ctx, filter_completed=opts.filter_completed,
-            pcomm=True, sentence=sentence)
+            sentence=sentence)
 
     def prepare(self, pairs: Path, ctx, opts) -> None:
         notes.make(pairs, opts)
