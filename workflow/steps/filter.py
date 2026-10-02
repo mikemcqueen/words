@@ -48,11 +48,14 @@ def run_step(ctx) -> None:
     # Emit a set by construction: filter into scratch, then place atomically.
     with tempfile.NamedTemporaryFile(mode="w", prefix="wf-filter-",
                                      suffix=".pairs") as matches:
-        filter_results(paths, True, matches,
-                       pairs_path=(str(ctx.pairs_path)
-                                   if ctx.pairs_path is not None else None),
-                       pmin=ctx.pmin, prng=ctx.prange, use_max=False)
+        missing = filter_results(paths, True, matches,
+                                 pairs_path=(str(ctx.pairs_path)
+                                             if ctx.pairs_path is not None
+                                             else None),
+                                 pmin=ctx.pmin, prng=ctx.prange, use_max=False)
         matches.flush()
         setops.merge([matches.name], ctx.dest)
 
     log.info(f"filtered {len(paths)} p1 result file(s) → {ctx.dest.name}")
+    if missing:
+        log.error(f"WARNING: {len(missing):,} pairs had no results")

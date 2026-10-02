@@ -152,7 +152,25 @@ class EvalNo(command.Action):
         return 0
 
 
-P1 = Eval("p1", "p1      — evaluate pairs")
+class EvalPairs(Eval):
+    def __init__(self):
+        super().__init__(phase="p1", summary="p1      — evaluate pairs")
+
+    def parser(self):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument(
+            "--no-filter", action="store_true",
+            help="evaluate every pair, including those already in "
+                 "p1_done.pairs")
+        return p
+
+    def filter(self, pairs: Path, ctx, opts) -> Path:
+        if opts.no_filter:
+            return pairs
+        return bundle.filter_done(pairs, ctx)
+
+
+P1 = EvalPairs()
 P2 = EvalYes()
 P3 = EvalNo()
 

@@ -427,6 +427,45 @@ class UnifiedFilterTests(unittest.TestCase):
         self.assertEqual(["tiger,woods"], out.getvalue().splitlines())
         self.assertIn("loaded 1 pairs", err.getvalue())
 
+    def test_returns_pair_list_lines_with_no_results_as_written(self):
+        # "high,yes" is "yes,high" reversed: it has results. "mixed,split" is
+        # out of this band but evaluated, so it has results too.
+        # Written directly: fx.write_pairs sorts, which would hide file order.
+        pairs = self.dir / "keep.pairs"
+        pairs.write_text("zz,gone\nhigh,yes\nmixed,split\naa,gone\n")
+        missing = filter_results([self.alpha, self.beta], True, io.StringIO(),
+                                 pairs_path=str(pairs), pmin=0.95, prng=0.05)
+        self.assertEqual(["zz,gone", "aa,gone"], missing)
+
+    def test_returns_none_without_a_pair_list(self):
+        self.assertIsNone(filter_results([self.alpha], True, io.StringIO()))
+
+    def _filter_main_missing(self, pairs, missing_path):
+        with mock.patch("sys.argv", ["filter", "--yes", "-d", str(self.dir),
+                                     str(pairs), "--missing",
+                                     str(missing_path)]):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                filter_main()
+
+    def test_missing_writes_pairs_with_no_results(self):
+        pairs = fx.write_pairs(self.dir / "keep.pairs",
+                               ["yes,high", "zz,gone"])
+        missing_path = self.dir / "missing.pairs"
+        self._filter_main_missing(pairs, missing_path)
+        self.assertEqual(["zz,gone"], missing_path.read_text().splitlines())
+
+    def test_missing_does_not_create_a_file_when_nothing_is_missing(self):
+        pairs = fx.write_pairs(self.dir / "keep.pairs", ["yes,high"])
+        missing_path = self.dir / "missing.pairs"
+        self._filter_main_missing(pairs, missing_path)
+        self.assertFalse(missing_path.exists())
+
+    def test_missing_requires_dir(self):
+        with mock.patch("sys.argv", ["filter", "--yes", str(self.alpha),
+                                     "--missing", str(self.dir / "m")]):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                filter_main()
+
     def test_pairs_path_none_skips_the_identity_mask(self):
         self.assertEqual(self._filter([self.alpha]),
                          self._filter([self.alpha], pairs_path=None))
@@ -642,6 +681,38 @@ class BundleLifecycleTests(unittest.TestCase):
         filtered = (bundle_dir / f"{self.PAIRS}.filtered").read_text()
         self.assertEqual(sorted(p for p in fx.pairs_of(fx.BAND_ROWS)
                                 if p != "yes,high"), filtered.splitlines())
+
+    def test_eval_no_filter_keeps_done_pairs(self):
+        fx.write_pairs(fx.slot(self.opts, ["p1", "done"]) / "p1_done.pairs",
+                       ["high,yes"])
+        code, _, stderr = fx.run_wf("-d", str(self.root), "eval", "p1",
+                                    "--no-filter", self.BUNDLE)
+        self.assertEqual(0, code, stderr)
+        bundle_dir = fx.slot(self.opts, ["p1", "eval"]) / self.BUNDLE
+        self.assertEqual([self.PAIRS], [p.name for p in bundle_dir.iterdir()])
+
+    def test_complete_refuses_a_result_shorter_than_its_input(self):
+        bundle_dir = self._eval()
+        fx.write_results(bundle_dir / self.RESULT, fx.BAND_ROWS[:-1])
+
+        with self.assertRaisesRegex(ValueError, "8 results .* 9 pairs"):
+            fx.run_wf("-d", str(self.root), "complete", "p1", self.BUNDLE)
+
+        self.assertFalse((fx.slot(self.opts, ["p1", "done"])
+                          / "p1_done.pairs").exists())
+        self.assertEqual(sorted([self.PAIRS, self.RESULT]),
+                         sorted(p.name for p in bundle_dir.iterdir()))
+
+    def test_complete_compares_the_result_to_the_filtered_input(self):
+        fx.write_pairs(fx.slot(self.opts, ["p1", "done"]) / "p1_done.pairs",
+                       ["high,yes"])
+        bundle_dir = self._eval()
+        fx.write_results(bundle_dir / self.RESULT,
+                         [r for r in fx.BAND_ROWS if r["pair"] != "yes,high"])
+
+        code, _, stderr = fx.run_wf("-d", str(self.root), "complete", "p1",
+                                    self.BUNDLE)
+        self.assertEqual(0, code, stderr)
 
     def test_naming_the_queued_file_opens_the_same_bundle(self):
         # The suffix comes off: the directory is named for the bundle either way.

@@ -60,15 +60,15 @@ def _pmax(pmin: float, prng: float) -> float:
     return pmax
 
 
-def _load_pair_set(path: str) -> set:
-    """Load unordered pair keys from a pair-list file."""
-    pairs = set()
+def _load_pair_set(path: str) -> dict[str, str]:
+    """Map unordered pair keys from a pair-list file to their first line."""
+    pairs = {}
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            pairs.add(_pair_lookup_key(line))
+            pairs.setdefault(_pair_lookup_key(line), line)
             if len(pairs) > MAX_PAIR_SET:
                 raise SystemExit(f"pair set exceeds {MAX_PAIR_SET:,} entries (from {path})")
     return pairs
@@ -118,6 +118,9 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     that orientation.
 
     `sample` limits output to a uniform sample of the final matching rows.
+
+    Returns the `pairs_path` lines, as written and in file order, whose pair
+    appeared in no result file in any band; None without `pairs_path`.
     """
     if isinstance(paths, (str, Path)):
         # A bare path would iterate per character; each "file" then fails to open
@@ -149,6 +152,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     best = {} if dedupe else None
     sampled = [] if sample is not None else None
     seen = 0
+    found = set()
 
     def emit(pair):
         nonlocal seen
@@ -178,10 +182,13 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
             else:
                 mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
             if pair_set is not None:
-                mask &= np.fromiter(
+                in_set = np.fromiter(
                     (_pair_lookup_key(p) in pair_set for p in block.pairs()),
                     dtype=bool, count=block.size,
                 )
+                found.update(_pair_lookup_key(block.pair_at(i))
+                             for i in np.flatnonzero(in_set))
+                mask &= in_set
             for idx in np.flatnonzero(mask):
                 pair = block.pair_at(idx)
                 if not dedupe:
@@ -205,6 +212,9 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
             emit(_oriented_pair(canonical, is_reversed))
     if sampled is not None:
         out_file.writelines(pair + "\n" for pair in sampled)
+    if pair_set is None:
+        return None
+    return [line for key, line in pair_set.items() if key not in found]
 
 
 def _filter_args(args):
@@ -216,10 +226,19 @@ def _filter_args(args):
         if args.file is None:
             print("WARNING: no pairs file supplied - displaying all pairs",
                   file=sys.stderr)
-        filter_results(paths, args.yes, sys.stdout, pairs_path=args.file,
-                       pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
-                       dedupe=args.yes and not args.ignore_ordering,
-                       sample=args.sample)
+        missing = filter_results(paths, args.yes, sys.stdout,
+                                 pairs_path=args.file, pmin=args.prob_min,
+                                 prng=args.prob_range, use_max=use_max,
+                                 dedupe=args.yes and not args.ignore_ordering,
+                                 sample=args.sample)
+        if missing and args.missing is not None:
+            with open(args.missing, "w") as f:
+                f.writelines(pair + "\n" for pair in missing)
+            print(f"{len(missing):,} pairs missing results saved to "
+                  f"{args.missing}", file=sys.stderr)
+        elif missing:
+            print(f"WARNING: {len(missing):,} pairs had no results",
+                  file=sys.stderr)
     else:
         filter_results([args.file], args.yes, sys.stdout,
                        pmin=args.prob_min, prng=args.prob_range, use_max=use_max,
@@ -250,11 +269,16 @@ def _parse_args():
     output.add_argument(
         "--sample", type=int, metavar="N",
         help="display a random sample of up to N matching pairs")
+    parser.add_argument(
+        "--missing", metavar="FILE",
+        help="with --dir, write pair-list pairs that have no results to FILE")
     args = parser.parse_args()
     if args.sample is not None and args.sample < 0:
         parser.error("--sample must be nonnegative")
     if args.file is None and args.dir is None:
         parser.error("file is required unless --dir is given")
+    if args.missing is not None and (args.dir is None or args.file is None):
+        parser.error("--missing requires --dir and a pair list")
     return args
 
 

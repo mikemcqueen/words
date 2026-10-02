@@ -23,6 +23,29 @@ def result(ctx) -> Path:
     return bundle.one(ctx.bundle_dir, f"{ctx.bundle_name}*.jsonl")
 
 
+def check_result_covers_input(ctx) -> None:
+    """Refuse a result with fewer rows than the pairs `eval` handed out.
+
+    An eval that stops early still leaves a result file, and nothing after
+    this point can tell it from a finished one: merge folds the whole
+    evaluated input into p1_done.pairs, so the pairs that never got a result
+    are filtered out of every later `wf eval p1` as though they had.
+    """
+    # Nothing to compare once archive has taken the input, or when the bundle
+    # never held a result -- `is_done` closes both as no-ops.
+    if not bundle.has_source(ctx):
+        return
+    jsonl = bundle.at_most_one(ctx.bundle_dir, f"{ctx.bundle_name}*.jsonl")
+    if jsonl is None:
+        return
+    evaluated = bundle.evaluated(ctx)
+    pairs, rows = fs.line_count(evaluated), fs.line_count(jsonl)
+    if rows < pairs:
+        raise ValueError(f"{jsonl.name} has {rows:,} results but "
+                         f"{evaluated.name} has {pairs:,} pairs; the eval "
+                         f"may have stopped early")
+
+
 def produced_bundle_name(ctx) -> str:
     # The bundle's own name plus the band it was filtered at, and nothing from
     # the result file. evalpair appends its own tag/prompt/host suffixes to the

@@ -87,6 +87,11 @@ class Complete(command.Action):
         if not ctx.force and not steps.is_done(self.archive, ctx):
             fs.raise_if_any_exist(self.archive.outputs(ctx))
 
+        # Before anything is extracted or folded: a short result would put
+        # unevaluated pairs into p1_done.pairs.
+        if self.phase == "p1":
+            p1_extract.check_result_covers_input(ctx)
+
         if opts.dry_run and self.phase == "p2":
             return _preview_p2(ctx)
 
