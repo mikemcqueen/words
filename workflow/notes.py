@@ -143,8 +143,8 @@ def add_checked(parser: argparse.ArgumentParser) -> None:
 def add_yes_pairs(parser: argparse.ArgumentParser) -> None:
     """Add the confirmed-YES input option used by P2 note creation."""
     parser.add_argument("--yes-pairs", metavar="PATH",
-                        help="confirmed-YES pairs the notes check themselves "
-                             "against")
+                        help="pre-check the YES box of review pairs listed "
+                             "in PATH (either order)")
 
 
 def check_yes_pairs(opts) -> None:
@@ -156,6 +156,9 @@ def check_yes_pairs(opts) -> None:
     is worth a bad path, and both can answer this from the arguments alone.
     """
     if opts.yes_pairs:
+        if getattr(opts, "checked", None) is not None:
+            raise ValueError("--yes-pairs cannot be combined with --checked, "
+                             "which checks every box of its type")
         fs.raise_if_not_readable(Path(opts.yes_pairs))
 
 

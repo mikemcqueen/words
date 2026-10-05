@@ -643,6 +643,12 @@ class NotesCommandTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 self._refuse("--yes-pairs", str(bad))
 
+    def test_yes_pairs_with_checked_is_refused(self):
+        self._in_flight()
+        yes_pairs = fx.write_pairs(self.root / "best.pairs", ["alpha,two"])
+        self.assertIn("--checked", self._refuse("--yes-pairs", str(yes_pairs),
+                                                "--checked", "YES"))
+
 
 if __name__ == "__main__":
     unittest.main()
