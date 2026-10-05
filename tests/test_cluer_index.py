@@ -144,10 +144,36 @@ class CluerIndexTests(unittest.TestCase):
             self.assertEqual(result.stdout.splitlines(),
                              ["firewood,wood", "stop,dont", "n,roll", "now,stop"])
 
+            for threads in ("2", "0"):
+                result = adjacent("-f", terms, "--threads", threads)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(),
+                                 ["firewood,wood", "stop,dont", "n,roll",
+                                  "now,stop"])
+
             result = adjacent("-f", terms, "--forward")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(),
                              ["firewood,wood", "n,roll"])
+
+            bad_terms = root / "bad_terms.txt"
+            bad_terms.write_text("firewood,wood\nnew york\nn,roll\n")
+            result = adjacent("-f", bad_terms, "--threads", "2")
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout.splitlines(), ["firewood,wood"])
+            self.assertIn("two words required for --adjacent: 'new york'",
+                          result.stderr)
+
+            # Every line has one comma, but one line is still malformed.
+            for bad, shown in ((b"n,", "n,"), (b",roll", ",roll"),
+                               (b"n-x,roll", "n-x,roll"),
+                               (b"caf\xc3\xa9,roll", "café,roll")):
+                bad_terms.write_bytes(b"firewood,wood\n" + bad + b"\nn,roll\n")
+                result = adjacent("-f", bad_terms)
+                self.assertEqual(result.returncode, 1, bad)
+                self.assertEqual(result.stdout.splitlines(), ["firewood,wood"])
+                self.assertIn(f"two words required for --adjacent: {shown!r}",
+                              result.stderr)
 
             result = adjacent("-f", terms, "-r", "--forward")
             self.assertEqual(result.returncode, 0, result.stderr)

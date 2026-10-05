@@ -28,12 +28,15 @@ QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
 changes result lines to JSON, including the query and answer reference low
 bits. Queries with no matches emit nothing. -a finds an exact answer and
 prints its linked clues.
+--threads N checks -f -j input chunks on N threads (0 = one per CPU).
+Output order is the same as with one thread. Other modes run on one thread.
 --sorted-input speeds up -f when lines sharing a first word are consecutive
 (for example, sorted input). Output is the same either way; unsorted input is
 only slower.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 from index import DEFAULT_DATA, DEFAULT_INDEX, query, query_answer
@@ -57,6 +60,8 @@ def main() -> None:
                         help="require clue words in input order")
     parser.add_argument("--sorted-input", action="store_true",
                         help="with -f, input lines are grouped by first word")
+    parser.add_argument("--threads", type=int, default=1, metavar="N",
+                        help="with -f -j, threads to use (0 = one per CPU)")
     parser.add_argument("-a", "--answer", metavar="ANSWER",
                         help="find clues linked to this exact answer")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
@@ -81,6 +86,13 @@ def main() -> None:
         parser.error("--exact cannot be used with -a/--answer")
     if args.forward and args.answer is not None:
         parser.error("--forward cannot be used with -a/--answer")
+    if args.threads < 0:
+        parser.error("--threads must be 0 or more")
+    if args.threads != 1 and (args.file is None or not args.adjacent
+                              or args.results):
+        parser.error("--threads requires -f/--file and -j/--adjacent "
+                     "without -r/--results")
+    threads = args.threads or os.cpu_count() or 1
     try:
         if args.answer is not None:
             query_answer(args.data, args.index, args.answer,
@@ -89,7 +101,8 @@ def main() -> None:
             query(args.data, args.index, args.file, args.query,
                   json_output=args.json, show_results=args.results,
                   adjacent=args.adjacent, exact=args.exact,
-                  forward=args.forward, sorted_input=args.sorted_input)
+                  forward=args.forward, sorted_input=args.sorted_input,
+                  threads=threads)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
 

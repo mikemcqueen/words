@@ -10,6 +10,8 @@ import sys
 import tempfile
 import uuid
 from array import array
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice, repeat
 from pathlib import Path
 
@@ -26,6 +28,10 @@ EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
 FORMAT_VERSION = 2
 U32_MAX = np.iinfo(np.uint32).max
 ADJACENT_CHUNK = 65536
+# Bytes allowed in a lowercased -f -j query chunk: [a-z0-9], comma, newline.
+ADJACENT_BYTES = np.zeros(256, dtype=bool)
+ADJACENT_BYTES[np.frombuffer(b"abcdefghijklmnopqrstuvwxyz0123456789,\n",
+                             dtype=np.uint8)] = True
 
 
 def clean_words(text: bytes) -> list[bytes]:
@@ -229,60 +235,113 @@ def in_sorted(keys: np.ndarray, table: np.ndarray) -> np.ndarray:
     return found
 
 
-def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]) -> np.ndarray:
-    """Return an (n, 2) array of word ids for "first,second" query lines.
+def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]
+                 ) -> tuple[np.ndarray, bool]:
+    """Return (ids, well_formed) for "first,second" query lines.
 
-    An id is -1 for an unknown word, and both are -1 unless the line has
-    exactly one comma.
+    ids is an (n, 2) array of word ids. An id is -1 for an unknown word, and
+    both are -1 unless the line has exactly one comma. well_formed is True
+    when every line is two [A-Za-z0-9]+ words separated by one comma; when
+    False, some lines may still be well formed.
     """
     text = b"\n".join(queries).lower()
-    separators = np.frombuffer(text, dtype=np.uint8)
-    separators = separators[(separators == 0x2C) | (separators == 0x0A)]
+    text_bytes = np.frombuffer(text, dtype=np.uint8)
+    is_separator = (text_bytes == 0x2C) | (text_bytes == 0x0A)
+    separators = text_bytes[is_separator]
     if (len(separators) == 2 * len(queries) - 1
             and (separators[0::2] == 0x2C).all()):
         # Every line has exactly one comma, so one flat split lines up.
         words = text.replace(b"\n", b",").split(b",")
-        return np.fromiter(map(word_ids.get, words, repeat(-1)),
-                           dtype=np.int64, count=len(words)).reshape(-1, 2)
+        ids = np.fromiter(map(word_ids.get, words, repeat(-1)),
+                          dtype=np.int64, count=len(words)).reshape(-1, 2)
+        # No word is empty when separators are never at either end of the
+        # text or next to each other.
+        positions = np.flatnonzero(is_separator)
+        well_formed = bool(
+            ADJACENT_BYTES[text_bytes].all()
+            and positions[0] > 0 and positions[-1] < len(text) - 1
+            and (np.diff(positions) > 1).all()
+        )
+        return ids, well_formed
     ids = []
     for query_line in queries:
         parts = query_line.lower().split(b",")
         ids.append((word_ids.get(parts[0], -1), word_ids.get(parts[1], -1))
                    if len(parts) == 2 else (-1, -1))
-    return np.array(ids, dtype=np.int64).reshape(-1, 2)
+    return np.array(ids, dtype=np.int64).reshape(-1, 2), False
 
 
-def print_adjacent_queries(source, word_ids: dict[bytes, int],
-                           bigrams: np.ndarray, forward: bool) -> None:
-    """Print -f -j query lines whose two words are adjacent in some clue.
+def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
+                   bigrams: np.ndarray, forward: bool
+                   ) -> tuple[list[bytes], bytes | None]:
+    """Return (matching query lines, first malformed line or None).
 
-    Lines are checked a chunk at a time against the sorted bigram keys.
+    Matches are only those before the malformed line.
     """
-    while lines := list(islice(source, ADJACENT_CHUNK)):
-        queries = [line.rstrip(b"\r\n") for line in lines]
-        ids = adjacent_ids(queries, word_ids)
-        known = (ids >= 0).all(axis=1)
+    queries = [line.rstrip(b"\r\n") for line in lines]
+    ids, well_formed = adjacent_ids(queries, word_ids)
+    known = (ids >= 0).all(axis=1)
+    end = len(queries)
+    if not well_formed:
         # Known words are all [a-z0-9]+, so the regex check is only needed
         # for lines with an unknown part.
-        end = len(queries)
         for i in np.flatnonzero(~known):
             if ADJACENT_FILE_QUERY.fullmatch(queries[i]) is None:
                 end = i
                 break
-        first = ids[:, 0].astype(np.uint64)
-        second = ids[:, 1].astype(np.uint64)
-        keys = first << np.uint64(32) | second
-        if not forward:
-            keys = np.concatenate((keys, second << np.uint64(32) | first))
-        found = known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0)
-        matches = [queries[i] for i in np.flatnonzero(found[:end])]
+    first = ids[:, 0].astype(np.uint64)
+    second = ids[:, 1].astype(np.uint64)
+    keys = first << np.uint64(32) | second
+    if not forward:
+        keys = np.concatenate((keys, second << np.uint64(32) | first))
+    found = known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0)
+    matches = [queries[i] for i in np.flatnonzero(found[:end])]
+    return matches, queries[end] if end < len(queries) else None
+
+
+def print_adjacent_queries(source, word_ids: dict[bytes, int],
+                           bigrams: np.ndarray, forward: bool,
+                           threads: int = 1) -> None:
+    """Print -f -j query lines whose two words are adjacent in some clue.
+
+    Lines are checked a chunk at a time against the sorted bigram keys.
+    With threads > 1, chunks are checked on a thread pool and printed in
+    input order.
+    """
+    chunks = iter(lambda: list(islice(source, ADJACENT_CHUNK)), [])
+    if threads == 1:
+        results = (adjacent_chunk(lines, word_ids, bigrams, forward)
+                   for lines in chunks)
+    else:
+        results = threaded_results(chunks, threads, adjacent_chunk,
+                                   word_ids, bigrams, forward)
+    for matches, bad_line in results:
         if matches:
             print(b"\n".join(matches).decode("utf-8", errors="replace"))
-        if end < len(queries):
+        if bad_line is not None:
             raise ValueError(
                 "two words required for --adjacent: "
-                f"{queries[end].decode('utf-8', errors='replace')!r}"
+                f"{bad_line.decode('utf-8', errors='replace')!r}"
             )
+
+
+def threaded_results(chunks, threads: int, function, *args):
+    """Yield function(chunk, *args) for each chunk, in order, on a thread pool.
+
+    At most 2 * threads chunks are read ahead, so memory stays bounded.
+    """
+    with ThreadPoolExecutor(threads) as pool:
+        pending = deque()
+        try:
+            for chunk in chunks:
+                pending.append(pool.submit(function, chunk, *args))
+                if len(pending) >= 2 * threads:
+                    yield pending.popleft().result()
+            while pending:
+                yield pending.popleft().result()
+        finally:
+            for future in pending:
+                future.cancel()
 
 
 def clue_word_index(postings: np.ndarray, starts: list[int],
@@ -324,7 +383,8 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
           query_text: str | None,
           json_output: bool = False, show_results: bool = False,
           adjacent: bool = False, exact: bool = False,
-          forward: bool = False, sorted_input: bool = False) -> None:
+          forward: bool = False, sorted_input: bool = False,
+          threads: int = 1) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError(
@@ -360,7 +420,8 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     try:
         if chunked:
             print_adjacent_queries(source, word_ids,
-                                   np.load(index_path / "bigrams.npy"), forward)
+                                   np.load(index_path / "bigrams.npy"), forward,
+                                   threads)
             return
         with data_path.open("rb") as stream, mmap.mmap(
             stream.fileno(), 0, access=mmap.ACCESS_READ
