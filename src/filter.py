@@ -11,7 +11,7 @@ from src import compare_native
 from src.common import prefetch
 
 
-MAX_PAIR_SET = 5_000_000
+MAX_PAIR_SET = 10_000_000
 
 
 def _build_prob_mask(block, yes: bool, pmin: float, pmax: float, use_max: bool):
@@ -60,18 +60,27 @@ def _pmax(pmin: float, prng: float) -> float:
     return pmax
 
 
-def _load_pair_set(path: str) -> dict[str, str]:
-    """Map unordered pair keys from a pair-list file to their first line."""
+def _load_pair_set(path: str) -> tuple[dict[str, int], bytearray]:
+    """Index unordered pair keys from a pair-list file in first-seen order.
+
+    Returns the key -> index map and, per index, whether the key's first line
+    was written reversed; `_oriented_pair` rebuilds that line from the two.
+    """
     pairs = {}
+    reversed_flags = bytearray()
     with open(path) as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            pairs.setdefault(_pair_lookup_key(line), line)
+            key = _pair_lookup_key(line)
+            if key in pairs:
+                continue
+            pairs[key] = len(reversed_flags)
+            reversed_flags.append(key != line)
             if len(pairs) > MAX_PAIR_SET:
                 raise SystemExit(f"pair set exceeds {MAX_PAIR_SET:,} entries (from {path})")
-    return pairs
+    return pairs, reversed_flags
 
 
 def _canonical_pair(pair: str) -> tuple[str, bool]:
@@ -139,7 +148,8 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     pmax = _pmax(pmin, prng)
     pair_set = None
     if pairs_path is not None:
-        pair_set = _load_pair_set(pairs_path)
+        pair_set, reversed_flags = _load_pair_set(pairs_path)
+        found = bytearray(len(pair_set))
         if report_pair_load:
             print(f"loaded {len(pair_set):,} pairs from {pairs_path}",
                   file=sys.stderr)
@@ -152,7 +162,6 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     best = {} if dedupe else None
     sampled = [] if sample is not None else None
     seen = 0
-    found = set()
 
     def emit(pair):
         nonlocal seen
@@ -182,12 +191,12 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
             else:
                 mask = _build_prob_mask(block, yes, pmin, pmax, use_max)
             if pair_set is not None:
-                in_set = np.fromiter(
-                    (_pair_lookup_key(p) in pair_set for p in block.pairs()),
-                    dtype=bool, count=block.size,
-                )
-                found.update(_pair_lookup_key(block.pair_at(i))
-                             for i in np.flatnonzero(in_set))
+                in_set = np.zeros(block.size, dtype=bool)
+                for i, p in enumerate(block.pairs()):
+                    index = pair_set.get(_pair_lookup_key(p))
+                    if index is not None:
+                        in_set[i] = True
+                        found[index] = 1
                 mask &= in_set
             for idx in np.flatnonzero(mask):
                 pair = block.pair_at(idx)
@@ -214,7 +223,8 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
         out_file.writelines(pair + "\n" for pair in sampled)
     if pair_set is None:
         return None
-    return [line for key, line in pair_set.items() if key not in found]
+    return [_oriented_pair(key, reversed_flags[index])
+            for key, index in pair_set.items() if not found[index]]
 
 
 def _filter_args(args):
