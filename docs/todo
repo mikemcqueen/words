@@ -1,6 +1,37 @@
 HIGH PRIORITY >>
 ----------------
 
+Here's what the last session said to run on the other computer:
+
+If that machine has no local commits or uncommitted changes on master:
+
+git fetch origin
+git checkout master
+git reset --hard origin/master
+
+After this, its master matches GitHub exactly. Only use it on a clean master, because reset --hard throws away local commits and uncommitted changes.
+
+If it does have local commits on master:
+
+git pull --rebase
+
+Rebase drops the old copies of commits that are already upstream and puts the real local commits back on top.
+
+Branches there that started from the old master (like working):
+
+git checkout working
+git rebase origin/master
+
+If you skip this, the old commits come back the next time you merge.
+
+----cleanup----
+
+
+git branch -D backup/master-pre-rewrite backup/working-pre-rewrite
+git update-ref -d refs/original/refs/heads/master
+git update-ref -d refs/original/refs/heads/working
+
+
 * workflow: follow up on the classified/yes.pairs + classified/no.pairs union/subtraction
   rules for some of the `best gen` commands, and for `best review` as well.
   * started a session on JUNIPER on this and never followed up. check there first.
