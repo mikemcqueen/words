@@ -6,6 +6,7 @@
 # the bundle exists, run the recipe. Only the recipe differs, so a phase is a
 # STEPS list and nothing else.
 
+import argparse
 import shlex
 
 from workflow import (bundle, classify, command, context, fs, log, names,
@@ -42,7 +43,8 @@ def _preview_p2(ctx) -> int:
     if not sources:
         log.info("skip classify: already done")
     for kind, source in sources.items():
-        message = classify.conflict(ctx.root, kind, source, sentence)
+        message = classify.conflict(ctx.root, kind, source, sentence,
+                                    ctx.show_conflicts)
         if message:
             raise ValueError(message)
     for kind, source in sources.items():
@@ -61,7 +63,16 @@ class Complete(command.Action):
         self.archive = next(step for step in step_list
                             if step.NAME == "archive")
 
+    def parser(self):
+        # Only p2 classifies, so only p2 has conflicts to show.
+        if self.phase != "p2":
+            return None
+        p = argparse.ArgumentParser(add_help=False)
+        classify.add_show_conflicts(p)
+        return p
+
     def run(self, command, opts, argv) -> int:
+        argv = self.parse(opts, argv)
         if not argv:
             return usage.missing_argument(self.format_help(command))
         if len(argv) > 1:
@@ -76,8 +87,10 @@ class Complete(command.Action):
         # Only the name is wanted: the next line requires the bundle to be
         # open, so a source resolved in some other slot answers nothing here.
         bundle_name, _ = bundle.resolve_source(opts.dir, self.phase, argv[0])
-        ctx = context.Context(root=opts.dir, phase=self.phase,
-                              force=opts.force, bundle_name=bundle_name)
+        ctx = context.Context(
+            root=opts.dir, phase=self.phase, force=opts.force,
+            bundle_name=bundle_name,
+            show_conflicts=getattr(opts, "show_conflicts", False))
         fs.raise_if_not_dir(ctx.bundle_dir)
 
         # Archive is the first irreversible part of completion. Discover every

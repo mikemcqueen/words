@@ -489,6 +489,26 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(
             "", config.classified(self.root, "no", "s3").read_text())
 
+    def test_show_conflicts_lists_every_conflicting_pair(self):
+        pairs = ["a,one", "b,two", "c,three", "d,four", "e,five"]
+        fx.write_pairs(self._aggregate("yes"), pairs)
+        src = fx.write_pairs(self.root / "n.pairs", pairs)
+        code, _, stderr = fx.run_wf("-d", str(self.root), "classify", "no",
+                                    "-s", "3", "--show-conflicts", str(src))
+        self.assertEqual(1, code)
+        self.assertNotIn("more)", stderr)
+        for pair in pairs:
+            self.assertIn(pair, stderr)
+
+    def test_conflicts_are_sampled_by_default(self):
+        pairs = ["a,one", "b,two", "c,three", "d,four", "e,five"]
+        fx.write_pairs(self._aggregate("yes"), pairs)
+        code, _, stderr = self._classify_sentence(
+            "no", "3", "n.pairs", pairs)
+        self.assertEqual(1, code)
+        self.assertIn("(+2 more)", stderr)
+        self.assertNotIn("e,five", stderr)
+
     def test_sentence_verdicts_oppose_within_their_sentence(self):
         fx.write_pairs(config.classified(self.root, "no", "s3"),
                        ["cheese,map"])

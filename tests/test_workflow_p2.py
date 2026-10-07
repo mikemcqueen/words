@@ -188,6 +188,19 @@ class P2RecipeTests(unittest.TestCase):
         self.assertEqual([], self._lines("no", "s8"))
         self.assertTrue(self.queued.is_file())
 
+    def test_show_conflicts_lists_each_conflicting_pair_on_its_own_line(self):
+        self._scope("s8")
+        fx.write_pairs(config.classified(self.root, "yes"), ["one,zeta"])
+        for extra in ((), ("--dry-run",)):
+            with self.subTest(extra=extra):
+                with mock.patch.object(p2_retrieve.subprocess, "run",
+                                       self.notes.route):
+                    with self.assertRaisesRegex(
+                            ValueError, "already classified YES:\nzeta,one"):
+                        fx.run_wf("-d", str(self.root), *extra, "complete",
+                                  "p2", "--show-conflicts", self.BUNDLE_NAME)
+        self.assertEqual([], self._lines("no", "s8"))
+
     def test_a_sentence_verdict_may_not_contradict_the_same_sentence(self):
         self._scope("s8")
         fx.write_pairs(config.classified(self.root, "no", "s8"), ["alpha,two"])

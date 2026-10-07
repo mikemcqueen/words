@@ -52,7 +52,8 @@ def run_step(ctx) -> None:
     for kind in KINDS:
         source = ctx.artifact("p2", kind)
         if source.exists():
-            message = classify.conflict(ctx.root, kind, source, sentence)
+            message = classify.conflict(ctx.root, kind, source, sentence,
+                                        ctx.show_conflicts)
             if message:
                 raise ValueError(message)
 

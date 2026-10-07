@@ -69,14 +69,20 @@ def contradictions(src: Path, opposing: Path) -> list[str]:
 
 
 def contradiction_message(kind: str, pairs: list[str],
-                          sentence: str | None = None) -> str:
+                          sentence: str | None = None,
+                          show_all: bool = False) -> str:
+    """Name the first SAMPLE pairs inline, or with show_all every pair, one
+    per line."""
+    scope = f" in {sentence}" if sentence else ""
+    head = (f"Cannot classify {kind.upper()}: "
+            f"{len(pairs)} input pair(s) already classified "
+            f"{OPPOSITE[kind].upper()}{scope}")
+    if show_all:
+        return "\n".join([f"{head}:", *pairs])
     shown = ", ".join(pairs[:SAMPLE])
     more = (f" (+{len(pairs) - SAMPLE} more)"
             if len(pairs) > SAMPLE else "")
-    scope = f" in {sentence}" if sentence else ""
-    return (f"Cannot classify {kind.upper()}: "
-            f"{len(pairs)} input pair(s) already classified "
-            f"{OPPOSITE[kind].upper()}{scope}: {shown}{more}")
+    return f"{head}: {shown}{more}"
 
 
 def opposing(root: Path, kind: str,
@@ -96,13 +102,22 @@ def opposing(root: Path, kind: str,
 
 
 def conflict(root: Path, kind: str, src: Path,
-             sentence: str | None = None) -> str | None:
+             sentence: str | None = None,
+             show_all: bool = False) -> str | None:
     """Why src cannot be classified kind in this scope, or None if it can."""
     for other, scope in opposing(root, kind, sentence):
         pairs = contradictions(src, other)
         if pairs:
-            return contradiction_message(kind, pairs, scope)
+            return contradiction_message(kind, pairs, scope, show_all)
     return None
+
+
+def add_show_conflicts(p: argparse.ArgumentParser) -> None:
+    """The --show-conflicts flag, shared by `wf classify` and `complete p2`."""
+    p.add_argument(
+        "--show-conflicts", action="store_true",
+        help="on a conflict, list every conflicting pair, not just "
+             f"the first {SAMPLE}")
 
 
 def shown(root: Path, dst: Path) -> str:
@@ -147,6 +162,7 @@ class Classify(command.Action):
             "-s", "--sentence", type=int, metavar="N",
             help=f"record the verdict for sentence N only, in "
                  f"classified/sN/{self.kind}")
+        add_show_conflicts(p)
         return p
 
     def run(self, command, opts, argv) -> int:
@@ -161,7 +177,8 @@ class Classify(command.Action):
         sentence = (None if opts.sentence is None
                     else config.sentence_name(opts.sentence))
 
-        message = conflict(opts.dir, self.kind, src, sentence)
+        message = conflict(opts.dir, self.kind, src, sentence,
+                           opts.show_conflicts)
         if message:
             log.error(message)
             return 1

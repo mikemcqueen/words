@@ -23,6 +23,7 @@ class Context:
     phase: str            # p1 | p2 | p3 | dict (words lifecycle layout)
     force: bool = False   # ignore is_done and overwrite
     bundle_name: str = ""  # eval directory name; empty for non-bundle reads
+    show_conflicts: bool = False  # p2 classify names every conflicting pair
 
     # Query parameters: what a corpus read needs and a bundle operation does not.
     selector: str = "all"        # handed to select() by steps that read a slot
