@@ -11,7 +11,7 @@ from src import compare_native
 from src.common import prefetch
 
 
-MAX_PAIR_SET = 10_000_000
+MAX_PAIR_SET = 15_000_000
 
 
 def _build_prob_mask(block, yes: bool, pmin: float, pmax: float, use_max: bool):
