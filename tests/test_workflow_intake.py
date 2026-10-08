@@ -3,6 +3,7 @@
 # The p2 queue contract and the classified sets: the two places a file enters
 # the workflow from outside a bundle.
 
+import subprocess
 import tempfile
 import unittest
 
@@ -580,6 +581,93 @@ class ClassifyTests(unittest.TestCase):
         code, _, stderr = fx.run_wf("-d", str(self.root), "classify", "yes")
         self.assertEqual(2, code)
         self.assertIn("PAIRS-FILE", stderr)
+
+
+
+class ClassifyPairsTests(unittest.TestCase):
+    """`wf classify pairs` folds YES and NO together, or neither."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        fx.make_wf(self.root)
+
+    def _pairs(self, yes, no, *flags):
+        yes_src = fx.write_pairs(self.root / "y.pairs", yes)
+        no_src = fx.write_pairs(self.root / "n.pairs", no)
+        return fx.run_wf("-d", str(self.root), *flags, "classify", "pairs",
+                         "-s", "3", "--yes", str(yes_src),
+                         "--no", str(no_src))
+
+    def _set(self, kind):
+        return config.classified(self.root, kind, "s3").read_text().splitlines()
+
+    def test_folds_both_sets(self):
+        code, stdout, stderr = self._pairs(["alpha,two"], ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Classified YES: 1 new, 1 total → s3/yes/yes.pairs",
+                      stdout)
+        self.assertIn("Classified NO: 1 new, 1 total → s3/no/no.pairs",
+                      stdout)
+        self.assertEqual(["alpha,two"], self._set("yes"))
+        self.assertEqual(["cheese,map"], self._set("no"))
+
+    def test_a_yes_conflict_changes_neither_set(self):
+        fx.write_pairs(config.classified(self.root, "no", "s3"),
+                       ["cheese,map"])
+        code, _, stderr = self._pairs(["map,cheese"], ["diamond,throat"])
+        self.assertEqual(1, code)
+        self.assertIn("Cannot classify YES", stderr)
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual(["cheese,map"], self._set("no"))
+
+    def test_a_no_conflict_changes_neither_set(self):
+        fx.write_pairs(config.classified(self.root, "yes"), ["cheese,map"])
+        code, _, stderr = self._pairs(["alpha,two"], ["cheese,map"])
+        self.assertEqual(1, code)
+        self.assertIn("Cannot classify NO", stderr)
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual([], self._set("no"))
+
+    def test_a_pair_in_both_inputs_changes_neither_set(self):
+        code, _, stderr = self._pairs(["alpha,two", "cheese,map"],
+                                      ["map,cheese"])
+        self.assertEqual(1, code)
+        self.assertIn("1 pair(s) in both --yes and --no: cheese,map", stderr)
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual([], self._set("no"))
+
+    def test_dry_run_reports_both_without_folding(self):
+        code, stdout, stderr = self._pairs(["alpha,two"], ["cheese,map"],
+                                           "--dry-run")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("Would classify YES: 1 new, 1 total", stdout)
+        self.assertIn("Would classify NO: 1 new, 1 total", stdout)
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual([], self._set("no"))
+
+    def test_an_empty_input_folds_the_other(self):
+        code, _, stderr = self._pairs([], ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual(["cheese,map"], self._set("no"))
+
+    def test_a_malformed_line_changes_neither_set(self):
+        fx.write_pairs(config.classified(self.root, "no", "s3"),
+                       ["cheese,map"])
+        with self.assertRaises(subprocess.CalledProcessError):
+            self._pairs(["alpha,two", "notapair"], ["diamond,throat"])
+        self.assertEqual([], self._set("yes"))
+        self.assertEqual(["cheese,map"], self._set("no"))
+
+    def test_both_files_are_required(self):
+        src = fx.write_pairs(self.root / "y.pairs", ["alpha,two"])
+        code, _, _ = fx.run_wf("-d", str(self.root), "classify", "pairs",
+                               "--yes", str(src))
+        self.assertEqual(2, code)
+        self.assertEqual([], config.classified(self.root, "yes")
+                         .read_text().splitlines())
 
 
 if __name__ == "__main__":

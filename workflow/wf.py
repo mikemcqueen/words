@@ -32,8 +32,9 @@ COMMANDS = {
                                    {"p1": command.Dispatcher(
                                        "p1      — extract archived p1 results (yes)",
                                        {"yes": extract.P1_YES})}),
-    "classify": command.Dispatcher("classify — record a standing verdict (yes|no)",
-                                   {"yes": classify.YES, "no": classify.NO}),
+    "classify": command.Dispatcher("classify — record a standing verdict (yes|no|pairs)",
+                                   {"yes": classify.YES, "no": classify.NO,
+                                    "pairs": classify.PAIRS}),
     # Verb first, scope second, like every other root command: the scope names
     # the object, so words are removed and the dictionary is generated. Neither
     # takes a target -- dict/ is at the root and one removal applies to every

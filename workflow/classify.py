@@ -23,8 +23,10 @@
 #
 # The input is normalized on the way in -- `sort -u` over the union -- because
 # the aggregate is later handed to `comm` and to a tool that assumes a set.
+# `pcomm`, which checks inputs against it here, needs neither.
 
 import argparse
+import subprocess
 from pathlib import Path
 
 from workflow import command, config, fs, log, usage
@@ -50,22 +52,18 @@ SAMPLE = 3
 def contradictions(src: Path, opposing: Path) -> list[str]:
     """Return src pairs that oppose a pair in opposing, in either order.
 
-    Pair order is presentation, not identity, for a standing verdict. Build the
-    small lookup in memory so both ``first,second`` and ``second,first`` are
-    forbidden without relying on the line identity and ordering required by
-    ``comm``.
+    Pair order is presentation, not identity, for a standing verdict. `pcomm`
+    treats ``first,second`` and ``second,first`` as one pair, needs no sorted
+    input, and holds only the smaller file in memory -- the input, once the
+    classified sets have grown -- and prints a shared pair in src's spelling.
+    It refuses a line that is not ``word,word``, naming the file and line.
     """
     if not opposing.exists():
         return []
 
-    prohibited = set()
-    for pair in opposing.read_text().splitlines():
-        first, separator, second = pair.partition(",")
-        prohibited.add(pair)
-        if separator:
-            prohibited.add(f"{second},{first}")
-
-    return sorted(set(src.read_text().splitlines()) & prohibited)
+    result = subprocess.run(["pcomm", "-12", str(src), str(opposing)],
+                            stdout=subprocess.PIPE, text=True, check=True)
+    return sorted(set(result.stdout.splitlines()))
 
 
 def contradiction_message(kind: str, pairs: list[str],
@@ -77,6 +75,12 @@ def contradiction_message(kind: str, pairs: list[str],
     head = (f"Cannot classify {kind.upper()}: "
             f"{len(pairs)} input pair(s) already classified "
             f"{OPPOSITE[kind].upper()}{scope}")
+    return listing(head, pairs, show_all)
+
+
+def listing(head: str, pairs: list[str], show_all: bool = False) -> str:
+    """head, then the first SAMPLE pairs inline, or with show_all every pair,
+    one per line."""
     if show_all:
         return "\n".join([f"{head}:", *pairs])
     shown = ", ".join(pairs[:SAMPLE])
@@ -192,3 +196,70 @@ class Classify(command.Action):
 
 YES = Classify("yes", "confirmed-YES")
 NO = Classify("no", "hard-NO")
+
+
+class Pairs(command.Action):
+    """Both verdicts from one review in one call: neither set changes unless
+    both can.
+
+    `complete p2` checks both kinds before folding either; this is the same
+    rule for a review that has no bundle, such as pgui's. Two `wf classify
+    yes|no` calls could leave the YES folded and the NO refused.
+    """
+
+    def __init__(self):
+        super().__init__(
+            summary="pairs   — union YES and NO pairs into classified/, "
+                    "both or neither",
+        )
+
+    def parser(self):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument(
+            "-s", "--sentence", type=int, metavar="N",
+            help="record the verdicts for sentence N only, in classified/sN")
+        p.add_argument("--yes", dest="yes_file", metavar="YES-FILE",
+                       help="pairs to classify YES (may be empty)")
+        p.add_argument("--no", dest="no_file", metavar="NO-FILE",
+                       help="pairs to classify NO (may be empty)")
+        add_show_conflicts(p)
+        return p
+
+    def run(self, command, opts, argv) -> int:
+        argv = self.parse(opts, argv)
+        if argv:
+            return usage.invalid_argument(argv[0], self.format_help(command))
+        if opts.yes_file is None or opts.no_file is None:
+            return usage.missing_argument(self.format_help(command))
+
+        sources = {"yes": Path(opts.yes_file).resolve(),
+                   "no": Path(opts.no_file).resolve()}
+        for src in sources.values():
+            fs.raise_if_not_file(src)
+        sentence = (None if opts.sentence is None
+                    else config.sentence_name(opts.sentence))
+
+        # The opposing sets on disk do not include the other input, so a pair
+        # in both files would pass both checks and be folded both ways.
+        both = contradictions(sources["yes"], sources["no"])
+        if both:
+            log.error(listing(
+                f"Cannot classify: {len(both)} pair(s) in both --yes and --no",
+                both, opts.show_conflicts))
+            return 1
+
+        for kind, src in sources.items():
+            message = conflict(opts.dir, kind, src, sentence,
+                               opts.show_conflicts)
+            if message:
+                log.error(message)
+                return 1
+
+        for kind, src in sources.items():
+            if opts.dry_run:
+                preview(opts.dir, kind, src, sentence)
+            else:
+                fold(opts.dir, kind, src, sentence)
+        return 0
+
+PAIRS = Pairs()
