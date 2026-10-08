@@ -10,7 +10,10 @@ CODES = {
 }
 
 def _msg(color: str, msg: str, file):
-    print(f'{CODES[color]}{msg}{CODES["off"]}', file=file)
+    # Color only a terminal; a pipe or file gets plain text.
+    if file.isatty():
+        msg = f'{CODES[color]}{msg}{CODES["off"]}'
+    print(msg, file=file)
 
 
 def success(msg: str, file=None):
