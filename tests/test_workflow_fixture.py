@@ -563,9 +563,10 @@ class ProducedNameTests(unittest.TestCase):
 
         bundle_name = names.bundle_name(self.BUNDLE_NAME, 0.9, 0.1)
         produced = self._produced()
+        # The p1 YES set is no longer published to p2/queued (explicitly
+        # disabled in steps/p1_advance.py), so only the NO set appears.
         self.assertEqual(
-            [names.artifact(bundle_name, "p1", "no"),
-             names.artifact(bundle_name, "p1", "yes")],
+            [names.artifact(bundle_name, "p1", "no")],
             produced)
         for name in produced:
             with self.subTest(name=name):

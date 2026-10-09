@@ -13,7 +13,18 @@ from workflow import bundle, config, fs
 NAME = "advance"
 
 # produced kind -> the slot that consumes it
-DESTINATIONS = {"yes": ["p2", "queued"], "no": ["p3", "queued"]}
+#
+# "yes" -> p2/queued was explicitly removed: p1 no longer publishes its YES set
+# into p2's queue. The *.p1.yes file is still produced by extract; run_step
+# deletes it so the bundle can close (the verdicts remain in the archived
+# results in done/out).
+DESTINATIONS = {
+    # "yes": ["p2", "queued"],  # explicitly disabled
+    "no": ["p3", "queued"],
+}
+
+# produced kinds that are deliberately not published anywhere
+UNPUBLISHED = ("yes",)
 
 
 # What `extract` produced is matched by kind, not by the bundle's name: extract
@@ -44,5 +55,10 @@ def run_step(ctx) -> None:
         destination = config.path(ctx.root, slot)
         for produced in sorted(ctx.bundle_dir.glob(f"*.p1.{kind}")):
             fs.move_into(produced, destination, ctx.force)
+
+    # Explicitly disabled: the YES set is no longer moved to p2/queued.
+    for kind in UNPUBLISHED:
+        for produced in sorted(ctx.bundle_dir.glob(f"*.p1.{kind}")):
+            produced.unlink()
 
     bundle.finish(ctx)
