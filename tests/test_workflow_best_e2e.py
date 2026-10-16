@@ -293,6 +293,7 @@ class BestEndToEndTests(unittest.TestCase):
         (best_dir / "idx" / generate.INDEX_NAME).write_text("index\n")
         config.base_dictionary(self.root).write_text(
             "apple\nbanana\ncherry\n")
+        config.small_base_dictionary(self.root).write_text("apple\nbanana\n")
         sentence_dir = best_dir / "s2"
         sentence_dir.mkdir()
         (sentence_dir / "letters").write_text("abcdef\n")

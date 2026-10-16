@@ -174,6 +174,7 @@ class ReviewWordsTests(unittest.TestCase):
         self.opts, _ = fx.make_wf(self.root)
         config.base_dictionary(self.root).write_text(
             "apple\nbanana\ncherry\n")
+        config.small_base_dictionary(self.root).write_text("apple\n")
         dictionary.gen_dict(self.root)
         self.src = self.root / "ranked.words"
         self.src.write_text(" 9 banana\n 2 apple\n")

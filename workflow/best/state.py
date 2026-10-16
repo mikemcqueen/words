@@ -633,6 +633,15 @@ class Inputs:
             reasons.append("reviewed inputs changed")
         if _newer(self.base_dictionary, generated):
             reasons.append("base dictionary changed")
+        # The SMALL_DICTIONARY is rebuilt in the same batch under the same
+        # marker. No search reads it, so its absent base is left for the
+        # rebuild to refuse rather than raised here.
+        small_base = config.small_base_dictionary(root)
+        if small_base.is_file():
+            if fs.optional_file(config.small_dictionary(root)) is None:
+                reasons.append("small dictionary missing")
+            if _newer(small_base, generated):
+                reasons.append("small base dictionary changed")
         return reasons
 
     @cached_property

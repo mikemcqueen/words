@@ -66,13 +66,16 @@ class Tree:
     The accessors resolve through `config.path`, so a missing `dict/` is a hard
     layout error here. Returning a file path does not assert the file exists --
     that is each read boundary's own call, and the two boundaries disagree on
-    purpose: `words.big` is required, while `words.filtered` is this module's
-    output and is absent on a tree that has never rebuilt.
+    purpose: `words.big` and `dict` are required, while `words.filtered` and
+    `dict.filtered` are this module's outputs and are absent on a tree that has
+    never rebuilt.
     """
 
     dir: Path
     base: Path
     derived: Path
+    small_base: Path
+    small_derived: Path
     removals: Path
     reviewed_inputs: Path
     reviewed_words: Path
@@ -87,6 +90,8 @@ def tree(root: Path) -> Tree:
     return Tree(dir=config.path(root, ["dict"]),
                 base=config.base_dictionary(root),
                 derived=config.dictionary(root),
+                small_base=config.small_base_dictionary(root),
+                small_derived=config.small_dictionary(root),
                 removals=config.removals(root),
                 reviewed_inputs=config.reviewed_inputs(root),
                 reviewed_words=config.reviewed_words(root),
@@ -333,7 +338,16 @@ def _stage_derived(tree: Tree, staging: Path,
     """
     with _operation("dictionary derivation", tree.base, removed):
         return setops.stage_diff(tree.base, removed, tree.derived,
-                                 staging / config.DICTIONARY_NAME,
+                                 staging / config.BIG_DICTIONARY_NAME,
+                                 stable_mtime=True)
+
+
+def _stage_small_derived(tree: Tree, staging: Path,
+                         removed: Path) -> setops.Staged:
+    """dict.filtered: dict minus the same removal union as words.filtered."""
+    with _operation("small dictionary derivation", tree.small_base, removed):
+        return setops.stage_diff(tree.small_base, removed, tree.small_derived,
+                                 staging / config.SMALL_DICTIONARY_NAME,
                                  stable_mtime=True)
 
 
@@ -386,9 +400,11 @@ def _count_line(label: str, staged: setops.Staged) -> str:
 
 
 def _report(root: Path, tree: Tree, derived: setops.Staged,
+            small_derived: setops.Staged,
             reviewed_words: setops.Staged) -> list[str]:
-    """The two count lines, composed before anything is published."""
-    return [_count_line(config.DICTIONARY_NAME, derived),
+    """The three count lines, composed before anything is published."""
+    return [_count_line(config.BIG_DICTIONARY_NAME, derived),
+            _count_line(config.SMALL_DICTIONARY_NAME, small_derived),
             _count_line(_relative(root, tree.reviewed_words), reviewed_words)]
 
 
@@ -413,6 +429,7 @@ def publish_words(root: Path, stem: str, reviewed_input: Path,
     archive_name(stem)
     dictionary = tree(root)
     fs.raise_if_not_file(dictionary.base)
+    fs.raise_if_not_file(dictionary.small_base)
     fs.raise_if_not_file(reviewed_input)
     fs.raise_if_not_file(removals)
 
@@ -451,12 +468,14 @@ def publish_words(root: Path, stem: str, reviewed_input: Path,
                                       staging / "effective")
 
         derived = _stage_derived(dictionary, staging, prospective)
+        small_derived = _stage_small_derived(dictionary, staging, prospective)
         reviewed_words = _stage_reviewed_words(
             dictionary, staging,
             [path for _, path in reviewed_records] + [reviewed.path])
         batch = [Prepared(removal, replace=False),
                  Prepared(reviewed, replace=False),
-                 Prepared(reviewed_words), Prepared(derived)]
+                 Prepared(reviewed_words), Prepared(derived),
+                 Prepared(small_derived)]
         _preflight(batch)
         fs.raise_if_any_exist([removal_dst, reviewed_dst])
         if enex_dst is not None and (enex_dst.exists() or enex_dst.is_symlink()):
@@ -471,7 +490,7 @@ def publish_words(root: Path, stem: str, reviewed_input: Path,
             new_to_union=fs.line_count(delta),
             effective=fs.line_count(effective),
             count_lines=tuple(_report(root, dictionary, derived,
-                                      reviewed_words)),
+                                      small_derived, reviewed_words)),
         )
         _commit(batch)
         if enex is not None:
@@ -534,13 +553,15 @@ def gen_dict(root: Path) -> None:
     command, so retracting a word means editing every generation file where it
     occurs, or deleting those files, and then running this.
 
-    `words.big` is a required input; `words.filtered` is an optional prior
-    destination, so its absence is the first-build case rather than a failure.
+    `words.big` and `dict` are required inputs; `words.filtered` and
+    `dict.filtered` are optional prior destinations, so their absence is the
+    first-build case rather than a failure.
     Nothing here walks the BEST status rows, so the command cannot -- and does
     not -- recommend itself.
     """
     dictionary = tree(root)
     fs.raise_if_not_file(dictionary.base)
+    fs.raise_if_not_file(dictionary.small_base)
     recorded = [path for _, path in records(dictionary.removals, REMOVED)]
     reviewed = [path for _, path in
                 records(dictionary.reviewed_inputs, REVIEWED)]
@@ -551,15 +572,18 @@ def gen_dict(root: Path) -> None:
             _union(recorded, prospective)
         reviewed_words = _stage_reviewed_words(dictionary, staging, reviewed)
         derived = _stage_derived(dictionary, staging, prospective)
+        small_derived = _stage_small_derived(dictionary, staging, prospective)
 
-        batch = [Prepared(reviewed_words), Prepared(derived)]
+        batch = [Prepared(reviewed_words), Prepared(derived),
+                 Prepared(small_derived)]
         _preflight(batch)
 
-        counts = _report(root, dictionary, derived, reviewed_words)
+        counts = _report(root, dictionary, derived, small_derived,
+                         reviewed_words)
         _commit(batch)
         _mark_generated(dictionary)
 
-        log.success(f"Rebuilt the dictionary from {len(recorded)} removal "
+        log.success(f"Rebuilt the dictionaries from {len(recorded)} removal "
                     f"generation(s) and {len(reviewed)} reviewed input(s)")
         for line in counts:
             print(line)
@@ -588,7 +612,7 @@ class RemoveWords(command.Action):
 class GenDict(command.Action):
     def __init__(self):
         super().__init__(
-            summary="dict    — rebuild the derived dictionary and done-set")
+            summary="dict    — rebuild the derived dictionaries and done-set")
 
     def run(self, command_text, opts, argv) -> int:
         if argv:

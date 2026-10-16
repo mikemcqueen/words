@@ -17,6 +17,7 @@ from workflow import config, dictionary, generation, setops
 
 
 BASE = "apple\nbanana\ncherry\ndate\nfig\n"
+SMALL = "apple\nbanana\ncherry\n"
 
 
 class DictionaryTests(unittest.TestCase):
@@ -27,14 +28,17 @@ class DictionaryTests(unittest.TestCase):
         self.opts, _ = fx.make_wf(self.root)
         self.base = config.base_dictionary(self.root)
         self.derived = config.dictionary(self.root)
+        self.small_base = config.small_base_dictionary(self.root)
+        self.small_derived = config.small_dictionary(self.root)
         self.removals = config.removals(self.root)
         self.reviewed_inputs = config.reviewed_inputs(self.root)
         self.reviewed_words = config.reviewed_words(self.root)
 
     # ------------------------------------------------------------- placement
 
-    def _base(self, text=BASE) -> Path:
+    def _base(self, text=BASE, small=SMALL) -> Path:
         self.base.write_text(text)
+        self.small_base.write_text(small)
         return self.base
 
     def _submission(self, name: str, text: str) -> Path:
@@ -60,7 +64,9 @@ class DictionaryTests(unittest.TestCase):
 
         self.assertEqual(0, code, stderr)
         self.assertEqual(["apple", "cherry", "date"], self._lines(self.derived))
+        self.assertEqual(["apple", "cherry"], self._lines(self.small_derived))
         self.assertEqual(BASE, self.base.read_text())
+        self.assertEqual(SMALL, self.small_base.read_text())
         self.assertIn("2 words submitted, 2 new to the removal union, "
                       "2 newly removed from the dictionary", stdout)
 
@@ -298,6 +304,8 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(BASE, self.derived.read_text())
         self.assertEqual("", self.reviewed_words.read_text())
         self.assertIn("words.filtered 5 (new)", stdout)
+        self.assertEqual(SMALL, self.small_derived.read_text())
+        self.assertIn("dict.filtered 3 (new)", stdout)
 
     def test_both_commands_create_the_derived_file_and_require_the_base(self):
         """words.filtered is the output; words.big is the input.
@@ -318,6 +326,29 @@ class DictionaryTests(unittest.TestCase):
         self.derived.unlink()
         self._remove("junk.txt", "banana\n")
         self.assertTrue(self.derived.is_file())
+
+    def test_both_commands_require_the_small_base(self):
+        self._base()
+        self.small_base.unlink()
+        for command in (lambda: self._gen(),
+                        lambda: self._remove("junk.txt", "banana\n")):
+            with self.subTest(command=command):
+                with self.assertRaises(FileNotFoundError):
+                    command()
+                self.assertFalse(self.derived.exists())
+                self.assertFalse(self.small_derived.exists())
+                self.assertEqual([], list(self.removals.iterdir()))
+
+    def test_a_retraction_restores_the_word_to_both_dictionaries(self):
+        self._base()
+        self._remove("junk.txt", "banana\n")
+        self.assertNotIn("banana", self._lines(self.small_derived))
+
+        (self.removals / "junk.txt.removed.1").write_text("")
+        code, stdout, stderr = self._gen()
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(SMALL, self.small_derived.read_text())
+        self.assertIn("dict.filtered 2 -> 3", stdout)
 
     def test_the_reviewed_archive_shares_the_stem_and_the_generation(self):
         self._base()

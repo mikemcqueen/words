@@ -88,6 +88,8 @@ class RowTests(unittest.TestCase):
         root = self.opts.dir
         self._write(config.base_dictionary(root), "words\n", mtime)
         derived = self._write(config.dictionary(root), "words\n", mtime)
+        self._write(config.small_base_dictionary(root), "words\n", mtime)
+        self._write(config.small_dictionary(root), "words\n", mtime)
         self._write(config.reviewed_words(root), "", mtime)
         for directory in (config.removals(root),
                           config.reviewed_inputs(root)):
@@ -502,6 +504,23 @@ class RowTests(unittest.TestCase):
         code, _, stderr = fx.run_wf("-d", str(self.root), "gen", "dict")
         self.assertEqual(0, code, stderr)
         self.assertIsNone(self._stale())
+        self.assertEqual("converged", self._state().message)
+
+    def test_the_small_dictionary_is_dated_with_the_big_one(self):
+        self._steady()
+        self._write(config.small_base_dictionary(self.root), "words\n", 90)
+        self.assertEqual(
+            "dictionary behind its records (small base dictionary changed)",
+            self._state().message)
+
+        config.small_dictionary(self.root).unlink()
+        self.assertEqual(
+            "dictionary behind its records (small dictionary missing, "
+            "small base dictionary changed)",
+            self._state().message)
+
+        code, _, stderr = fx.run_wf("-d", str(self.root), "gen", "dict")
+        self.assertEqual(0, code, stderr)
         self.assertEqual("converged", self._state().message)
 
     def test_an_effective_removal_dates_both_searches(self):

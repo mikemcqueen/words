@@ -55,6 +55,7 @@ class DictionaryReviewTests(unittest.TestCase):
         self.opts, _ = fx.make_wf(self.root)
         config.base_dictionary(self.root).write_text(
             "apple\nbanana\ncherry\ndate\n")
+        config.small_base_dictionary(self.root).write_text("apple\n")
         dictionary.gen_dict(self.root)
 
     def run_cli(self, *argv):
@@ -273,6 +274,7 @@ class SharedNoteCreationRecoveryTests(unittest.TestCase):
             root = Path(tmp)
             opts, _ = fx.make_wf(root)
             config.base_dictionary(root).write_text("apple\nbanana\n")
+            config.small_base_dictionary(root).write_text("apple\n")
             dictionary.gen_dict(root)
             source = root / "source.words"
             source.write_text("apple\nbanana\n")

@@ -184,12 +184,16 @@ CONFIG_LAYOUT = {
 }
 
 
-# The hand-placed base, never written by the workflow, and the derived file
-# every workflow-configured consumer reads. Named here rather than beside any
-# one of them: naming a shared artifact after its consumer is how a dictionary
-# that meant two different things on two sides would start.
-DICTIONARY_BASE_NAME = "words.big"
-DICTIONARY_NAME = "words.filtered"
+# Two dictionaries, each a hand-placed base, never written by the workflow, and
+# a derived file: the base minus the same removal records. BIG_DICTIONARY is
+# what every workflow-configured consumer reads; SMALL_DICTIONARY is kept in
+# step with it for consumers outside the workflow. Named here rather than
+# beside any one of them: naming a shared artifact after its consumer is how a
+# dictionary that meant two different things on two sides would start.
+BIG_DICTIONARY_BASE_NAME = "words.big"
+BIG_DICTIONARY_NAME = "words.filtered"
+SMALL_DICTIONARY_BASE_NAME = "dict"
+SMALL_DICTIONARY_NAME = "dict.filtered"
 REVIEWED_WORDS_NAME = "reviewed.words"
 
 
@@ -292,7 +296,7 @@ def base_dictionary(root_dir: Path) -> Path:
     choice and is not part of the workflow contract. Nothing here ever writes
     it.
     """
-    return path(root_dir, ["dict"]) / DICTIONARY_BASE_NAME
+    return path(root_dir, ["dict"]) / BIG_DICTIONARY_BASE_NAME
 
 
 def dictionary(root_dir: Path) -> Path:
@@ -303,7 +307,24 @@ def dictionary(root_dir: Path) -> Path:
     state for the rebuild and a missing required input for everything else --
     which is a distinction each read boundary makes for itself.
     """
-    return path(root_dir, ["dict"]) / DICTIONARY_NAME
+    return path(root_dir, ["dict"]) / BIG_DICTIONARY_NAME
+
+
+def small_base_dictionary(root_dir: Path) -> Path:
+    """The SMALL_DICTIONARY's hand-placed base: .wf/dict/dict.
+
+    Required wherever words.big is, and like it never written by the workflow.
+    """
+    return path(root_dir, ["dict"]) / SMALL_DICTIONARY_BASE_NAME
+
+
+def small_dictionary(root_dir: Path) -> Path:
+    """The derived SMALL_DICTIONARY: dict minus every recorded removal.
+
+    Rebuilt alongside words.filtered by every command that rebuilds it. Nothing
+    in the workflow reads it.
+    """
+    return path(root_dir, ["dict"]) / SMALL_DICTIONARY_NAME
 
 
 def removals(root_dir: Path) -> Path:

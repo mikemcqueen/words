@@ -28,11 +28,31 @@ In the admin console (login.tailscale.com), turn off key expiry for the destinat
 ```bash
 sudo apt install openssh-server rsync
 sudo systemctl enable --now ssh
-# set PasswordAuthentication no in /etc/ssh/sshd_config, then restart ssh
 ```
 
-**Source:** create a dedicated key with `ssh-keygen -t ed25519 -f ~/.ssh/sync_juniper` and add the `.pub` file to the destination's `~/.ssh/authorized_keys`.
+**Source:** create a dedicated key and add it to juniper. Do this before turning off password login, since `ssh-copy-id` logs in with your password once:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/sync_juniper
+ssh-copy-id -i ~/.ssh/sync_juniper.pub mike@juniper
+ssh -i ~/.ssh/sync_juniper mike@juniper true     # returns with no password prompt if the key works
+```
+`~/.ssh/authorized_keys` is a plain text file with one public key per line. `ssh-copy-id` appends your key to it, creating the file if needed and setting its permissions.
 
+If password login is already off, add the key by hand. Run `cat ~/.ssh/sync_juniper.pub` on the source and copy the single line (`ssh-ed25519 AAAA... mike@host`), then on juniper:
+```bash
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+echo 'ssh-ed25519 AAAA... mike@host' >> ~/.ssh/authorized_keys   # >> appends; > would wipe existing keys
+chmod 600 ~/.ssh/authorized_keys
+```
+sshd quietly ignores `authorized_keys` if it or `~/.ssh` can be written by anyone but you. If key login fails, check those permissions first.
+
+**Destination, once the key works:** set `PasswordAuthentication no` in `/etc/ssh/sshd_config`, then restart and check (the service is `ssh`, not `sshd`):
+```bash
+sudo sshd -t                                     # syntax check; no output means OK
+sudo systemctl restart ssh
+sudo sshd -T | grep -i passwordauthentication    # should print: passwordauthentication no
+```
+If it still says `yes`, a file in `/etc/ssh/sshd_config.d/` is overriding it. Those files are included at the top of `sshd_config`, and sshd uses the first value it finds for each setting. Run `grep -ri passwordauthentication /etc/ssh/sshd_config.d/`, then change that line to `no` or delete it, and restart again.
 **New `final/sync.sh`:**
 ```bash
 #!/bin/bash
@@ -47,7 +67,7 @@ Do the same for `idx`, and adjust the destination paths to wherever they live in
 
 - **Network exposure:** sshd can only be reached through Tailscale, since WSL's NAT already blocks direct connections from your local network. The only machines that can connect are the ones signed into your Tailscale account.
 - **Your Tailscale login is now the main thing to protect.** It's whatever account you sign in with (Google, GitHub, etc.), so turn on 2FA there. If you want, Tailscale's access rules can limit the source machine to port 22 on juniper and nothing else.
-- **Limiting what a stolen key can do:** start that key's line in juniper's `authorized_keys` like this:
+- **Limiting what a stolen key can do:** edit that key's line in juniper's `authorized_keys` so it starts like this, with the restriction in front of `ssh-ed25519`:
   ```
   command="rrsync /home/mike/code",restrict ssh-ed25519 AAAA... sync-key
   ```
