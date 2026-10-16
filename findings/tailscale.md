@@ -44,7 +44,7 @@ mkdir -p ~/.ssh && chmod 700 ~/.ssh
 echo 'ssh-ed25519 AAAA... mike@host' >> ~/.ssh/authorized_keys   # >> appends; > would wipe existing keys
 chmod 600 ~/.ssh/authorized_keys
 ```
-sshd quietly ignores `authorized_keys` if it or `~/.ssh` can be written by anyone but you. If key login fails, check those permissions first.
+sshd quietly ignores `authorized_keys` if it, `~/.ssh` or your home directory can be written by anyone but you. If key login fails, check those permissions first (`chmod go-w ~` fixes a group-writable home).
 
 **Destination, once the key works:** set `PasswordAuthentication no` in `/etc/ssh/sshd_config`, then restart and check (the service is `ssh`, not `sshd`):
 ```bash
