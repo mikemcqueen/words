@@ -62,7 +62,8 @@ class CluerIndexTests(unittest.TestCase):
             result = exact("new york")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual([json.loads(line)["clue"] for line in
-                              result.stdout.splitlines()], ["New York", "York New"])
+                              result.stdout.splitlines()],
+                             ["New York", "York New", "New-York"])
 
             result = self.run_tool("query_index.py", "-j", "new york",
                                    "--data", data, "--index", index,
@@ -70,7 +71,8 @@ class CluerIndexTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual([json.loads(line)["clue"] for line in
                               result.stdout.splitlines()],
-                             ["New York", "York New", "New York!", "A New York"])
+                             ["New York", "York New", "New York!", "A New York",
+                              "New-York"])
 
             terms.write_text("new\nnew,york\nyork,new\nmissing\n")
             result = exact("-f", terms, "-r")
@@ -83,7 +85,9 @@ class CluerIndexTests(unittest.TestCase):
                                if line.startswith("{"))], [
                 ("new", "New"), ("new", "NEW"),
                 ("new,york", "New York"), ("new,york", "York New"),
+                ("new,york", "New-York"),
                 ("york,new", "New York"), ("york,new", "York New"),
+                ("york,new", "New-York"),
             ])
 
             for query in ("", "new york city", "new,york", "new-york"):

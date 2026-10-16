@@ -16,12 +16,15 @@ can occur anywhere in a clue, in any order. -f prints each input query that
 matches at least one clue; -r also prints its matching clues after the query.
 With -j, QUERY must be two alphanumeric words separated by one space, or each
 FILE line must be two such words separated by a comma. Only clues where the
-two words are adjacent, in either order, separated by exactly one space, match.
-Words are compared as the index sees them, with apostrophes deleted, so
-dont,stop matches "Don't stop" but wood,wood does not match "Firewood wood".
-With -e, one or two words use the same separators, and the entire clue must
-equal the word or either two-word order, ignoring case. -e and -j cannot be
-combined.
+two words are adjacent, in either order, separated by exactly one space or
+hyphen, match. Words are compared as the index sees them, with apostrophes
+deleted, so dont,stop matches "Don't stop" but wood,wood does not match
+"Firewood wood".
+With -e, QUERY and FILE lines take one or two words, separated as with -j.
+The entire clue, ignoring case, must be the word, or the two words in either
+order joined by one space or hyphen, and nothing else. So -e "new york"
+matches "New York" and "York-New" but not "New York!" or "A New York".
+-e and -j cannot be combined.
 --forward requires words in input order. Without -j or -e, other clue words
 may appear between them. With -j or -e, only the input phrase order matches.
 QUERY and -a print matches as "offset clue -> answers", as in find.py. --json

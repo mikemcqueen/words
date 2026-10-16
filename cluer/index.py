@@ -25,7 +25,7 @@ ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
 ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
 EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
 EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 U32_MAX = np.iinfo(np.uint32).max
 ADJACENT_CHUNK = 65536
 # Bytes allowed in a lowercased -f -j query chunk: [a-z0-9], comma, newline.
@@ -40,13 +40,13 @@ def clean_words(text: bytes) -> list[bytes]:
 
 
 def adjacent_words(text: bytes) -> list[tuple[bytes, bytes]]:
-    """Return clean_words pairs separated by exactly one space."""
+    """Return clean_words pairs separated by exactly one space or hyphen."""
     text = text.replace(b"'", b"").lower()
     pairs = []
     previous = None
     for match in WORD.finditer(text):
         if (previous is not None and match.start() == previous.end() + 1
-                and text[previous.end()] == 0x20):
+                and text[previous.end()] in b" -"):
             pairs.append((previous.group(), match.group()))
         previous = match
     return pairs
@@ -458,9 +458,12 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     elif len(parts) == 1:
                         phrases = (parts[0],)
                     else:
-                        phrases = (parts[0] + b" " + parts[1],)
+                        orders = [(parts[0], parts[1])]
                         if not forward:
-                            phrases += (parts[1] + b" " + parts[0],)
+                            orders.append((parts[1], parts[0]))
+                        phrases = tuple(first + joiner + second
+                                        for first, second in orders
+                                        for joiner in (b" ", b"-"))
                 elif input_path is None:
                     ordered_words = [word for word in
                                      raw_query.lower().replace(b"'", b"").split(b" ")

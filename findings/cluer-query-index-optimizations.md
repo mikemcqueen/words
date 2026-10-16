@@ -174,8 +174,9 @@ This is what's left once #2 is done.
   and then runs `np.unique`.
 - Adjacency rule (`adjacent_words` in `cluer/index.py`): delete apostrophes
   and lowercase, as `clean_words` does, then pair `[a-z0-9]+` runs separated
-  by exactly one space. `FORMAT_VERSION` is now 2, so older indexes must be
-  rebuilt.
+  by exactly one space or hyphen ("Five-digit code" pairs five, digit).
+  `FORMAT_VERSION` is now 3 (2 was space only), so older indexes must be
+  rebuilt; the version 3 table has 2,286,563 pairs.
 - Size on the real cluedata: 2,242,576 pairs, 17.9MB on disk. It adds about
   10s to the build (29s total). At query time the table is loaded into a
   Python `set` (estimated ~130MB) for fast lookups.
