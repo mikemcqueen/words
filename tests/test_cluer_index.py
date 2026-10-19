@@ -123,6 +123,7 @@ class CluerIndexTests(unittest.TestCase):
                 [(clue, [0]) for clue in (
                     "Firewood wood", "Don't stop", "Rock 'n' roll",
                     "New  York", "Stop now", "wood",
+                    '"Blue Teal" lamp',
                 )],
             ))
             result = self.run_tool("build_index.py", "--data", data,
@@ -141,24 +142,26 @@ class CluerIndexTests(unittest.TestCase):
 
             terms.write_text(
                 "wood,wood\nfirewood,wood\nstop,dont\nn,roll\nnew,york\n"
-                "now,stop\n"
+                "now,stop\nteal,lamp\n"
             )
             result = adjacent("-f", terms)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(),
-                             ["firewood,wood", "stop,dont", "n,roll", "now,stop"])
+                             ["firewood,wood", "stop,dont", "n,roll", "new,york",
+                              "now,stop", "teal,lamp"])
 
             for threads in ("2", "0"):
                 result = adjacent("-f", terms, "--threads", threads)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(),
                                  ["firewood,wood", "stop,dont", "n,roll",
-                                  "now,stop"])
+                                  "new,york", "now,stop", "teal,lamp"])
 
             result = adjacent("-f", terms, "--forward")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(),
-                             ["firewood,wood", "n,roll"])
+                             ["firewood,wood", "n,roll", "new,york",
+                              "teal,lamp"])
 
             bad_terms = root / "bad_terms.txt"
             bad_terms.write_text("firewood,wood\nnew york\nn,roll\n")
@@ -187,6 +190,10 @@ class CluerIndexTests(unittest.TestCase):
                 "'Firewood wood' -> APPLE",
                 "n,roll",
                 "\"Rock 'n' roll\" -> APPLE",
+                "new,york",
+                "'New  York' -> APPLE",
+                "teal,lamp",
+                "'\"Blue Teal\" lamp' -> APPLE",
             ])
 
     def test_build_and_stream_queries(self):

@@ -16,9 +16,10 @@ can occur anywhere in a clue, in any order. -f prints each input query that
 matches at least one clue; -r also prints its matching clues after the query.
 With -j, QUERY must be two alphanumeric words separated by one space, or each
 FILE line must be two such words separated by a comma. Only clues where the
-two words are adjacent, in either order, separated by exactly one space or
-hyphen, match. Words are compared as the index sees them, with apostrophes
-deleted, so dont,stop matches "Don't stop" but wood,wood does not match
+two words are adjacent, in either order, match. As in nutrimatic's
+make-index, apostrophes are deleted and any other run of characters that are
+not letters or digits separates words, so dont,stop matches "Don't stop",
+teal,lamp matches '"Blue Teal" lamp', and wood,wood does not match
 "Firewood wood".
 With -e, QUERY and FILE lines take one or two words, separated as with -j.
 The entire clue, ignoring case, must be the word, or the two words in either

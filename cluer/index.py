@@ -25,7 +25,7 @@ ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
 ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
 EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
 EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 U32_MAX = np.iinfo(np.uint32).max
 ADJACENT_CHUNK = 65536
 # Bytes allowed in a lowercased -f -j query chunk: [a-z0-9], comma, newline.
@@ -40,16 +40,9 @@ def clean_words(text: bytes) -> list[bytes]:
 
 
 def adjacent_words(text: bytes) -> list[tuple[bytes, bytes]]:
-    """Return clean_words pairs separated by exactly one space or hyphen."""
-    text = text.replace(b"'", b"").lower()
-    pairs = []
-    previous = None
-    for match in WORD.finditer(text):
-        if (previous is not None and match.start() == previous.end() + 1
-                and text[previous.end()] in b" -"):
-            pairs.append((previous.group(), match.group()))
-        previous = match
-    return pairs
+    """Return consecutive clean_words pairs, as make-index sees them."""
+    words = clean_words(text)
+    return list(zip(words, words[1:]))
 
 
 def bigram_key(first: int, second: int) -> int:
