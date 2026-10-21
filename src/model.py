@@ -12,10 +12,8 @@ G4_4b_it =  "google/gemma-4-E4B-it"
 GLM47 =     "mlx-community/GLM-4.7-Flash-4bit"
 
 from src.info import info
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, Gemma3ForCausalLM, AutoProcessor
 from types import SimpleNamespace
 import sys
-import torch
 
 try:
     from mlx_lm import load as mlx_load, generate as mlx_generate  # pyright: ignore[reportMissingImports]
@@ -169,6 +167,8 @@ def _load_model_mlx(name: str):
 
 
 def _load_model(name: str):
+    import torch
+    from transformers import AutoModelForCausalLM, BitsAndBytesConfig, Gemma3ForCausalLM
     if name == Q3 or is_gemma_2(name) or is_gemma_4(name):
         model = AutoModelForCausalLM.from_pretrained(
             name,
@@ -223,6 +223,8 @@ def _load_model(name: str):
 
 
 def load_model(name):
+    import torch
+    from transformers import AutoTokenizer
     model_name = get_model_name(name)
     info(f"Loading {model_name}...")
 
@@ -269,6 +271,7 @@ def load_model(name):
 def clear_cache(device):
     if device is None:
         return
+    import torch
     if device.type == "mps":
         torch.mps.empty_cache()
     elif device.type == "cuda":
@@ -294,6 +297,7 @@ def generate_text(model, tokenizer, prompt: str, max_tokens: int, sampler) -> st
         return mlx_generate(model, tokenizer, prompt=prompt,
                            sampler=sampler, max_tokens=max_tokens)
     else:
+        import torch
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         with torch.no_grad():
             out = model.generate(**inputs, max_new_tokens=max_tokens)
