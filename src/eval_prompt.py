@@ -18,7 +18,7 @@ import httpx
 from pathlib import Path
 from typing import Dict, List
 
-from src.client import run_concurrent, send_yesno_request, send_openai_request, resolve_model_id, get_compact_server_name
+from src.client import run_concurrent, send_openai_request, resolve_model_id, get_compact_server_name, is_llamacpp_backend, check_decisions_args
 from src.common import add_inference_args, load_prompts_from_file, parse_yesno_response, eval_with_flipped_retry
 # Configuration
 PAIRS_FILE = "pairs.json"
@@ -33,7 +33,7 @@ def load_pairs(filepath: str) -> List[Dict]:
 def load_expected_pairs(filepath: str, expected: str) -> List[Dict]:
     """Load pairs from a text file (one comma-separated pair per line), all with the same expected value."""
     with open(filepath) as f:
-        return [{"pair": line.strip().replace(",", " "), "expected": expected}
+        return [{"pair": line.strip(), "expected": expected}
                 for line in f if line.strip()]
 
 
@@ -62,15 +62,11 @@ async def eval_prompt_with_pair(client: httpx.AsyncClient, prompt_text: str,
             reasoning = None
             payload = None
             start_time = time.time()
-            if args.client == "yesno":
-                response, message, _ = await send_yesno_request(client, args, prompt)
-                elapsed = time.time() - start_time
-            else:
-                response, message, payload = await send_openai_request(client, args, prompt)
-                elapsed = time.time() - start_time
-                reasoning = message.get("reasoning_content")
-                message.pop("reasoning_content", None)
-                finish_reason = payload["finish_reason"]
+            response, message, payload = await send_openai_request(client, args, prompt)
+            elapsed = time.time() - start_time
+            reasoning = message.get("reasoning_content")
+            message.pop("reasoning_content", None)
+            finish_reason = payload["finish_reason"]
             return {
                 "pair": candidate_pair,
                 "flipped": flipped,
@@ -276,10 +272,8 @@ Examples:
                       help="Prompt file path (.json array or .jsonl)")
     parser.add_argument("-s", "--system-prompt", type=str,
                       help="System prompt file (optional)")
-    parser.add_argument("-c", "--client", choices=["yesno", "openai"], default="openai",
-                      help="Client type: 'yesno' or 'openai' (default)")
     parser.add_argument("--host", default="localhost",
-                      help="Server host (default: localhost)")
+                      help="Server host, or luna-decisions for the OpenAI decisions API (default: localhost)")
     parser.add_argument("--port", type=int, default=8000,
                       help="Server port (default: 8000)")
     add_inference_args(parser)
@@ -308,6 +302,7 @@ Examples:
                       help=f"Directory for result files (default: {RESULTS_DIR})")
 
     args = parser.parse_args()
+    check_decisions_args(parser, args)
 
     if args.prompt_file:
         if not (args.pid or args.all):
@@ -334,6 +329,7 @@ Examples:
     #auto_detect_max_concurrent(args)
 
     args.model_id = resolve_model_id(args)
+    args.llamacpp = is_llamacpp_backend(args.host, args.port, args.key)
 
     pairs = load_pairs_from_args(args)
     if not pairs:

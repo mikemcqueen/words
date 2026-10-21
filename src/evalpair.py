@@ -21,7 +21,7 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from src.classify import classify_pairs_async
-from src.client import run_concurrent, send_openai_request, resolve_model_id, get_compact_server_name, is_llamacpp_backend, build_url, ssl_verify
+from src.client import run_concurrent, send_openai_request, resolve_model_id, get_compact_server_name, is_llamacpp_backend, build_url, ssl_verify, is_decisions_host, check_decisions_args
 from src.common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
 from src.info import info
 from src.model import is_gemma
@@ -149,7 +149,7 @@ def parse_args():
     parser.add_argument('-s', '--system-prompt', type=str,
                         help='System prompt file (optional)')
     parser.add_argument('--host', default="localhost",
-                        help="Server host (default: localhost)")
+                        help="Server host, or luna-decisions for the OpenAI decisions API (default: localhost)")
     parser.add_argument('--port', type=int, default=8000,
                         help="Server port (default: 8000)")
     parser.add_argument('--key', type=str, help="API key")
@@ -178,6 +178,7 @@ def parse_args():
                         help='Number of top logprobs to request in --lp mode (default: 2)')
 
     args = parser.parse_args()
+    check_decisions_args(parser, args)
 
     # TODO: share between here and ask_openai
     if args.logprobs:
@@ -207,6 +208,9 @@ def parse_args():
 
     if args.save and not args.logprobs:
         parser.error("--save requires --logprobs")
+
+    if is_decisions_host(args.host) and not args.logprobs:
+        parser.error(f"--host {args.host} does not support --lp off")
 
     # --num-pairs requires --pair-file
     if args.num_pairs and not args.pair_file:
@@ -428,7 +432,7 @@ def main():
         try:
             if not args.logprobs:
                 print(f"Thinking: {args.thinking}")
-                retry_map = asyncio.run(classify_pairs_async(ctx, pairs, writer))
+                retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
             else:
                 orders = ["fwd", "rvs"]
                 asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer))

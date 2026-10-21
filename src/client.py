@@ -5,6 +5,8 @@
 import asyncio
 import argparse
 import json
+import math
+import os
 import re
 import sys
 import time
@@ -95,6 +97,32 @@ def host_path_prefix(host: str) -> str:
     if "dashscope-us" in host.lower() or "dashscope-intl" in host.lower():
         return "/compatible-mode"
     return ""
+
+
+DECISIONS_HOST = "luna-decisions"
+DECISIONS_URL = "https://api.openai.com/v1/decisions"
+DECISIONS_MODEL = "gpt-6-luna"
+DECISIONS_QUESTION = "The correct answer to the question above is YES."
+
+
+def is_decisions_host(host: str) -> bool:
+    return host == DECISIONS_HOST
+
+
+# Options the decisions API has no equivalent for
+DECISIONS_UNSUPPORTED = ["port", "temp", "top_p", "top_k", "min_p", "repeat_penalty",
+                         "repeat_last_n", "presence_penalty", "thinking", "top_logprobs"]
+
+
+def check_decisions_args(parser: argparse.ArgumentParser, args) -> None:
+    """Exit with an error if a decisions-host run sets an option the API would ignore."""
+    if not is_decisions_host(args.host):
+        return
+    bad = [name for name in DECISIONS_UNSUPPORTED
+           if getattr(args, name, None) != parser.get_default(name)]
+    if bad:
+        opts = ", ".join("--" + name.replace("_", "-") for name in bad)
+        parser.error(f"--host {args.host} does not support {opts}")
 
 
 def build_url(host: str, port: int, path: str) -> str:
@@ -314,6 +342,8 @@ def _extract_upstream(response) -> str | None:
 
 
 def query_models(host: str, port: int, key: str | None) -> list[dict]:
+    if is_decisions_host(host):
+        return [{"id": DECISIONS_MODEL, "owned_by": "openai"}]
     url = build_url(host, port, "/v1/models")
     headers = {}
     if key:
@@ -365,7 +395,52 @@ def use_responses(model_id: str):
     return model_id.lower().startswith("gpt")
 
 
+async def send_decisions_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
+    """Ask the decisions API for the probability that the prompt's answer is YES.
+
+    Returns the same (response, message, payload) shape as send_openai_request, with
+    the YES/NO probabilities as top_logprobs (empty on refusal).
+    """
+    key = args.key or os.environ.get("OPENAI_API_KEY")
+    headers = { "Content-Type": "application/json" }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    system_prompt = getattr(args, "system_prompt", None)
+    request = {
+        "model": args.model_id,
+        "input": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt,
+        "questions": [{"type": "predicate", "name": "yes", "instructions": DECISIONS_QUESTION}],
+    }
+
+    if getattr(args, "verbose", False):
+        print(json.dumps(request, indent=2))
+
+    response = await _post_with_retry(client, DECISIONS_URL, headers=headers, json=request, label=label, quiet=getattr(args, "quiet", False))
+
+    if args.verbose:
+        print(json.dumps(response.json(), indent=2))
+
+    body = response.json()
+    answers = body.get("answers") if isinstance(body, dict) else None
+    answer = answers[0] if isinstance(answers, list) and answers else None
+    if not isinstance(answer, dict) or (answer.get("type") != "refusal" and "probability" not in answer):
+        raise ValueError(f"unexpected decisions response: {json.dumps(body)}")
+    if answer["type"] == "refusal":
+        return "", answer, {"finish_reason": "refusal", "logprobs": {"content": [{"top_logprobs": []}]}}
+    p = answer["probability"]
+    def logprob(q): return math.log(q) if q > 0 else float("-inf")
+    top = [{"token": "YES", "logprob": logprob(p)}, {"token": "NO", "logprob": logprob(1 - p)}]
+    if p < 0.5:
+        top.reverse()
+    payload = {"finish_reason": "stop", "logprobs": {"content": [{"top_logprobs": top}]}}
+    return ("YES" if p >= 0.5 else "NO"), answer, payload
+
+
 async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
+    if is_decisions_host(args.host):
+        return await send_decisions_request(client, args, prompt, label)
+
     v1resp = use_responses(args.model_id)
     shape = "/v1/responses" if v1resp else "/v1/chat/completions"
 
