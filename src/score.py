@@ -6,6 +6,7 @@ Usage:
   python score.py results/foo.jsonl --pairs pairs.json
   python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
   python score.py results/            --pairs pairs.json          (discover all .jsonl; ranked table)
+  python score.py results/foo.jsonl --pairs pairs.json --predicates cc1,r1   (evalpair --predicate output)
 """
 
 import argparse
@@ -20,7 +21,7 @@ signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 from src.common import (load_expected_pairs, load_eval_results, parse_yesno_response,
                     pair_has_yes, discover_files_all, compute_stats,
                     print_discovery_ranked, resolve_key,
-                    add_print_keys_arg, print_displayed_keys)
+                    add_print_keys_arg, print_displayed_keys, parse_predicate_ids)
 
 TokenLabel = namedtuple("TokenLabel", ["token", "label"])
 
@@ -73,6 +74,11 @@ def parse_args():
 Examples:
   python score.py results/foo.jsonl --pairs pairs.json
   python score.py results/foo.jsonl --pairs pairs.json --method any-yes -v
+  python score.py results/foo.jsonl --pairs pairs.json --predicates cc1,r1
+
+With --predicates, a pair is YES only if every named predicate is YES in at
+least one order. In directory mode only evalpair --predicate files holding all
+the named predicates are scored; without it those files are skipped.
         """
     )
     parser.add_argument("input", type=Path, help="evalpair JSONL file to score, or a directory")
@@ -81,6 +87,8 @@ Examples:
     parser.add_argument("--method", type=str, default="top-token",
                         choices=list(METHODS.keys()),
                         help="Scoring methodology (default: top-token)")
+    parser.add_argument("--predicates", type=str, dest="predicate_ids", metavar="ID[,ID...]",
+                        help="Score evalpair --predicate output by these predicates; all must say YES")
     parser.add_argument("-s", "--sort", default="score", metavar="FIELD",
                         help="sort field for directory mode: score (default), FP, FN")
 
@@ -102,6 +110,11 @@ Examples:
                         help="Only display incorrect results; implies --verbose (single-file mode only)")
     args = parser.parse_args()
 
+    if args.predicate_ids is not None:
+        try:
+            args.predicate_ids = parse_predicate_ids(args.predicate_ids)
+        except ValueError as e:
+            parser.error(f"--predicates {e}")
     if args.top is not None and args.top <= 0:
         parser.error("--top K must be > 0")
     if not args.input.exists():
@@ -186,9 +199,13 @@ def print_discovery_table(args):
         files = {}
         for key in keys:
             path = resolve_key(args.input, key)
-            files[key] = load_eval_results(path)
+            try:
+                files[key] = load_eval_results(path, args.predicate_ids)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
     else:
-        files = discover_files_all(args.input)
+        files = discover_files_all(args.input, args.predicate_ids)
         if not files:
             print("No .jsonl files found.", file=sys.stderr)
             sys.exit(1)
@@ -250,6 +267,11 @@ def print_details(eval_results, args):
                     f"{k}={fmt_tok(result[k].token)}"
                     for k in result['logprobs']
                 )
+                if "predicates" in eval_results[pair]:
+                    tokens_str += "  (" + "  ".join(
+                        f"{pid}=" + "/".join(fmt_tok(t).strip() for t in orders.values())
+                        for pid, orders in eval_results[pair]["predicates"].items()
+                    ) + ")"
                 print(f"  {p}  {tokens_str}  {mark}")
 
     return sum(1 for _, d in rows if d is None)
@@ -263,7 +285,11 @@ def main():
         return
 
     expected = load_expected_pairs(args.pairs)
-    eval_results = load_eval_results(args.input)
+    try:
+        eval_results = load_eval_results(args.input, args.predicate_ids)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     label_eval_results(eval_results, expected, args.method)
     resolve_all_pair_labels(eval_results)
     skipped = print_details(eval_results, args)

@@ -1,6 +1,8 @@
 apikey
 api-key
 api_key
+decisions-key
+decisions_key
 build/
 junk/
 data*/**

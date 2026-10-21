@@ -1,7 +1,6 @@
 import argparse
 import json
 import queue
-import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -187,8 +186,40 @@ def load_expected_pairs(filepath: str) -> dict:
     return {entry["pair"].replace(",", " "): entry["expected"].upper() for entry in data}
 
 
-def load_eval_results(path) -> Dict:
-    """Load evalpair JSONL, return {pair: {"logprobs": ...}} sorted by seq."""
+def parse_predicate_ids(text) -> list[str]:
+    """Split comma-separated predicate IDs; raises ValueError unless they are distinct and non-empty."""
+    ids = [pid.strip() for pid in text.split(",")]
+    if "" in ids or len(set(ids)) != len(ids):
+        raise ValueError("needs distinct, non-empty predicate IDs")
+    return ids
+
+
+def reduce_predicates(path, record, predicate_ids) -> Dict:
+    """Reduce an evalpair --predicate record to one verdict over predicate_ids.
+
+    A predicate says YES if its top token is YES in any order; the pair is YES only
+    if every predicate in predicate_ids says YES. Returns {"logprobs": {key: [{verdict: 1.0}]},
+    "predicates": {id: {order: YES/NO/None}}}, where key is the ids joined by '-'.
+    """
+    tokens = {}
+    for pid in predicate_ids:
+        if pid not in record["predicates"]:
+            raise ValueError(f"{path}: pair {record['pair']} has no predicate {pid}")
+        try:
+            tokens[pid] = {order: parse_yesno_response(next(iter(lp[0]))) if lp else None
+                           for order, lp in record["predicates"][pid]["logprobs"].items()}
+        except (AttributeError, IndexError, KeyError, StopIteration, TypeError) as e:
+            raise ValueError(f"{path}: pair {record['pair']} has a malformed predicate {pid}: {e!r}") from e
+    verdict = "YES" if all("YES" in t.values() for t in tokens.values()) else "NO"
+    return {"logprobs": {"-".join(predicate_ids): [{verdict: 1.0}]}, "predicates": tokens}
+
+
+def load_eval_results(path, predicate_ids=None) -> Dict:
+    """Load evalpair JSONL, return {pair: {"logprobs": ...}} sorted by seq.
+
+    Records from evalpair --predicate need predicate_ids and are reduced by
+    reduce_predicates; raises ValueError if the file and predicate_ids don't agree.
+    """
     records = []
     with open(path) as f:
         for line in f:
@@ -196,19 +227,40 @@ def load_eval_results(path) -> Dict:
             if line:
                 records.append(json.loads(line))
     records.sort(key=lambda r: r.get("seq", 0))
-    return {
-        r["pair"]: {"logprobs": r["logprobs"]}
-        for r in records
-    }
+    results = {}
+    for r in records:
+        if "predicates" in r:
+            if not predicate_ids:
+                raise ValueError(f"{path} has predicate results ({','.join(r['predicates'])}); select them with --predicates")
+            results[r["pair"]] = reduce_predicates(path, r, predicate_ids)
+        elif predicate_ids:
+            raise ValueError(f"{path} has no predicate results")
+        else:
+            results[r["pair"]] = {"logprobs": r["logprobs"]}
+    return results
 
 
 def parse_result_filename(name):
-    """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}.json.
-    Returns (pair_file, prompt_file, prompt_id, host) or None if no match."""
-    stem = Path(name).stem
-    #m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:\.(.+))?$', stem)
-    m = re.match(r'^(.+)_([^_]+)_(p\d+)_(.+?)(?:_([^._]+))?(?:\.(.+))?$', stem)
-    return (m.group(1), m.group(2), m.group(3), m.group(4), m.group(5), m.group(6)) if m else None
+    """Parse {pair_file}_{prompt_file}_{prompt_id}_{host}[_{sys_prompt}][.{tag}].jsonl.
+
+    Splits on '_' and reads fixed positions. The pair file is the first piece and
+    may contain '.'; after it, the first '.' ends the last field and the rest of
+    the name is the tag. prompt_id is one id like p36, or several '-'-joined ids
+    (evalpair --predicate) like np1-r1.
+    Returns (pair_file, prompt_file, prompt_id, host, sys_prompt, tag) or None if no match."""
+    pieces = Path(name).stem.split("_")
+    fields, tag = [], None
+    for i, piece in enumerate(pieces[1:], start=1):
+        if "." in piece:
+            head, rest = piece.split(".", 1)
+            fields.append(head)
+            tag = "_".join([rest, *pieces[i + 1:]])
+            break
+        fields.append(piece)
+    if len(fields) not in (3, 4) or "" in fields or not pieces[0]:
+        return None
+    prompt_file, prompt_id, host, sys_prompt = (fields + [None])[:4]
+    return (pieces[0], prompt_file, prompt_id, host, sys_prompt, tag)
 
 
 def key_from_path(path) -> str:
@@ -227,9 +279,10 @@ def key_from_path(path) -> str:
     return key
 
 
-def discover_files_all(seed_path):
+def discover_files_all(seed_path, predicate_ids=None):
     """Return {prompt_file.prompt_id[.tag]: eval_results} for all .jsonl files in seed's directory.
-    seed_path may be a file (uses its parent) or a directory."""
+    seed_path may be a file (uses its parent) or a directory. With predicate_ids, only
+    evalpair --predicate files holding all of them load; without, those files are skipped."""
     p = Path(seed_path)
     directory = p if p.is_dir() else p.parent
     candidates = []
@@ -243,7 +296,7 @@ def discover_files_all(seed_path):
     def _load(item):
         key, jsonl_file = item
         try:
-            return key, load_eval_results(jsonl_file)
+            return key, load_eval_results(jsonl_file, predicate_ids)
         except Exception:
             return key, None
 

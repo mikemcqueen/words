@@ -21,8 +21,8 @@ import httpx
 signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit("SIGTERM"))
 
 from src.classify import classify_pairs_async
-from src.client import run_concurrent, send_openai_request, resolve_model_id, get_compact_server_name, is_llamacpp_backend, build_url, ssl_verify, is_decisions_host, check_decisions_args
-from src.common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response
+from src.client import run_concurrent, send_openai_request, send_decisions_predicates, resolve_model_id, get_compact_server_name, is_llamacpp_backend, build_url, ssl_verify, is_decisions_host, check_decisions_args
+from src.common import add_inference_args, parse_on_off, load_prompts_from_file, single_pair_generator, file_pair_generator, flip_pair, eval_with_flipped_retry, parse_yesno_response, parse_predicate_ids
 from src.info import info
 from src.model import is_gemma
 
@@ -127,7 +127,26 @@ def send_anchor_prefix(args, ctx: str) -> None:
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate word pairs with a language model")
+    parser = argparse.ArgumentParser(
+        description="Evaluate word pairs with a language model",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Sends each pair to the model with the prompt (pair substituted for {PAIR}) and
+classifies the answer as YES/NO. By default this uses single-token logprobs
+(--lp on); --lp off does full generation instead. With --save, results go to
+<results-dir>/<pairfile>_<promptfile>_<pid>[_<server>][_<sysprompt>][.<tag>].jsonl
+and a rerun resumes from the existing file. Score saved results with src/score.py.
+With --host luna-decisions, --predicate asks several prompt-file entries at once
+as decisions predicates about the bare pair; <pid> is then the ids joined by '-'
+and each result holds "predicates": {id: {"category", "logprobs"}}.
+
+Examples:
+  python -m src.evalpair --pair foo,bar --prompt "Does '{PAIR}' signify something?"
+  python -m src.evalpair --pair-file pairs/yesno.200 --prompt-file prompts/4th.jsonl --pid p36 --save
+  python -m src.evalpair --pair-file pairs/yesno.200 --prompt-file prompts/4th.jsonl --all \\
+      --host mini --mc 6 --tag qwen35 -q --save -r results/test
+        """
+    )
 
     # Pair input: either --pair or --pair-file (mutually exclusive)
     pair_group = parser.add_mutually_exclusive_group(required=True)
@@ -144,6 +163,8 @@ def parse_args():
                            help='Prompt ID to use from prompt file')
     pid_group.add_argument('--all', action='store_true',
                            help='Run all prompts in prompt file; with --save, creates one result file per prompt')
+    pid_group.add_argument('--predicate', type=str, dest='predicate_ids',
+                           help='Comma-separated prompt IDs to ask together as decisions predicates (--host luna-decisions only)')
 
     # Server/client options
     parser.add_argument('-s', '--system-prompt', type=str,
@@ -196,11 +217,23 @@ def parse_args():
     else:
         args.system_prompt_filename = None
 
-    # Validate --prompt-file requires --pid or --all
-    if args.prompt_file and not args.prompt_id and not args.all:
-        parser.error("--prompt-file requires --pid/--prompt-id or --all")
+    # Validate --prompt-file requires --pid, --all or --predicate
+    if args.prompt_file and not args.prompt_id and not args.all and not args.predicate_ids:
+        parser.error("--prompt-file requires --pid/--prompt-id, --all or --predicate")
     if args.all and not args.prompt_file:
         parser.error("--all requires --prompt-file")
+
+    if args.predicate_ids:
+        if not args.prompt_file:
+            parser.error("--predicate requires --prompt-file")
+        if not is_decisions_host(args.host):
+            parser.error("--predicate requires --host luna-decisions")
+        if args.system_prompt:
+            parser.error("--predicate does not support -s/--system-prompt")
+        try:
+            args.predicate_ids = parse_predicate_ids(args.predicate_ids)
+        except ValueError as e:
+            parser.error(f"--predicate {e}")
 
     # --save requires --pair-file
     if args.save and not args.pair_file:
@@ -220,10 +253,11 @@ def parse_args():
 
 
 class JsonlWriter:
-    def __init__(self, path, next_seq=0):
+    def __init__(self, path, next_seq=0, key="logprobs"):
         self.path = path
         self.file = open(path, "a")
         self.next_seq = next_seq
+        self.key = key  # result field name: "logprobs", or "predicates" with --predicate
         self.buffer = {}  # {seq: pair}
 
     def submit_logprob(self, seq, pair, logprobs):
@@ -231,7 +265,7 @@ class JsonlWriter:
         self.buffer[seq] = (pair, logprobs)
         while self.next_seq in self.buffer:
             p, r = self.buffer.pop(self.next_seq)
-            self.file.write(json.dumps({"pair": p, "seq": self.next_seq, "logprobs": r}) + "\n")
+            self.file.write(json.dumps({"pair": p, "seq": self.next_seq, self.key: r}) + "\n")
             self.file.flush()
             print(f"{self.next_seq}: {p}")
             self.next_seq += 1
@@ -273,6 +307,18 @@ async def process_pair_async(client: httpx.AsyncClient, ctx: str, orig_pair: str
     return orig_pair, results
 
 
+async def process_predicates_async(client: httpx.AsyncClient, orig_pair: str, predicates, orders, args) -> tuple:
+    """Ask all predicates about a single pair, one decisions request per order, sent together."""
+    results = {p["id"]: {"category": p["category"], "logprobs": {}} for p in predicates}
+    all_answers = await asyncio.gather(*(
+        send_decisions_predicates(client, args, apply_pair_order(orig_pair, order), predicates)
+        for order in orders))
+    for order, answers in zip(orders, all_answers):
+        for pid, top_logprobs in answers.items():
+            results[pid]["logprobs"][order] = parse_top_logprobs(top_logprobs)
+    return orig_pair, results
+
+
 _PARSE_ERRORS = (
     TypeError,      # None["x"], list["x"], etc.
     KeyError,       # dict missing expected key
@@ -281,12 +327,15 @@ _PARSE_ERRORS = (
 )
 
 
-async def process_pairs_async(ctx: str, pairs, orders, args, writer=None):
+async def process_pairs_async(ctx: str | None, pairs, orders, args, writer=None, predicates=None):
     """Process all pairs with max_concurrent in flight at once."""
 
     async def process(client, item):
         seq, orig_pair = item
-        result = await process_pair_async(client, ctx, orig_pair, orders, args)
+        if predicates:
+            result = await process_predicates_async(client, orig_pair, predicates, orders, args)
+        else:
+            result = await process_pair_async(client, ctx, orig_pair, orders, args)
         return (seq, *result)
 
     numbered_pairs = enumerate(pairs, start=writer.next_seq if writer else 0)
@@ -353,6 +402,20 @@ def all_prompts_generator(prompts):
     yield from prompts
 
 
+def predicates_prompt(prompts, predicate_ids):
+    """Return one prompt object holding the predicates for predicate_ids, in that order."""
+    by_id = {p.get('id'): p for p in prompts}
+    predicates = []
+    for pid in predicate_ids:
+        p = by_id.get(pid)
+        if not p:
+            raise ValueError(f"Prompt ID '{pid}' not found")
+        if 'category' not in p:
+            raise ValueError(f"Prompt ID '{pid}' has no category")
+        predicates.append(p)
+    return {'id': "-".join(predicate_ids), 'predicates': predicates}
+
+
 def get_pairs(args, skip=0):
     """Return pairs generator from args, optionally skipping the first `skip` pairs."""
     if args.pair:
@@ -400,13 +463,16 @@ def main():
         all_prompts = load_prompts_from_file(args.prompt_file)
         if args.all:
             prompt_gen = all_prompts_generator(all_prompts)
+        elif args.predicate_ids:
+            prompt_gen = iter([predicates_prompt(all_prompts, args.predicate_ids)])
         else:
             prompt_gen = single_prompt_generator(all_prompts, args.prompt_id)
     else:
         prompt_gen = iter([{'id': None, 'text': args.prompt}])
 
     for prompt_obj in prompt_gen:
-        ctx = prompt_obj['text']
+        ctx = prompt_obj.get('text')
+        predicates = prompt_obj.get('predicates')
         current_pid = prompt_obj.get('id')
         if args.all:
             print(f"\n=== Prompt: {current_pid} ===")
@@ -422,7 +488,7 @@ def main():
             skip = count_lines(filename)
             if skip:
                 print(f"Skipping {skip} pairs")
-            writer = JsonlWriter(filename, next_seq=skip)
+            writer = JsonlWriter(filename, next_seq=skip, key="predicates" if predicates else "logprobs")
 
         pairs = get_pairs(args, skip=skip)
         retry_map = None
@@ -435,7 +501,7 @@ def main():
                 retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
             else:
                 orders = ["fwd", "rvs"]
-                asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer))
+                asyncio.run(process_pairs_async(ctx, pairs, orders, args, writer, predicates))
         finally:
             if writer:
                 writer.close()

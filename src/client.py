@@ -395,23 +395,16 @@ def use_responses(model_id: str):
     return model_id.lower().startswith("gpt")
 
 
-async def send_decisions_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
-    """Ask the decisions API for the probability that the prompt's answer is YES.
+async def _post_decisions(client: httpx.AsyncClient, args, request: dict, label=None) -> dict[str, dict]:
+    """POST a decisions request and return its answers keyed by question name.
 
-    Returns the same (response, message, payload) shape as send_openai_request, with
-    the YES/NO probabilities as top_logprobs (empty on refusal).
+    Raises ValueError (including the body) unless every question got a refusal
+    or a probability.
     """
     key = args.key or os.environ.get("OPENAI_API_KEY")
     headers = { "Content-Type": "application/json" }
     if key:
         headers["Authorization"] = f"Bearer {key}"
-
-    system_prompt = getattr(args, "system_prompt", None)
-    request = {
-        "model": args.model_id,
-        "input": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt,
-        "questions": [{"type": "predicate", "name": "yes", "instructions": DECISIONS_QUESTION}],
-    }
 
     if getattr(args, "verbose", False):
         print(json.dumps(request, indent=2))
@@ -423,18 +416,60 @@ async def send_decisions_request(client: httpx.AsyncClient, args, prompt: str, l
 
     body = response.json()
     answers = body.get("answers") if isinstance(body, dict) else None
-    answer = answers[0] if isinstance(answers, list) and answers else None
-    if not isinstance(answer, dict) or (answer.get("type") != "refusal" and "probability" not in answer):
-        raise ValueError(f"unexpected decisions response: {json.dumps(body)}")
+    by_name = {a.get("name"): a for a in answers if isinstance(a, dict)} if isinstance(answers, list) else {}
+    for question in request["questions"]:
+        answer = by_name.get(question["name"])
+        if answer is None or (answer.get("type") != "refusal" and "probability" not in answer):
+            raise ValueError(f"unexpected decisions response: {json.dumps(body)}")
+    return by_name
+
+
+def _decisions_top_logprobs(answer: dict) -> list[dict]:
+    """Return a predicate answer as YES/NO top_logprobs, most likely first (empty on refusal)."""
     if answer["type"] == "refusal":
-        return "", answer, {"finish_reason": "refusal", "logprobs": {"content": [{"top_logprobs": []}]}}
+        return []
     p = answer["probability"]
     def logprob(q): return math.log(q) if q > 0 else float("-inf")
     top = [{"token": "YES", "logprob": logprob(p)}, {"token": "NO", "logprob": logprob(1 - p)}]
     if p < 0.5:
         top.reverse()
+    return top
+
+
+async def send_decisions_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
+    """Ask the decisions API for the probability that the prompt's answer is YES.
+
+    Returns the same (response, message, payload) shape as send_openai_request, with
+    the YES/NO probabilities as top_logprobs (empty on refusal).
+    """
+    system_prompt = getattr(args, "system_prompt", None)
+    request = {
+        "model": args.model_id,
+        "input": f"{system_prompt}\n\n{prompt}" if system_prompt else prompt,
+        "questions": [{"type": "predicate", "name": "yes", "instructions": DECISIONS_QUESTION}],
+    }
+    answer = (await _post_decisions(client, args, request, label))["yes"]
+    top = _decisions_top_logprobs(answer)
+    if not top:
+        return "", answer, {"finish_reason": "refusal", "logprobs": {"content": [{"top_logprobs": []}]}}
     payload = {"finish_reason": "stop", "logprobs": {"content": [{"top_logprobs": top}]}}
-    return ("YES" if p >= 0.5 else "NO"), answer, payload
+    return top[0]["token"], answer, payload
+
+
+async def send_decisions_predicates(client: httpx.AsyncClient, args, pair: str, predicates: list[dict], label=None) -> dict[str, list[dict]]:
+    """Ask the decisions API every predicate about the pair in one request.
+
+    The pair is the whole input; each predicate (a prompt-file entry) becomes a
+    question named by its id, with its text as the instructions. Returns
+    {id: top_logprobs} in the shape of _decisions_top_logprobs.
+    """
+    request = {
+        "model": args.model_id,
+        "input": pair,
+        "questions": [{"type": "predicate", "name": p["id"], "instructions": p["text"]} for p in predicates],
+    }
+    answers = await _post_decisions(client, args, request, label)
+    return {p["id"]: _decisions_top_logprobs(answers[p["id"]]) for p in predicates}
 
 
 async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, label=None) -> tuple[str, dict, dict]:
