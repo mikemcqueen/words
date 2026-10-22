@@ -119,6 +119,66 @@ class DictionaryTests(unittest.TestCase):
                          [p.name for p in self.reviewed_inputs.iterdir()])
         self.assertEqual(derived, self.derived.read_text())
 
+    def test_reviewed_words_are_the_rounds_whole_reviewed_input(self):
+        self._base()
+        reviewed = self._submission("seen.txt", " 5 cherry\napple\nbanana\n")
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "remove", "words",
+            str(self._submission("junk.txt", "banana\n")),
+            "--reviewed", str(reviewed))
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["apple", "banana", "cherry"],
+                         self._lines(self.reviewed_inputs / "junk.txt.reviewed.1"))
+        self.assertEqual(["banana"],
+                         self._lines(self.removals / "junk.txt.removed.1"))
+        self.assertEqual(["apple", "banana", "cherry"],
+                         self._lines(self.reviewed_words))
+        self.assertEqual(["apple", "cherry", "date", "fig"],
+                         self._lines(self.derived))
+
+    def test_reviewed_is_recorded_when_every_removal_filters_away(self):
+        """Removals already reviewed drop out; the kept words still land."""
+        self._base()
+        self._remove("junk.txt", "banana\n")
+        reviewed = self._submission("seen.txt", "banana\ncherry\ndate\n")
+        code, stdout, stderr = fx.run_wf(
+            "-d", str(self.root), "remove", "words",
+            str(self._submission("again.txt", "banana\n")),
+            "--reviewed", str(reviewed))
+
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([], self._lines(self.removals / "again.txt.removed.2"))
+        self.assertEqual(["banana", "cherry", "date"],
+                         self._lines(self.reviewed_inputs
+                                     / "again.txt.reviewed.2"))
+        self.assertEqual(["banana", "cherry", "date"],
+                         self._lines(self.reviewed_words))
+        self.assertEqual(["apple", "cherry", "date", "fig"],
+                         self._lines(self.derived))
+        self.assertIn("0 words submitted", stdout)
+
+    def test_reviewed_given_twice_is_refused(self):
+        self._base()
+        seen = str(self._submission("seen.txt", "banana\n"))
+        with self.assertRaisesRegex(ValueError,
+                                    "--reviewed is given more than once"):
+            fx.run_wf("-d", str(self.root), "remove", "words",
+                      str(self._submission("junk.txt", "banana\n")),
+                      "--reviewed", seen, "--reviewed", seen)
+        self.assertEqual([], list(self.removals.iterdir()))
+
+    def test_a_removed_word_missing_from_reviewed_is_refused(self):
+        self._base()
+        reviewed = self._submission("seen.txt", "apple\n")
+        with self.assertRaisesRegex(ValueError,
+                                    "1 removed words are not in .*\n  banana"):
+            fx.run_wf("-d", str(self.root), "remove", "words",
+                      str(self._submission("junk.txt", "banana\napple\n")),
+                      "--reviewed", str(reviewed))
+        self.assertEqual([], list(self.removals.iterdir()))
+        self.assertEqual([], list(self.reviewed_inputs.iterdir()))
+
     def test_the_counter_is_global_and_the_stem_is_the_input_name(self):
         self._base()
         self._remove("junk.txt", "banana\n")

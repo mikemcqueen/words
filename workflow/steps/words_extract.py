@@ -33,7 +33,7 @@ def _normalize(source: Path, destination: Path) -> Path:
         if word is not None:
             rows.append(word)
     unsorted = destination.with_name(destination.name + ".unsorted")
-    unsorted.write_text("".join(f"{word}\n" for word in rows))
+    dictionary.write_words(unsorted, rows)
     try:
         return setops.merge([unsorted], destination)
     finally:
@@ -73,10 +73,7 @@ def validate_results(reviewed_input: Path, yes: Path, no: Path,
     conflicts = overlap.read_text().splitlines()
     shown = ""
     if conflicts:
-        listed = "\n  ".join(conflicts[:20])
-        remainder = len(conflicts) - 20
-        more = f"\n  ... and {remainder:,} more" if remainder > 0 else ""
-        shown = f"\nConflicting words:\n  {listed}{more}"
+        shown = f"\nConflicting words:\n{dictionary.listing(conflicts)}"
     raise ValueError(
         f"invalid dictionary review partition: {'; '.join(failures)}\n"
         f"input {fs.line_count(reviewed_input):,}, "

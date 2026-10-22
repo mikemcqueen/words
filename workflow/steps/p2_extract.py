@@ -25,7 +25,7 @@ import subprocess
 
 from pathlib import Path
 
-from workflow import classify, fs, log, setops
+from workflow import classify, dictionary, fs, log, setops
 from workflow.steps import p2_retrieve
 
 
@@ -85,12 +85,9 @@ def _contradictions(ctx, staged: dict) -> list[str]:
 
 
 def _diagnostic(ctx, both: list[str]) -> str:
-    shown = "\n  ".join(both[:LISTED])
-    rest = len(both) - LISTED
-    more = f"\n  ... and {rest:,} more" if rest > 0 else ""
     return (f"{len(both):,} pair(s) marked both YES and NO in "
             f"{ctx.bundle_name} -- a row cannot be both:\n"
-            f"  {shown}{more}\n"
+            f"{dictionary.listing(both, LISTED)}\n"
             f"Correct those rows in the checkbox notes in the note application, "
             f"then run `wf -f complete p2 {ctx.bundle_name}` to download and "
             f"validate those edits.")

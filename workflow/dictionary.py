@@ -26,6 +26,7 @@
 # `comm -23` under LC_ALL=C (which setops already provides), and the .removed.N
 # suffix -- ported onto a different stem and a different mutability.
 
+import argparse
 import re
 import subprocess
 import tempfile
@@ -178,6 +179,18 @@ def parse_word_row(path: Path, number: int, line: str) -> str | None:
         raise ValueError(f"{path}:{number}: not a word: {word!r}; "
                          f"expected one lowercase word per line")
     return word
+
+
+def write_words(path: Path, words) -> None:
+    path.write_text("".join(f"{word}\n" for word in words))
+
+
+def listing(words: list[str], limit: int = 20) -> str:
+    """The first `limit` words, one per indented line, then how many more."""
+    listed = "\n  ".join(words[:limit])
+    remainder = len(words) - limit
+    more = f"\n  ... and {remainder:,} more" if remainder > 0 else ""
+    return f"  {listed}{more}"
 
 
 @dataclass(frozen=True)
@@ -513,8 +526,15 @@ def report_publication(root: Path, result: Publication) -> None:
         print(line)
 
 
-def remove_words(root: Path, src: Path) -> None:
+def remove_words(root: Path, src: Path,
+                 reviewed_src: Path | None = None) -> None:
     """Record one round of word removals and rebuild the derived files.
+
+    With reviewed_src, that file is the round's whole reviewed set -- kept and
+    removed words alike -- and is archived as the reviewed input in place of the
+    removals, as `complete words` archives its whole review. Every removed word
+    has to be in it, and a round whose removals all filter away -- or that
+    removes nothing -- is still recorded for the words it kept.
 
     Validate, allocate, prepare everything, preflight everything, archive,
     publish derived outputs, mark. An ordinary failure therefore leaves no
@@ -531,17 +551,27 @@ def remove_words(root: Path, src: Path) -> None:
     """
     words = read_words(src)
     stem = archive_stem(src)
+    reviewed_set = read_words(reviewed_src) if reviewed_src is not None else None
+    if reviewed_set is not None:
+        missing = sorted(set(words) - set(reviewed_set))
+        if missing:
+            raise ValueError(f"{len(missing):,} removed words are not in "
+                             f"{reviewed_src}:\n{listing(missing)}")
     reviewed = fs.optional_file(config.reviewed_words(root))
     with tempfile.TemporaryDirectory(prefix="wf-remove-words-") as tmp:
         submission = Path(tmp) / "submission"
-        submission.write_text("".join(f"{word}\n" for word in words))
+        write_words(submission, words)
         if reviewed is not None:
             unreviewed = Path(tmp) / "unreviewed"
             filtered = filter_reviewed_words(submission, reviewed, unreviewed)
-            if filtered.surviving_words == 0:
+            if filtered.surviving_words == 0 and reviewed_set is None:
                 raise ValueError(f"no unreviewed words in {src}")
             submission = unreviewed
-        result = publish_words(root, stem, submission, submission)
+        reviewed_input = submission
+        if reviewed_set is not None:
+            reviewed_input = Path(tmp) / "reviewed"
+            write_words(reviewed_input, reviewed_set)
+        result = publish_words(root, stem, reviewed_input, submission)
     report_publication(root, result)
 
 
@@ -589,6 +619,13 @@ def gen_dict(root: Path) -> None:
             print(line)
 
 
+class _Once(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest) is not None:
+            raise ValueError(f"{option_string} is given more than once")
+        setattr(namespace, self.dest, values)
+
+
 class RemoveWords(command.Action):
     def __init__(self):
         super().__init__(
@@ -599,13 +636,22 @@ class RemoveWords(command.Action):
                  "`top-segments --solo-words` listing with its counts left on"),
             ))
 
+    def parser(self):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("--reviewed", dest="reviewed_src", metavar="WORDS",
+                       type=Path, action=_Once,
+                       help="every word reviewed this round, kept or removed; "
+                            "folded into reviewed.words")
+        return p
+
     def run(self, command_text, opts, argv) -> int:
+        argv = self.parse(opts, argv)
         if not argv:
             return usage.missing_argument(self.format_help(command_text))
         if len(argv) > 1:
             return usage.invalid_argument(argv[1],
                                           self.format_help(command_text))
-        remove_words(opts.dir, Path(argv[0]))
+        remove_words(opts.dir, Path(argv[0]), opts.reviewed_src)
         return 0
 
 
