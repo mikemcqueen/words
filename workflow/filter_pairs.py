@@ -17,22 +17,21 @@
 # It renders the p2 queue name from the *result stem* instead, which
 # `p1_extract` stopped doing -- evalpair spells that stem with `_`, which
 # `check_name` refuses, so the artifact this command publishes is one
-# `wf eval p2` cannot open. It also hand-rolls the "already submitted?" guard
-# against three known paths, a question `bundle.in_flight` and the queue
-# contract answer everywhere else.
+# `wf eval p2` cannot open.
 #
 # Converting it means giving it a bundle: `filter` is the "re-slice a result I
 # already have at a different band" errand, so the bundle name has to come from
 # the caller or from the archived pairs file the result was produced from, not
-# from the jsonl. Once it has one, the naming divergence and the guard both
-# disappear into machinery that already exists.
+# from the jsonl. Once it has one, the naming divergence disappears into
+# machinery that already exists.
 
 import argparse
 
 from pathlib import Path
 
 from src.filter import filter_results
-from workflow import command, config, context, fs, log, names, setops, usage
+from workflow import (bundle, command, config, context, fs, log, names,
+                      setops, usage)
 
 
 class FilterPairs(command.Action):
@@ -69,17 +68,8 @@ class FilterPairs(command.Action):
         out_name = names.artifact(bundle_name, "p1", "yes")
 
         queued_dir = config.path(opts.dir, ["p2", "queued"])
-        # "Has this bundle already been through p2?" -- three stats against
-        # known paths, rather than scanning three slots for a matching name. The
-        # bundle directory exists iff the work is in flight; done/in answers the
-        # rest.
-        for candidate in (queued_dir / out_name,
-                          context.Context(root=opts.dir, phase="p2",
-                                          bundle_name=bundle_name).bundle_dir,
-                          config.path(opts.dir, ["p2", "done", "in"]) / out_name):
-            if candidate.exists() and not opts.force:
-                raise ValueError(
-                    f"already submitted: {candidate.relative_to(opts.dir / config.CONFIG_ROOT)}")
+        bundle.check_queueable(
+            context.Context(root=opts.dir, phase="p2", bundle_name=bundle_name))
 
         out_path = queued_dir / out_name
         if not opts.force:

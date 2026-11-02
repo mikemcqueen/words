@@ -12,7 +12,8 @@ import tempfile
 
 from pathlib import Path
 
-from workflow import command, config, dictionary, fs, log, names, setops, usage
+from workflow import (bundle, command, config, context, dictionary, fs, log,
+                      names, setops, usage)
 
 
 def _resolve_input(argv) -> Path:
@@ -41,6 +42,9 @@ class Submit(command.Action):
                                  "(the queue suffix is still added)")
         return parser
 
+    def check_queueable(self, opts, dst: Path) -> None:
+        pass
+
     def prepare(self, src: Path) -> Path:
         return src
 
@@ -49,6 +53,7 @@ class Submit(command.Action):
         chosen = opts.as_name if opts.as_name is not None else src.name
         dst = (config.path(opts.dir, [self.phase, "queued"])
                / names.queue_name(self.phase, chosen))
+        self.check_queueable(opts, dst)
         if not opts.force:
             fs.raise_if_exists(dst)
 
@@ -65,6 +70,11 @@ class Submit(command.Action):
 
 
 class SubmitP2(Submit):
+    def check_queueable(self, opts, dst: Path) -> None:
+        stem = names.queue_stem(self.phase, dst.name)
+        bundle.check_queueable(
+            context.Context(root=opts.dir, phase=self.phase, bundle_name=stem))
+
     def prepare(self, src: Path) -> Path:
         prepared = None
         try:

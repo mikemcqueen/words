@@ -26,6 +26,25 @@ def in_flight(ctx) -> bool:
     return ctx.bundle_dir.is_dir()
 
 
+def check_queueable(ctx) -> None:
+    """Refuse to queue a source for ctx's bundle when that name is taken.
+
+    A name already in done/in, or a bundle being evaluated, would collide
+    with that round's archived source when this one completes, after the
+    manual review is done, so -f never overrides either. The queue itself
+    is left to the caller, which may replace its own file there under -f.
+    """
+    archived = source_in(ctx, ["done", "in"])
+    if archived is not None:
+        raise ValueError(
+            f"{ctx.bundle_name} has already been reviewed: {archived} "
+            f"exists; submit it under another name with --as")
+    if in_flight(ctx):
+        raise ValueError(
+            f"{ctx.bundle_name} is being evaluated: {ctx.bundle_dir} "
+            f"exists; submit it under another name with --as")
+
+
 def resolve_queued(root: Path, phase: str,
                    positional: str) -> tuple[str, Path]:
     """Resolve an eval operand without changing the queue.

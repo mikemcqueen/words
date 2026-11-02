@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests import wf_fixture as fx
-from workflow import config, dictionary, notes, wf, eval as evaluate
+from workflow import bundle, config, dictionary, notes, wf, eval as evaluate
 
 
 class ReviewTests(unittest.TestCase):
@@ -123,8 +123,9 @@ class ReviewTests(unittest.TestCase):
 
     def test_an_eval_failure_before_opening_names_the_queued_file(self):
         src = self._pairs("top.1000")
-        fx.make_bundle(self.opts, "p2", "top.1000")
-        stderr = self._review_failing("p2", str(src))
+        with mock.patch.object(bundle, "begin",
+                               side_effect=ValueError("cannot open")):
+            stderr = self._review_failing("p2", str(src))
         self.assertEqual(["top.1000.pairs"], self._names("p2", "queued"))
         self.assertIn("top.1000.pairs is still queued; continue with "
                       "`wf eval p2 top.1000.pairs`", stderr)
@@ -149,8 +150,9 @@ class ReviewTests(unittest.TestCase):
 
     def test_as_failure_names_the_queued_file_by_its_as_name(self):
         src = self._pairs("top.1000")
-        fx.make_bundle(self.opts, "p2", "mine")
-        stderr = self._review_failing("p2", str(src), "--as", "mine")
+        with mock.patch.object(bundle, "begin",
+                               side_effect=ValueError("cannot open")):
+            stderr = self._review_failing("p2", str(src), "--as", "mine")
         self.assertEqual(["mine.pairs"], self._names("p2", "queued"))
         self.assertIn("mine.pairs is still queued; continue with "
                       "`wf eval p2 mine.pairs`", stderr)
@@ -162,6 +164,39 @@ class ReviewTests(unittest.TestCase):
         with self.assertRaises((OSError, ValueError)):
             self._review("p2", str(src))
         self.assertEqual([], self._names("p2", "eval"))
+
+    def test_a_name_already_in_done_in_stops_review_at_submit_even_with_force(self):
+        done_in = fx.slot(self.opts, ["p2", "done", "in"])
+        for archived in ("top.1000.pairs", "top.1000.p1.yes"):
+            for f in done_in.iterdir():
+                f.unlink()
+            fx.write_pairs(done_in / archived, ["old,pair"])
+            src = self._pairs("top.1000")
+            for force in ((), ("-f",)):
+                with self.assertRaisesRegex(
+                        ValueError, "top.1000 has already been reviewed"):
+                    fx.run_wf(*force, "-d", str(self.root),
+                              "review", "p2", str(src))
+                self.assertEqual([], self._names("p2", "queued"))
+                self.assertEqual([], self._names("p2", "eval"))
+
+    def test_as_reviews_a_reused_name_under_a_new_one(self):
+        fx.write_pairs(fx.slot(self.opts, ["p2", "done", "in"])
+                       / "top.1000.pairs", ["old,pair"])
+        src = self._pairs("top.1000")
+        code, stderr, _ = self._review("p2", str(src), "--as", "top.1000.b")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["top.1000.b"], self._names("p2", "eval"))
+
+    def test_a_name_being_evaluated_stops_review_at_submit_even_with_force(self):
+        fx.make_bundle(self.opts, "p2", "top.1000")
+        src = self._pairs("top.1000")
+        for force in ((), ("-f",)):
+            with self.assertRaisesRegex(ValueError,
+                                        "top.1000 is being evaluated"):
+                fx.run_wf(*force, "-d", str(self.root),
+                          "review", "p2", str(src))
+            self.assertEqual([], self._names("p2", "queued"))
 
 
 class ReviewWordsTests(unittest.TestCase):
