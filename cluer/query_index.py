@@ -10,6 +10,7 @@
     sort pairs.txt | python cluer/query_index.py -f - --sorted-input
     python cluer/query_index.py -e "new york"
     python cluer/query_index.py -a PEAR
+    python cluer/query_index.py --letters LETTERS --dict words.txt
 
 Space-separated QUERY words, or comma-separated words on each line of FILE,
 can occur anywhere in a clue, in any order. -f prints each input query that
@@ -32,6 +33,12 @@ QUERY and -a print matches as "offset clue -> answers", as in find.py. --json
 changes result lines to JSON, including the query and answer reference low
 bits. Queries with no matches emit nothing. -a finds an exact answer and
 prints its linked clues.
+--letters prints, sorted, each first,second pair of different words that are
+adjacent in some clue, are both in --dict FILE (- for stdin) and at least -m N
+letters long (default 3), and fit together within LETTERS. It prints the
+lines that -f - -j prints for the output of nutrimatic's pairs LETTERS -m N
+given the index tokens in FILE, in a different order, without enumerating
+every pair that fits.
 --threads N checks -f -j input chunks on N threads (0 = one per CPU).
 Output order is the same as with one thread. Other modes run on one thread.
 --sorted-input speeds up -f when lines sharing a first word are consecutive
@@ -43,7 +50,8 @@ import argparse
 import os
 from pathlib import Path
 
-from index import DEFAULT_DATA, DEFAULT_INDEX, query, query_answer
+from index import (DEFAULT_DATA, DEFAULT_INDEX, print_letter_pairs,
+                   query, query_answer)
 
 
 def main() -> None:
@@ -68,6 +76,12 @@ def main() -> None:
                         help="with -f -j, threads to use (0 = one per CPU)")
     parser.add_argument("-a", "--answer", metavar="ANSWER",
                         help="find clues linked to this exact answer")
+    parser.add_argument("--letters", metavar="LETTERS",
+                        help="print adjacent word pairs that fit in LETTERS")
+    parser.add_argument("--dict", metavar="FILE",
+                        help="with --letters, allowed words, or - for stdin")
+    parser.add_argument("-m", "--min-length", type=int, metavar="N",
+                        help="with --letters, minimum word length (default 3)")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA,
                         help="cluedata file (default: cluer/data/cluedata)")
     parser.add_argument("--index", type=Path, default=DEFAULT_INDEX,
@@ -76,8 +90,19 @@ def main() -> None:
                         help="format displayed clue results as JSON")
     args = parser.parse_args()
     if sum(value is not None for value in
-           (args.query, args.file, args.answer)) != 1:
-        parser.error("provide exactly one of QUERY, -f/--file, or -a/--answer")
+           (args.query, args.file, args.answer, args.letters)) != 1:
+        parser.error("provide exactly one of QUERY, -f/--file, -a/--answer, "
+                     "or --letters")
+    if (args.letters is None) != (args.dict is None):
+        parser.error("--letters and --dict go together")
+    if args.letters is not None:
+        ignored = [flag for flag, used in (
+            ("-j/--adjacent", args.adjacent), ("-e/--exact", args.exact),
+            ("--forward", args.forward), ("--json", args.json)) if used]
+        if ignored:
+            parser.error(f"--letters cannot be used with {', '.join(ignored)}")
+    elif args.min_length is not None:
+        parser.error("-m/--min-length requires --letters")
     if args.results and args.file is None:
         parser.error("--results requires -f/--file")
     if args.sorted_input and args.file is None:
@@ -98,7 +123,12 @@ def main() -> None:
                      "without -r/--results")
     threads = args.threads or os.cpu_count() or 1
     try:
-        if args.answer is not None:
+        if args.letters is not None:
+            print_letter_pairs(args.data, args.index, args.letters,
+                               args.dict,
+                               3 if args.min_length is None
+                               else args.min_length)
+        elif args.answer is not None:
             query_answer(args.data, args.index, args.answer,
                          json_output=args.json)
         else:

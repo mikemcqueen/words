@@ -338,6 +338,28 @@ class CluerIndexTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("does not match cluedata", result.stderr)
 
+    def test_letter_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "cluedata"
+            index = root / "index"
+            words = root / "words.txt"
+            data.write_bytes(cluedata(
+                ["APPLE"],
+                [(clue, [0]) for clue in (
+                    "New York", "York minster", "Big apple", "Big big",
+                )],
+            ))
+            words.write_text("new\nyork\nbig\napple\nminster\n")
+            result = self.run_tool("build_index.py", "--data", data,
+                                   "--index", index)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = self.run_tool("query_index.py", "--letters",
+                                   "newyorkbigapple", "--dict", words,
+                                   "--data", data, "--index", index)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "apple,big\nnew,york\n")
+
 
 if __name__ == "__main__":
     unittest.main()

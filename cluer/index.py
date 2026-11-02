@@ -337,6 +337,51 @@ def threaded_results(chunks, threads: int, function, *args):
                 future.cancel()
 
 
+def print_letter_pairs(data_path: Path, index_path: Path, letters: str,
+                       dict_path: str, min_length: int) -> None:
+    """Print "first,second" for each adjacent clue word pair that fits.
+
+    A pair is printed once, as first,second with first before second in
+    tokens.txt order, when the words differ, are both in dict_path and at
+    least min_length long, and their letters together fit within letters.
+    Output is sorted.
+    """
+    validate_index(data_path, index_path)
+    if not letters.isascii() or not letters.isalpha():
+        raise ValueError(f"letters must be a-z: {letters!r}")
+    bag_bytes = letters.lower().encode("ascii")
+    bag = np.bincount(np.frombuffer(bag_bytes, np.uint8) - 97, minlength=26)
+    tokens = (index_path / "tokens.txt").read_bytes().splitlines()
+    source = sys.stdin.buffer if dict_path == "-" else open(dict_path, "rb")
+    try:
+        allowed = set(source.read().splitlines())
+    finally:
+        if dict_path != "-":
+            source.close()
+    counts = np.zeros((len(tokens), 26), dtype=np.int64)
+    fits = np.zeros(len(tokens), dtype=bool)
+    for i, token in enumerate(tokens):
+        if len(token) >= min_length and token.isalpha() and token in allowed:
+            token_counts = np.bincount(np.frombuffer(token, np.uint8) - 97,
+                                       minlength=26)
+            if (token_counts <= bag).all():
+                counts[i] = token_counts
+                fits[i] = True
+    bigrams = np.load(index_path / "bigrams.npy")
+    first = (bigrams >> np.uint64(32)).astype(np.int64)
+    second = (bigrams & np.uint64(U32_MAX)).astype(np.int64)
+    keep = fits[first] & fits[second] & (first != second)
+    first, second = first[keep], second[keep]
+    keep = (counts[first] + counts[second] <= bag).all(axis=1)
+    first, second = first[keep], second[keep]
+    keys = np.unique(np.minimum(first, second) << 32
+                     | np.maximum(first, second))
+    sys.stdout.buffer.write(b"".join(
+        tokens[key >> 32] + b"," + tokens[key & U32_MAX] + b"\n"
+        for key in keys.tolist()
+    ))
+
+
 def clue_word_index(postings: np.ndarray, starts: list[int],
                     clue_count: int) -> tuple[np.ndarray, np.ndarray]:
     """Invert postings into (clue_start, words): each clue's word ids."""
