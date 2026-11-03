@@ -21,6 +21,7 @@
 # already placed -- open bundle or archive -- and disturbs the queue not at all.
 
 import argparse
+import os
 import subprocess
 import tempfile
 
@@ -34,6 +35,22 @@ CHUNK_SIZE = 400
 # The bound is the title scheme's, not the note store's: a part suffix is one
 # letter, .aa through .az.
 MAX_PARTS = 26
+
+# Every `note --create` and `note --get` uses clue type f.72, whose notebook is
+# the production one. The tests set WF_TEST_NOTEBOOK to a scratch notebook's
+# name, which `note --notebook` uses in place of the production notebook.
+NOTEBOOK_ENV = "WF_TEST_NOTEBOOK"
+CLUE_TYPE = "f.72"
+
+
+def note_options() -> list[str]:
+    """The `note` options selecting the clue type and, under test, the notebook."""
+    options = [f"-p{CLUE_TYPE}"]
+    notebook = os.environ.get(NOTEBOOK_ENV)
+    if notebook:
+        options.append(f"--notebook={notebook}")
+    return options
+
 
 TWO_CHECKBOXES = "two-checkboxes"
 ONE_CHECKBOX = "checkbox"
@@ -115,7 +132,7 @@ def create(paths: list[Path], yes_pairs: Path | None = None,
     for path in paths:
         try:
             subprocess.run(
-                ["note", "-pf.72", "--create", f"{path}", *options],
+                ["note", *note_options(), "--create", f"{path}", *options],
                 stdout=subprocess.DEVNULL, check=True)
         except (OSError, subprocess.CalledProcessError) as error:
             succeeded = "\n".join(f"  {p.name}" for p in created)

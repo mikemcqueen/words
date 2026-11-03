@@ -490,8 +490,8 @@ class NoteCreationTests(unittest.TestCase):
             notes.create([path], checked="YES")
 
         run.assert_called_once_with(
-            ["note", "-pf.72", "--create", str(path), "--text",
-             "--two-checkboxes", "--production", "--checked", "YES"],
+            ["note", "-pf.72", "--notebook=0.Test", "--create", str(path),
+             "--text", "--two-checkboxes", "--production", "--checked", "YES"],
             stdout=subprocess.DEVNULL, check=True)
 
 

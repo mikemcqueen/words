@@ -57,7 +57,8 @@ def run_step(ctx) -> None:
             fetched += 1
             continue
 
-        result = subprocess.run(["note", "-pf.72", "--get", title, "--production"],
+        result = subprocess.run(["note", *notes.note_options(), "--get", title,
+                                 "--production"],
                                 capture_output=True, text=True)
         if result.returncode != 0:
             if "note not found" in result.stderr:

@@ -8,13 +8,19 @@
 
 import io
 import json
+import os
 import unittest
 
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from src import compare_native
-from workflow import config, init, usage, wf
+from workflow import config, init, notes, usage, wf
+
+# Any test that reaches the real `note` program works in the scratch notebook
+# 0.Test, never the production notebook.
+TEST_NOTEBOOK = "0.Test"
+os.environ[notes.NOTEBOOK_ENV] = TEST_NOTEBOOK
 
 
 # ---------------------------------------------------------------- workflow tree
