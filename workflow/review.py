@@ -2,8 +2,9 @@
 #
 # `submit` then `eval` in one step. Nothing of its own: the file goes to the
 # phase's submit, and the flags go to the phase's eval, which owns them. The
-# one exception is submit's own flag: `--as` goes to submit, and every other
-# flag to eval.
+# exception is submit's own flags: `--as` (and, for words, `--separate`) go to
+# submit, and every other flag to eval. A `--separate` submission queues
+# several files, and each is evaluated as its own bundle.
 
 import argparse
 
@@ -93,6 +94,7 @@ class ReviewWords(command.Action):
         p = argparse.ArgumentParser(add_help=False)
         p.add_argument("--as", dest="as_name", metavar="NAME",
                        help="queue and archive name (given to submit)")
+        submit.add_separate(p)
         return p
 
     def run(self, command, opts, argv) -> int:
@@ -111,30 +113,49 @@ class ReviewWords(command.Action):
         if argv.count(src) > 1:
             raise ValueError(f"{src} is given more than once; "
                              f"use `wf submit words` and `wf eval words`")
-        submit_argv = [src]
-        if opts.as_name is not None:
-            submit_argv += ["--as", opts.as_name]
-        # Everything but --as is eval's; submit's own parser takes it out.
+        # Everything but --as and --separate is eval's; submit's own parser
+        # takes them out.
         _, eval_argv = submit.WORDS.parser().parse_known_args(argv)
-        code = submit.WORDS.run("submit words", opts, submit_argv)
-        if code != 0:
-            return code
+        queued = submit.WORDS.queue(opts, Path(src), opts.as_name,
+                                    opts.separate)
 
-        queued = opts.as_name if opts.as_name is not None else Path(src).name
-        eval_argv = [queued if arg == src else arg for arg in eval_argv]
-        try:
-            code = evaluate.WORDS.run("eval words", opts, eval_argv)
-        except Exception:
-            self._hint(opts, queued)
-            raise
-        if code != 0:
-            self._hint(opts, queued)
-        return code
+        # Each part is its own bundle, evaluated in order; a failure stops at
+        # that part and leaves the rest queued.
+        for index, name in enumerate(queued):
+            part_argv = [name if arg == src else arg for arg in eval_argv]
+            try:
+                code = evaluate.WORDS.run("eval words", opts, part_argv)
+            except Exception:
+                self._hint(opts, queued, index)
+                raise
+            if code != 0:
+                self._hint(opts, queued, index)
+                return code
+        return 0
 
-    def _hint(self, opts, queued: str) -> None:
-        if (config.path(opts.dir, ["dict", "queued"]) / queued).is_file():
-            log.warn(f"{queued} is still queued; continue with "
-                     f"`wf eval words {queued}`")
+    def _hint(self, opts, queued: list[str], failed: int) -> None:
+        """Say where every part stands and what continues each one.
+
+        Read from the filesystem, not from how far the loop got: a part
+        whose source is still queued needs `eval words` (which also finishes
+        an interrupted one), and the failed part whose source was already
+        moved into its bundle needs its notes recreated.
+        """
+        queued_dir = config.path(opts.dir, ["dict", "queued"])
+        eval_dir = config.path(opts.dir, ["dict", "eval"])
+        if len(queued) > 1:
+            log.warn(f"{failed} of {len(queued)} parts evaluated "
+                     f"before the failure:")
+        for index, name in enumerate(queued):
+            if (queued_dir / name).is_file():
+                log.warn(f"{name} is still queued; continue with "
+                         f"`wf eval words {name}`")
+            elif index == failed and (eval_dir / name / name).is_file():
+                log.warn(f"{name} is open but its notes may be incomplete; "
+                         f"delete any of its notes that were created, then "
+                         f"run `wf notes words {name}`")
+            elif index < failed:
+                log.warn(f"{name} is open for review with its notes")
 
 
 WORDS = ReviewWords()

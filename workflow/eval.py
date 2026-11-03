@@ -180,13 +180,12 @@ class EvalWords(command.Action):
         super().__init__(summary="words   — evaluate dictionary words for manual review",
                          positional="NAME")
 
-    def check(self, opts) -> None:
-        """What must hold before anything is opened; see `Eval.check`."""
-        for classified in (config.yes_words(opts.dir),
-                           config.no_words(opts.dir)):
-            if not classified.is_file():
-                raise ValueError(f"dictionary verdicts not generated: "
-                                 f"{classified}; run `wf gen dict`")
+    def check(self, opts) -> list[Path]:
+        """What must hold before anything is opened; see `Eval.check`.
+
+        Returns the verdict files the source is filtered by.
+        """
+        return dictionary.classified_files(opts.dir)
 
     def run(self, command_text, opts, argv) -> int:
         rest = self.parse(opts, argv)
@@ -196,9 +195,8 @@ class EvalWords(command.Action):
             return usage.invalid_argument(rest[1],
                                           self.format_help(command_text))
 
-        self.check(opts)
+        classified = self.check(opts)
         bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", rest[0])
-        classified = [config.yes_words(opts.dir), config.no_words(opts.dir)]
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)
 

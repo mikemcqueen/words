@@ -97,6 +97,130 @@ class DictionaryReviewTests(unittest.TestCase):
         self.assertEqual(b" 2 pear\n\n 1 apple", queued.read_bytes())
         self.assertIn(self.NAME, stdout)
 
+    def _queued(self):
+        return sorted(p.name for p in config.path(
+            self.root, ["dict", "queued"]).iterdir())
+
+    def test_separate_cuts_byte_exact_parts_by_unclassified_count(self):
+        config.no_words(self.root).write_text("apple\n")
+        text = (" 9 apple\n" + "".join(f" 1 w{c}\n" for c in "abcde")
+                + "\n 2 apple\n")
+        source = self.root / "ranked.words"
+        source.write_text(text)
+        with mock.patch.object(notes, "CHUNK_SIZE", 2):
+            code, stdout, stderr = self.run_cli(
+                "submit", "words", str(source), "--as", "big", "--separate")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["big.1", "big.2", "big.3"], self._queued())
+        queued = config.path(self.root, ["dict", "queued"])
+        got = [(queued / n).read_text() for n in self._queued()]
+        self.assertEqual(" 9 apple\n 1 wa\n 1 wb\n", got[0])
+        self.assertEqual(" 1 wc\n 1 wd\n", got[1])
+        self.assertEqual(" 1 we\n\n 2 apple\n", got[2])
+        self.assertEqual(text, "".join(got))
+
+    def test_separate_pads_suffixes_to_the_part_count(self):
+        source = self.root / "ranked.words"
+        source.write_text("".join(f"w{c}\n" for c in "abcdefghijk"))
+        with mock.patch.object(notes, "CHUNK_SIZE", 1):
+            code, _, stderr = self.run_cli("submit", "words", str(source),
+                                           "--as", "big", "--separate")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual([f"big.{i:02d}" for i in range(1, 12)],
+                         self._queued())
+
+    def test_separate_keeps_the_plain_name_for_one_part(self):
+        source = self.root / "ranked.words"
+        source.write_text(" 2 pear\n 1 apple\n")
+        code, _, stderr = self.run_cli("submit", "words", str(source),
+                                       "--as", "small", "--separate")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["small"], self._queued())
+
+    def test_separate_refuses_nothing_to_review(self):
+        config.no_words(self.root).write_text("apple\n")
+        source = self.root / "ranked.words"
+        source.write_text(" 1 apple\n")
+        with self.assertRaisesRegex(ValueError, "no unclassified words"):
+            self.run_cli("submit", "words", str(source), "--separate")
+        self.assertEqual([], self._queued())
+
+    def test_separate_refuses_any_earlier_submission_even_with_force(self):
+        queued = config.path(self.root, ["dict", "queued"])
+        eval_dir = config.path(self.root, ["dict", "eval"])
+        source = self.root / "ranked.words"
+        source.write_text("wa\nwb\nwc\n")
+        for earlier in (queued / "big", queued / "big.01", eval_dir / "big.7"):
+            with self.subTest(earlier=earlier.name):
+                if earlier.parent == eval_dir:
+                    earlier.mkdir()
+                else:
+                    earlier.write_text("x\n")
+                with mock.patch.object(notes, "CHUNK_SIZE", 2):
+                    with self.assertRaisesRegex(
+                            ValueError, f"earlier submissions of big exist:"
+                                        f"\n  .*{earlier.name}\n"):
+                        self.run_cli("-f", "submit", "words", str(source),
+                                     "--as", "big", "--separate")
+                self.assertEqual(
+                    [] if earlier.parent == eval_dir else [earlier.name],
+                    self._queued())
+                if earlier.parent == eval_dir:
+                    earlier.rmdir()
+                else:
+                    earlier.unlink()
+
+    def test_separate_ignores_names_that_only_share_a_prefix(self):
+        queued = config.path(self.root, ["dict", "queued"])
+        (queued / "big.words").write_text("x\n")
+        (queued / "bigger").write_text("x\n")
+        source = self.root / "ranked.words"
+        source.write_text("wa\nwb\nwc\n")
+        with mock.patch.object(notes, "CHUNK_SIZE", 2):
+            code, _, stderr = self.run_cli("submit", "words", str(source),
+                                           "--as", "big", "--separate")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["big.1", "big.2", "big.words", "bigger"],
+                         self._queued())
+
+    def test_review_separate_evaluates_every_part(self):
+        source = self.root / "ranked.words"
+        source.write_text("wa\nwb\nwc\n")
+        with mock.patch.object(notes, "CHUNK_SIZE", 2), \
+                mock.patch.object(notes, "make", return_value=[]) as make:
+            code, _, stderr = self.run_cli("review", "words", str(source),
+                                           "--as", "big", "--separate")
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(2, make.call_count)
+        self.assertEqual([], self._queued())
+        eval_dir = config.path(self.root, ["dict", "eval"])
+        self.assertEqual(["big.1", "big.2"],
+                         sorted(p.name for p in eval_dir.iterdir()))
+
+    def test_review_separate_failure_names_every_part_and_its_next_step(self):
+        source = self.root / "ranked.words"
+        source.write_text("wa\nwb\nwc\nwd\nwe\n")
+        calls = []
+        def fail_second(*args, **kwargs):
+            calls.append(args[0])
+            if len(calls) == 2:
+                raise ValueError("note creation failed")
+            return []
+        with mock.patch.object(notes, "CHUNK_SIZE", 2), \
+                mock.patch.object(notes, "make", side_effect=fail_second), \
+                mock.patch("workflow.log.warn") as warn:
+            with self.assertRaisesRegex(ValueError, "note creation failed"):
+                self.run_cli("review", "words", str(source),
+                             "--as", "big", "--separate")
+        self.assertEqual(["big.3"], self._queued())
+        text = "\n".join(c.args[0] for c in warn.call_args_list)
+        self.assertIn("1 of 3 parts evaluated", text)
+        self.assertIn("big.1 is open for review with its notes", text)
+        self.assertIn("`wf notes words big.2`", text)
+        self.assertIn("`wf eval words big.3`", text)
+        self.assertNotIn("wf eval words big.2", text)
+
+
     def test_submit_rejects_a_symlink_without_publishing(self):
         source = self.root / "real.words"
         source.write_text("apple\n")

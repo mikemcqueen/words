@@ -214,21 +214,56 @@ class FilterResult:
         return self.filtered_words != 0
 
 
+def classified_files(root: Path) -> list[Path]:
+    """The YES and NO verdict unions a submitted word list is filtered by.
+
+    Both are derived files; a workflow that has never run `wf gen dict` has
+    neither, and filtering against a missing one would silently pass every
+    word through.
+    """
+    files = [config.yes_words(root), config.no_words(root)]
+    for classified in files:
+        if not classified.is_file():
+            raise ValueError(f"dictionary verdicts not generated: "
+                             f"{classified}; run `wf gen dict`")
+    return files
+
+
+def classified_set(classified: list[Path]) -> set[str]:
+    """Every word in the given verdict files."""
+    words: set[str] = set()
+    for path in classified:
+        fs.raise_if_not_file(path)
+        words.update(read_words(path))
+    return words
+
+
+def unclassified_rows(source: Path, classified: set[str]):
+    """Each row of source, unchanged, with whether eval's filter keeps it.
+
+    The one rule for which rows survive, shared by `eval words` and
+    `submit words --separate`, so the parts submit cuts are the parts eval
+    sees. Rows keep their own line endings; blank rows and classified words
+    are not kept.
+    """
+    with source.open("r", newline="") as incoming:
+        for number, line in enumerate(incoming, start=1):
+            identity = parse_word_row(source, number, line.rstrip("\r\n"))
+            yield line, identity, (identity is not None
+                                   and identity not in classified)
+
+
 def filter_classified_words(source: Path, classified: list[Path],
                             staged: Path) -> FilterResult:
     """Write unclassified presentation rows in order without moving source."""
-    classified_set: set[str] = set()
-    for path in classified:
-        fs.raise_if_not_file(path)
-        classified_set.update(read_words(path))
+    known = classified_set(classified)
     source_words = surviving = filtered_count = 0
-    with source.open("r") as incoming, staged.open("w") as outgoing:
-        for number, line in enumerate(incoming, start=1):
-            identity = parse_word_row(source, number, line.rstrip("\r\n"))
+    with staged.open("w") as outgoing:
+        for line, identity, kept in unclassified_rows(source, known):
             if identity is None:
                 continue
             source_words += 1
-            if identity in classified_set:
+            if not kept:
                 filtered_count += 1
                 continue
             outgoing.write(line.rstrip("\r\n") + "\n")
