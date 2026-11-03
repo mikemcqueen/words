@@ -265,11 +265,12 @@ def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]
 
 
 def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
-                   bigrams: np.ndarray, forward: bool
+                   bigrams: np.ndarray, forward: bool, invert: bool = False
                    ) -> tuple[list[bytes], bytes | None]:
     """Return (matching query lines, first malformed line or None).
 
-    Matches are only those before the malformed line.
+    Matches are only those before the malformed line. With invert, the
+    query lines returned are those that do not match.
     """
     queries = [line.rstrip(b"\r\n") for line in lines]
     ids, well_formed = adjacent_ids(queries, word_ids)
@@ -288,14 +289,18 @@ def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
     if not forward:
         keys = np.concatenate((keys, second << np.uint64(32) | first))
     found = known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0)
+    if invert:
+        found = ~found
     matches = [queries[i] for i in np.flatnonzero(found[:end])]
     return matches, queries[end] if end < len(queries) else None
 
 
 def print_adjacent_queries(source, word_ids: dict[bytes, int],
                            bigrams: np.ndarray, forward: bool,
-                           threads: int = 1) -> None:
+                           threads: int = 1, invert: bool = False) -> None:
     """Print -f -j query lines whose two words are adjacent in some clue.
+
+    With invert, print the lines whose words are not adjacent in any clue.
 
     Lines are checked a chunk at a time against the sorted bigram keys.
     With threads > 1, chunks are checked on a thread pool and printed in
@@ -303,11 +308,11 @@ def print_adjacent_queries(source, word_ids: dict[bytes, int],
     """
     chunks = iter(lambda: list(islice(source, ADJACENT_CHUNK)), [])
     if threads == 1:
-        results = (adjacent_chunk(lines, word_ids, bigrams, forward)
+        results = (adjacent_chunk(lines, word_ids, bigrams, forward, invert)
                    for lines in chunks)
     else:
         results = threaded_results(chunks, threads, adjacent_chunk,
-                                   word_ids, bigrams, forward)
+                                   word_ids, bigrams, forward, invert)
     for matches, bad_line in results:
         if matches:
             print(b"\n".join(matches).decode("utf-8", errors="replace"))
@@ -422,7 +427,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
           json_output: bool = False, show_results: bool = False,
           adjacent: bool = False, exact: bool = False,
           forward: bool = False, sorted_input: bool = False,
-          threads: int = 1) -> None:
+          threads: int = 1, invert: bool = False) -> None:
     if (adjacent and input_path is None
             and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
         raise ValueError(
@@ -459,13 +464,19 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
         if chunked:
             print_adjacent_queries(source, word_ids,
                                    np.load(index_path / "bigrams.npy"), forward,
-                                   threads)
+                                   threads, invert)
             return
         with data_path.open("rb") as stream, mmap.mmap(
             stream.fileno(), 0, access=mmap.ACCESS_READ
         ) as data:
+            # With invert, the previous line is printed when the next one
+            # starts (or the input ends) unless a match cleared it.
+            unmatched = None
             for line in source:
+                if unmatched is not None:
+                    print(unmatched.decode("utf-8", errors="replace"))
                 raw_query = line.rstrip(b"\r\n")
+                unmatched = raw_query if invert else None
                 if adjacent or exact:
                     separator = b" " if input_path is None else b","
                     parts = raw_query.lower().split(separator)
@@ -535,7 +546,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     if not lead_neighbors[word_ids[other]]:
                         continue
                     if query_only:
-                        print(raw_query.decode("utf-8", errors="replace"))
+                        if invert:
+                            unmatched = None
+                        else:
+                            print(raw_query.decode("utf-8", errors="replace"))
                         continue
                 ids = sorted((word_ids[word] for word in words),
                              key=lambda i: starts[i + 1] - starts[i])
@@ -550,7 +564,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                 if not len(matches):
                     continue
                 if query_only:
-                    print(raw_query.decode("utf-8", errors="replace"))
+                    if invert:
+                        unmatched = None
+                    else:
+                        print(raw_query.decode("utf-8", errors="replace"))
                     continue
                 printed_query = False
                 for clue_id in matches:
@@ -567,6 +584,9 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         clue_words = iter(clean_words(clue))
                         if not all(word in clue_words for word in ordered_words):
                             continue
+                    if invert:
+                        unmatched = None
+                        break
                     if input_path is not None and not printed_query:
                         print(raw_query.decode("utf-8", errors="replace"))
                         printed_query = True
@@ -588,6 +608,8 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     else:
                         answer_text = ", ".join(ref["answer"] for ref in decoded_refs)
                         print(f"0x{offset:x} {clue_text!r} -> {answer_text}")
+            if unmatched is not None:
+                print(unmatched.decode("utf-8", errors="replace"))
     finally:
         if input_path not in (None, "-"):
             source.close()

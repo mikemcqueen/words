@@ -6,6 +6,7 @@
     python cluer/query_index.py -f terms.txt
     python cluer/query_index.py -f terms.txt --forward
     python cluer/query_index.py -f terms.txt -r
+    python cluer/query_index.py -f terms.txt -v
     python cluer/query_index.py -f - < terms.txt
     sort pairs.txt | python cluer/query_index.py -f - --sorted-input
     python cluer/query_index.py -e "new york"
@@ -15,6 +16,8 @@
 Space-separated QUERY words, or comma-separated words on each line of FILE,
 can occur anywhere in a clue, in any order. -f prints each input query that
 matches at least one clue; -r also prints its matching clues after the query.
+-v instead prints each input query that matches no clue, including queries
+with a word that is not in the index; it cannot be used with -r.
 With -j, QUERY must be two alphanumeric words separated by one space, or each
 FILE line must be two such words separated by a comma. Only clues where the
 two words are adjacent, in either order, match. As in nutrimatic's
@@ -64,6 +67,8 @@ def main() -> None:
                         help="one comma-separated query per line, or - for stdin")
     parser.add_argument("-r", "--results", action="store_true",
                         help="with -f, print matching clues after each query")
+    parser.add_argument("-v", "--invert-match", action="store_true",
+                        help="with -f, print queries that match no clue")
     parser.add_argument("-j", "--adjacent", action="store_true",
                         help="require two words adjacent in either order")
     parser.add_argument("-e", "--exact", action="store_true",
@@ -105,6 +110,10 @@ def main() -> None:
         parser.error("-m/--min-length requires --letters")
     if args.results and args.file is None:
         parser.error("--results requires -f/--file")
+    if args.invert_match and args.file is None:
+        parser.error("-v/--invert-match requires -f/--file")
+    if args.invert_match and args.results:
+        parser.error("-v/--invert-match cannot be used with -r/--results")
     if args.sorted_input and args.file is None:
         parser.error("--sorted-input requires -f/--file")
     if args.exact and args.adjacent:
@@ -136,7 +145,7 @@ def main() -> None:
                   json_output=args.json, show_results=args.results,
                   adjacent=args.adjacent, exact=args.exact,
                   forward=args.forward, sorted_input=args.sorted_input,
-                  threads=threads)
+                  threads=threads, invert=args.invert_match)
     except (OSError, ValueError, KeyError, IndexError) as exc:
         parser.exit(1, f"{parser.prog}: {exc}\n")
 

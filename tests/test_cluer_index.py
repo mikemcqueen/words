@@ -90,6 +90,10 @@ class CluerIndexTests(unittest.TestCase):
                 ("york,new", "New-York"),
             ])
 
+            result = exact("-f", terms, "-v")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(), ["missing"])
+
             for query in ("", "new york city", "new,york", "new-york"):
                 result = exact(query)
                 self.assertEqual(result.returncode, 1, result.stderr)
@@ -162,6 +166,16 @@ class CluerIndexTests(unittest.TestCase):
             self.assertEqual(result.stdout.splitlines(),
                              ["firewood,wood", "n,roll", "new,york",
                               "teal,lamp"])
+
+            for threads in ("1", "2"):
+                result = adjacent("-f", terms, "-v", "--threads", threads)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ["wood,wood"])
+
+            result = adjacent("-f", terms, "-v", "--forward")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(),
+                             ["wood,wood", "stop,dont", "now,stop"])
 
             bad_terms = root / "bad_terms.txt"
             bad_terms.write_text("firewood,wood\nnew york\nn,roll\n")
@@ -246,6 +260,28 @@ class CluerIndexTests(unittest.TestCase):
                                    "--index", index)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(), ["new,york", "ch,teau"])
+
+            for extra in ((), ("--forward",), ("--sorted-input",)):
+                result = self.run_tool("query_index.py", "-f", pairs, "-v",
+                                       *extra, "--data", data, "--index", index)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), ["missing,word"])
+
+            result = self.run_tool("query_index.py", "-f", terms, "-v",
+                                   "--data", data, "--index", index)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(),
+                             ["art,missing", "___,???"])
+
+            result = self.run_tool("query_index.py", "-f", pairs, "-v", "-r",
+                                   "--data", data, "--index", index)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+
+            result = self.run_tool("query_index.py", "new york", "-v",
+                                   "--data", data, "--index", index)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
 
             result = self.run_tool("query_index.py", "-f", pairs, "-r",
                                    "--data", data, "--index", index)
