@@ -67,7 +67,7 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(["apple", "cherry"], self._lines(self.small_derived))
         self.assertEqual(BASE, self.base.read_text())
         self.assertEqual(SMALL, self.small_base.read_text())
-        self.assertIn("2 words submitted, 2 new to the removal union, "
+        self.assertIn("2 NO words submitted, 2 new to the removal union, "
                       "2 newly removed from the dictionary", stdout)
 
     def test_a_removal_of_a_word_not_in_the_base_costs_nothing_downstream(self):
@@ -84,40 +84,31 @@ class DictionaryTests(unittest.TestCase):
                            marker)
         # Recorded all the same: what was submitted is a fact worth keeping.
         self.assertTrue((self.removals / "second.txt.removed.2").is_file())
-        self.assertIn("1 words submitted, 1 new to the removal union, "
+        self.assertIn("1 NO words submitted, 1 new to the removal union, "
                       "0 newly removed from the dictionary", stdout)
         self.assertIn("words.filtered 4 (unchanged)", stdout)
 
-    def test_resubmitting_an_already_removed_word_counts_as_zero(self):
+    def test_resubmitting_a_standing_no_is_a_quiet_no_op(self):
         """The delta is against the removal union, not against the base.
 
-        A removed word remains in words.big, so counting every submitted base
-        word would make a resubmission look effective. A reviewed word is
-        refused outright, so the word has to be reopened first.
+        A standing NO is written to the new removed.N too, so each round's
+        records say what it decided, and re-recording it never warns.
         """
         self._base()
         self._remove("junk.txt", "banana\n")
-        (self.reviewed_inputs / "junk.txt.reviewed.1").unlink()
-        self._gen()
-        _, stdout, _ = self._remove("again.txt", "banana\n")
+        code, stdout, stderr = self._remove("again.txt", "banana\n")
 
-        self.assertIn("1 words submitted, 0 new to the removal union, "
+        self.assertEqual(0, code, stderr)
+        self.assertNotIn("without a verdict", stderr)
+        self.assertIn("1 NO words submitted, 0 new to the removal union, "
                       "0 newly removed from the dictionary", stdout)
+        self.assertEqual(["banana"],
+                         self._lines(self.removals / "again.txt.removed.2"))
+        self.assertEqual(["banana"],
+                         self._lines(self.reviewed_inputs
+                                     / "again.txt.reviewed.2"))
         self.assertEqual(["apple", "cherry", "date", "fig"],
                          self._lines(self.derived))
-
-    def test_a_submission_of_only_reviewed_words_is_refused(self):
-        self._base()
-        self._remove("junk.txt", "banana\n")
-        derived = self.derived.read_text()
-
-        with self.assertRaisesRegex(ValueError, "no unreviewed words"):
-            self._remove("again.txt", "banana\n")
-        self.assertEqual(["junk.txt.removed.1"],
-                         [p.name for p in self.removals.iterdir()])
-        self.assertEqual(["junk.txt.reviewed.1"],
-                         [p.name for p in self.reviewed_inputs.iterdir()])
-        self.assertEqual(derived, self.derived.read_text())
 
     def test_reviewed_words_are_the_rounds_whole_reviewed_input(self):
         self._base()
@@ -137,8 +128,8 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(["apple", "cherry", "date", "fig"],
                          self._lines(self.derived))
 
-    def test_reviewed_is_recorded_when_every_removal_filters_away(self):
-        """Removals already reviewed drop out; the kept words still land."""
+    def test_reviewed_is_recorded_when_every_removal_is_standing(self):
+        """Removals already NO are recorded again; the kept words still land."""
         self._base()
         self._remove("junk.txt", "banana\n")
         reviewed = self._submission("seen.txt", "banana\ncherry\ndate\n")
@@ -148,7 +139,8 @@ class DictionaryTests(unittest.TestCase):
             "--reviewed", str(reviewed))
 
         self.assertEqual(0, code, stderr)
-        self.assertEqual([], self._lines(self.removals / "again.txt.removed.2"))
+        self.assertEqual(["banana"],
+                         self._lines(self.removals / "again.txt.removed.2"))
         self.assertEqual(["banana", "cherry", "date"],
                          self._lines(self.reviewed_inputs
                                      / "again.txt.reviewed.2"))
@@ -156,7 +148,7 @@ class DictionaryTests(unittest.TestCase):
                          self._lines(self.reviewed_words))
         self.assertEqual(["apple", "cherry", "date", "fig"],
                          self._lines(self.derived))
-        self.assertIn("0 words submitted", stdout)
+        self.assertIn("1 NO words submitted, 0 new to the removal union", stdout)
 
     def test_reviewed_given_twice_is_refused(self):
         self._base()
@@ -172,7 +164,8 @@ class DictionaryTests(unittest.TestCase):
         self._base()
         reviewed = self._submission("seen.txt", "apple\n")
         with self.assertRaisesRegex(ValueError,
-                                    "1 removed words are not in .*\n  banana"):
+                                    "1 words in .*junk.txt are not in "
+                                    ".*seen.txt:\n  banana"):
             fx.run_wf("-d", str(self.root), "remove", "words",
                       str(self._submission("junk.txt", "banana\napple\n")),
                       "--reviewed", str(reviewed))
@@ -305,9 +298,10 @@ class DictionaryTests(unittest.TestCase):
     def test_a_word_is_restored_only_once_every_generation_drops_it(self):
         self._base()
         self._remove("first.txt", "banana\nfig\n")
-        (self.reviewed_inputs / "first.txt.reviewed.1").unlink()
+        # A second round holding the same word, as only a hand edit or an
+        # interrupted publication now leaves it.
+        (self.removals / "second.txt.removed.2").write_text("banana\n")
         self._gen()
-        self._remove("second.txt", "banana\n")
 
         # Trimming one occurrence leaves the word removed.
         (self.removals / "first.txt.removed.1").write_text("fig\n")
@@ -324,6 +318,69 @@ class DictionaryTests(unittest.TestCase):
         self._gen()
         self.assertEqual(["apple", "banana", "cherry", "date", "fig"],
                          self._lines(self.derived))
+
+    # ------------------------------------------------------------- verdicts
+
+    def _round(self, ordinal: int, reviewed: str, yes: str = "",
+               removed: str | None = None) -> None:
+        """A finished round written by hand, as `complete words` leaves one."""
+        (self.reviewed_inputs / f"r.yes.{ordinal}").write_text(yes)
+        if removed is not None:
+            (self.removals / f"r.removed.{ordinal}").write_text(removed)
+        (self.reviewed_inputs / f"r.reviewed.{ordinal}").write_text(reviewed)
+
+    def test_gen_dict_rebuilds_both_verdict_files_from_the_records(self):
+        self._base()
+        self._round(1, "apple\nbanana\ncherry\n", "apple\n", "banana\n")
+        code, stdout, stderr = self._gen()
+        self.assertEqual(0, code, stderr)
+        self.assertEqual(["apple"], self._lines(config.yes_words(self.root)))
+        self.assertEqual(["banana"], self._lines(config.no_words(self.root)))
+        self.assertIn("dict/done/yes.words 1 (new)", stdout)
+
+        (self.removals / "r.removed.1").write_text("")
+        self._gen()
+        self.assertEqual([], self._lines(config.no_words(self.root)))
+        self.assertIn("banana", self._lines(self.derived))
+
+    def test_removing_a_yes_word_fails_the_flip_guard(self):
+        self._base()
+        self._round(1, "apple\nbanana\n", "banana\n")
+        self._gen()
+        derived = self.derived.read_text()
+
+        for extra in ((), ("--force-verdicts",)):
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "cannot record 1 NO words already classified YES:\n"
+                        "  banana  dict/done/in/r.yes.1\n"
+                        "no dictionary records were changed\n"
+                        "correct .*junk.txt, then rerun `wf remove words`"):
+                    fx.run_wf("-d", str(self.root), "remove", "words",
+                              str(self._submission("junk.txt", "banana\n")),
+                              *extra)
+        self.assertEqual([], list(self.removals.iterdir()))
+        self.assertEqual(derived, self.derived.read_text())
+
+    def test_removing_a_word_reviewed_without_a_verdict_needs_force(self):
+        self._base()
+        self._round(1, "apple\ncherry\n", "apple\n")
+        self._gen()
+
+        with self.assertRaisesRegex(ValueError,
+                                    "1 words were reviewed earlier without a "
+                                    "verdict; rerun with --force-verdicts"):
+            self._remove("junk.txt", "cherry\n")
+        self.assertEqual([], list(self.removals.iterdir()))
+
+        code, _, stderr = fx.run_wf(
+            "-d", str(self.root), "remove", "words",
+            str(self._submission("junk.txt", "cherry\n")), "--force-verdicts")
+        self.assertEqual(0, code, stderr)
+        self.assertIn("cherry was reviewed 1 times without a verdict", stderr)
+        self.assertNotIn("cherry", self._lines(self.derived))
+        self.assertEqual(["cherry"], self._lines(config.no_words(self.root)))
 
     def test_a_retraction_leaves_the_reviewed_done_set_alone(self):
         """The two records answer different questions, and diverge on purpose.

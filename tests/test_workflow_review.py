@@ -224,7 +224,7 @@ class ReviewWordsTests(unittest.TestCase):
         return sorted(p.name for p in fx.slot(self.opts, ["dict", slot]).iterdir())
 
     def test_queues_and_opens_the_bundle_under_the_as_name(self):
-        config.reviewed_words(self.root).write_text("apple\n")
+        config.yes_words(self.root).write_text("apple\n")
         for argv in ((str(self.src), "--as", self.NAME),
                      ("--as", self.NAME + ".b", str(self.src))):
             code, stderr, make = self._review(*argv)
@@ -236,30 +236,23 @@ class ReviewWordsTests(unittest.TestCase):
             self.assertEqual(filtered, make.call_args.args[0])
         self.assertEqual([], self._names("queued"))
 
-    def test_as_goes_to_submit_and_checked_to_eval(self):
-        code, stderr, make = self._review("--checked", "yes", str(self.src),
-                                          "--as", self.NAME)
+    def test_as_goes_to_submit(self):
+        code, stderr, _ = self._review(str(self.src), "--as", self.NAME)
         self.assertEqual(0, code, stderr)
         self.assertEqual([self.NAME], self._names("eval"))
-        self.assertEqual("YES", make.call_args.args[1].checked)
 
     def test_the_file_given_twice_is_refused(self):
         with self.assertRaisesRegex(ValueError, "given more than once"):
             self._review(str(self.src), "--as", str(self.src))
         self.assertEqual([], self._names("queued"))
 
-    def test_checked_no_is_accepted(self):
-        code, stderr, make = self._review(str(self.src), "--checked", "NO")
-        self.assertEqual(0, code, stderr)
-        self.assertEqual("NO", make.call_args.args[1].checked)
-
     def test_without_as_the_file_name_is_the_bundle(self):
         code, stderr, _ = self._review(str(self.src))
         self.assertEqual(0, code, stderr)
         self.assertEqual(["ranked.words"], self._names("eval"))
 
-    def test_missing_reviewed_words_is_refused_before_anything_is_queued(self):
-        config.reviewed_words(self.root).unlink()
+    def test_missing_verdict_words_are_refused_before_anything_is_queued(self):
+        config.no_words(self.root).unlink()
         with self.assertRaisesRegex(ValueError, "run `wf gen dict`"):
             self._review(str(self.src))
         self.assertEqual([], self._names("queued"))

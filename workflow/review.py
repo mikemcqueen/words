@@ -5,6 +5,8 @@
 # one exception is submit's own flag: `--as` goes to submit, and every other
 # flag to eval.
 
+import argparse
+
 from pathlib import Path
 
 from workflow import (
@@ -88,7 +90,7 @@ class ReviewWords(command.Action):
             positional="FILE")
 
     def parser(self):
-        p = evaluate.WORDS.parser()
+        p = argparse.ArgumentParser(add_help=False)
         p.add_argument("--as", dest="as_name", metavar="NAME",
                        help="queue and archive name (given to submit)")
         return p

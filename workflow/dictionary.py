@@ -13,13 +13,13 @@
 # retraction, there being no un-remove command. Editing or deleting a generation
 # is the first half.
 #
-# Two records, answering two questions. `removed/<input>.removed.N` says what
-# was removed and by which round, and is mutable by design. `done/in/
-# <input>.reviewed.N` archives the round's whole submitted input -- every word
-# it covered, kept or removed -- so a word judged good does not come back at the
-# top of every candidate listing. A retraction changes the first and cannot
-# change the second, which is why they are not the redundancy a single folded
-# standing set would be.
+# Three records per round. `removed/<input>.removed.N` holds the round's NO
+# verdicts, the words removed, and is mutable by design so a removal can be
+# retracted. `done/in/<input>.yes.N` holds its YES verdicts. `done/in/
+# <input>.reviewed.N` archives every word the round listed, with or without a
+# verdict, and is placed last: it is the round's commit record. A word listed
+# with no verdict is undecided and comes back in a later review; see
+# plans/dict-verdicts.md for the guards that keep verdicts from flipping.
 #
 # Nothing here calls nutrimatic's dict_remove.py, which edits a hardcoded
 # dictionary in place. Three of its ideas carry over: the count-prefix strip,
@@ -49,6 +49,7 @@ WORD = re.compile(r"[a-z]+")
 
 REMOVED = "removed"
 REVIEWED = "reviewed"
+YES = "yes"
 
 # The workflow's own ordinal pattern (see best/state.py's review rounds), so no
 # new convention is introduced. Names that do not match are ignored rather than
@@ -80,6 +81,8 @@ class Tree:
     removals: Path
     reviewed_inputs: Path
     reviewed_words: Path
+    yes_words: Path
+    no_words: Path
     enex_archives: Path
 
     @property
@@ -96,6 +99,8 @@ def tree(root: Path) -> Tree:
                 removals=config.removals(root),
                 reviewed_inputs=config.reviewed_inputs(root),
                 reviewed_words=config.reviewed_words(root),
+                yes_words=config.yes_words(root),
+                no_words=config.no_words(root),
                 enex_archives=config.path(root, ["dict", "done", "out",
                                                 "enex"]))
 
@@ -136,8 +141,8 @@ def records(directory: Path, kind: str) -> list[tuple[int, Path]]:
     return found
 
 
-def _next_ordinal(removal_records, reviewed_records) -> int:
-    """One sequence across both archive namespaces, not one per stem.
+def _next_ordinal(*record_lists) -> int:
+    """One sequence across every archive namespace, not one per stem.
 
     Global is what makes it a generation counter -- N alone orders every
     submission and identifies one -- and it keeps two submissions of the same
@@ -145,7 +150,7 @@ def _next_ordinal(removal_records, reviewed_records) -> int:
     own 1 and lose the ordering. Reading both namespaces also stops a surviving
     half of an interrupted round from having its ordinal reused.
     """
-    ordinals = [ordinal for ordinal, _ in (*removal_records, *reviewed_records)]
+    ordinals = [ordinal for found in record_lists for ordinal, _ in found]
     return max(ordinals, default=0) + 1
 
 
@@ -181,8 +186,13 @@ def parse_word_row(path: Path, number: int, line: str) -> str | None:
     return word
 
 
+def word_text(words) -> str:
+    """Words as file text: one per line, each line ending in a newline."""
+    return "".join(f"{word}\n" for word in words)
+
+
 def write_words(path: Path, words) -> None:
-    path.write_text("".join(f"{word}\n" for word in words))
+    path.write_text(word_text(words))
 
 
 def listing(words: list[str], limit: int = 20) -> str:
@@ -204,11 +214,13 @@ class FilterResult:
         return self.filtered_words != 0
 
 
-def filter_reviewed_words(source: Path, reviewed: Path,
-                          staged: Path) -> FilterResult:
-    """Write unreviewed presentation rows in order without moving source."""
-    fs.raise_if_not_file(reviewed)
-    reviewed_set = set(read_words(reviewed))
+def filter_classified_words(source: Path, classified: list[Path],
+                            staged: Path) -> FilterResult:
+    """Write unclassified presentation rows in order without moving source."""
+    classified_set: set[str] = set()
+    for path in classified:
+        fs.raise_if_not_file(path)
+        classified_set.update(read_words(path))
     source_words = surviving = filtered_count = 0
     with source.open("r") as incoming, staged.open("w") as outgoing:
         for number, line in enumerate(incoming, start=1):
@@ -216,12 +228,23 @@ def filter_reviewed_words(source: Path, reviewed: Path,
             if identity is None:
                 continue
             source_words += 1
-            if identity in reviewed_set:
+            if identity in classified_set:
                 filtered_count += 1
                 continue
             outgoing.write(line.rstrip("\r\n") + "\n")
             surviving += 1
     return FilterResult(source_words, surviving, filtered_count)
+
+
+def verdict_errors(reviewed, yes, no) -> tuple[list[str], list[str]]:
+    """The words that break a round's verdicts, as two sorted lists.
+
+    The first is the words ticked both YES and NO; the second the verdict words
+    that are not in the reviewed set. Extraction and publication both check
+    this, so the two checkpoints cannot drift apart.
+    """
+    yes, no = set(yes), set(no)
+    return sorted(yes & no), sorted((yes | no) - set(reviewed))
 
 
 def archive_name(name: str) -> str:
@@ -331,37 +354,74 @@ def _staging(tree: Tree):
 # ---------------------------------------------------------------- derivation
 
 
-def _stage_reviewed_words(tree: Tree, staging: Path,
-                          srcs: list[Path]) -> setops.Staged:
-    dst, path = tree.reviewed_words, staging / "reviewed.words"
-    if not srcs:
-        return setops.stage_text("", dst, path, stable_mtime=True)
-    with _operation("reviewed-word union", *srcs):
-        return setops.stage_merge(srcs, dst, path, stable_mtime=True)
+def _record_union(staging: Path, name: str, recorded: list[Path],
+                  new: Path | None = None) -> tuple[Path, Path]:
+    """The union of one verdict kind's records, built once.
+
+    Returns (prior, prospective): the union of `recorded`, and with `new` the
+    union of `recorded` plus `new`. Without `new`, prospective is prior.
+    """
+    prior = staging / f"prior.{name}"
+    with _operation(f"{name} union", *recorded):
+        _union(recorded, prior)
+    if new is None:
+        return prior, prior
+    with _operation(f"{name} union", prior, new):
+        prospective = _union([prior, new], staging / f"next.{name}")
+    return prior, prospective
 
 
-def _stage_derived(tree: Tree, staging: Path,
-                   removed: Path) -> setops.Staged:
-    """words.filtered: the base minus the union of every removal generation.
+@dataclass(frozen=True)
+class Derived:
+    """Every derived file a rebuild stages, in placement order."""
+
+    reviewed_words: setops.Staged
+    yes_words: setops.Staged
+    no_words: setops.Staged
+    dictionary: setops.Staged
+    small_dictionary: setops.Staged
+
+    def placements(self) -> list["Prepared"]:
+        return [Prepared(self.reviewed_words), Prepared(self.yes_words),
+                Prepared(self.no_words), Prepared(self.dictionary),
+                Prepared(self.small_dictionary)]
+
+
+def _stage_all_derived(tree: Tree, staging: Path, *, no: Path, yes: Path,
+                       reviewed: list[Path]) -> Derived:
+    """Stage reviewed.words, yes.words, no.words and both dictionaries.
+
+    `no` and `yes` are the verdict unions already built; `reviewed` is every
+    reviewed.N record, including a publication's own staged archive.
 
     stable_mtime is load-bearing and not tidiness. Inputs.dictionary, the
     frontier's "dictionary changed" reason, and both DFS freshness predicates
-    date against this file, so a removal that removes nothing -- a word not in
-    the base -- must leave it byte-identical and cost nothing downstream.
+    date against words.filtered, so a removal that removes nothing -- a word
+    not in the base -- must leave it byte-identical and cost nothing
+    downstream.
     """
-    with _operation("dictionary derivation", tree.base, removed):
-        return setops.stage_diff(tree.base, removed, tree.derived,
-                                 staging / config.BIG_DICTIONARY_NAME,
+    dst, path = tree.reviewed_words, staging / config.REVIEWED_WORDS_NAME
+    if reviewed:
+        with _operation("reviewed-word union", *reviewed):
+            reviewed_words = setops.stage_merge(reviewed, dst, path,
+                                                stable_mtime=True)
+    else:
+        reviewed_words = setops.stage_text("", dst, path, stable_mtime=True)
+    yes_words = setops.stage_text(yes.read_text(), tree.yes_words,
+                                  staging / config.YES_WORDS_NAME,
+                                  stable_mtime=True)
+    no_words = setops.stage_text(no.read_text(), tree.no_words,
+                                 staging / config.NO_WORDS_NAME,
                                  stable_mtime=True)
-
-
-def _stage_small_derived(tree: Tree, staging: Path,
-                         removed: Path) -> setops.Staged:
-    """dict.filtered: dict minus the same removal union as words.filtered."""
-    with _operation("small dictionary derivation", tree.small_base, removed):
-        return setops.stage_diff(tree.small_base, removed, tree.small_derived,
-                                 staging / config.SMALL_DICTIONARY_NAME,
-                                 stable_mtime=True)
+    with _operation("dictionary derivation", tree.base, no):
+        derived = setops.stage_diff(tree.base, no, tree.derived,
+                                    staging / config.BIG_DICTIONARY_NAME,
+                                    stable_mtime=True)
+    with _operation("small dictionary derivation", tree.small_base, no):
+        small = setops.stage_diff(tree.small_base, no, tree.small_derived,
+                                  staging / config.SMALL_DICTIONARY_NAME,
+                                  stable_mtime=True)
+    return Derived(reviewed_words, yes_words, no_words, derived, small)
 
 
 def _mark_generated(tree: Tree) -> None:
@@ -412,13 +472,14 @@ def _count_line(label: str, staged: setops.Staged) -> str:
     return f"{label} {before} -> {after}"
 
 
-def _report(root: Path, tree: Tree, derived: setops.Staged,
-            small_derived: setops.Staged,
-            reviewed_words: setops.Staged) -> list[str]:
-    """The three count lines, composed before anything is published."""
-    return [_count_line(config.BIG_DICTIONARY_NAME, derived),
-            _count_line(config.SMALL_DICTIONARY_NAME, small_derived),
-            _count_line(_relative(root, tree.reviewed_words), reviewed_words)]
+def _report(root: Path, tree: Tree, derived: Derived) -> list[str]:
+    """The count lines, composed before anything is published."""
+    return [_count_line(config.BIG_DICTIONARY_NAME, derived.dictionary),
+            _count_line(config.SMALL_DICTIONARY_NAME, derived.small_dictionary),
+            _count_line(_relative(root, tree.reviewed_words),
+                        derived.reviewed_words),
+            _count_line(_relative(root, tree.yes_words), derived.yes_words),
+            _count_line(_relative(root, tree.no_words), derived.no_words)]
 
 
 # ------------------------------------------------------------------ commands
@@ -427,28 +488,172 @@ def _report(root: Path, tree: Tree, derived: setops.Staged,
 @dataclass(frozen=True)
 class Publication:
     ordinal: int
+    yes_dst: Path | None
     removal_dst: Path
     reviewed_dst: Path
     enex_dst: Path | None
-    submitted: int
+    reviewed: int
+    yes: int
+    no: int
     new_to_union: int
     effective: int
     count_lines: tuple[str, ...]
 
 
-def publish_words(root: Path, stem: str, reviewed_input: Path,
-                  removals: Path, enex: Path | None = None) -> Publication:
-    """Publish one normalized reviewed/removal round and rebuild dictionary."""
+def word_set(path: Path) -> set[str]:
+    """A record's words, read as the unions read it: one word per line."""
+    return set(path.read_text().split())
+
+
+def _closing(retry: str) -> str:
+    return f"no dictionary records were changed\n{retry}"
+
+
+def _check_verdicts(reviewed_input: Path, yes: Path | None, no: Path,
+                    reviewed: set[str], yes_set: set[str], no_set: set[str],
+                    retry: str) -> None:
+    """Publication step 1: YES and NO disjoint, and both within reviewed."""
+    conflicting, extra = verdict_errors(reviewed, yes_set, no_set)
+    if not conflicting and not extra:
+        return
+    lines = []
+    if conflicting:
+        lines.append(f"{len(conflicting):,} words are in both {yes} and "
+                     f"{no}:\n{listing(conflicting)}")
+    if extra:
+        named = f"{no}" if yes is None else f"{yes} or {no}"
+        lines.append(f"{len(extra):,} words in {named} are not in "
+                     f"{reviewed_input}:\n{listing(extra)}")
+    raise ValueError("\n".join(lines) + "\n" + _closing(retry))
+
+
+def _holders(root: Path, words: list[str],
+             recorded: list[Path]) -> dict[str, list[str]]:
+    """Which records hold each word: only read on the flip-guard failure."""
+    wanted = set(words)
+    held: dict[str, list[str]] = {word: [] for word in words}
+    for path in recorded:
+        for word in sorted(word_set(path) & wanted):
+            held[word].append(_relative(root, path))
+    return held
+
+
+def _flip_listing(root: Path, words: list[str], recorded: list[Path],
+                  limit: int = 20) -> str:
+    shown = words[:limit]
+    held = _holders(root, shown, recorded)
+    width = max(len(word) for word in shown)
+    lines = [f"  {word.ljust(width)}  {', '.join(held[word])}"
+             for word in shown]
+    if len(words) > limit:
+        lines.append(f"  ... and {len(words) - limit:,} more")
+    return "\n".join(lines)
+
+
+def _flip_guard(root: Path, yes_set: set[str], no_set: set[str],
+                prior_yes: set[str], prior_no: set[str],
+                yes_records: list[Path], removal_records: list[Path],
+                retry: str) -> None:
+    """Publication step 3: a standing verdict is never recorded the other way."""
+    no_flipped = sorted(no_set & prior_yes)
+    yes_flipped = sorted(yes_set & prior_no)
+    if not no_flipped and not yes_flipped:
+        return
+    sections = []
+    if no_flipped:
+        sections.append(
+            f"cannot record {len(no_flipped):,} NO words already classified "
+            f"YES:\n{_flip_listing(root, no_flipped, yes_records)}")
+    if yes_flipped:
+        sections.append(
+            f"cannot record {len(yes_flipped):,} YES words already classified "
+            f"NO:\n{_flip_listing(root, yes_flipped, removal_records)}\n"
+            f"to retract an earlier NO instead, take the word out of the "
+            f"removed.N records listed beside it, run `wf gen dict`, then "
+            f"retry")
+    raise ValueError("\n".join(sections) + "\n" + _closing(retry))
+
+
+def _by_ordinal(found: list[tuple[int, Path]]) -> dict[int, list[Path]]:
+    grouped: dict[int, list[Path]] = {}
+    for ordinal, path in found:
+        grouped.setdefault(ordinal, []).append(path)
+    return grouped
+
+
+def _words_in(paths: list[Path], wanted: set[str]) -> set[str]:
+    found: set[str] = set()
+    for path in paths:
+        found.update(word_set(path) & wanted)
+    return found
+
+
+def _late_verdicts(new: set[str], reviewed_records, yes_records,
+                   removal_records) -> dict[str, int]:
+    """How many earlier rounds listed each newly classified word unclassified.
+
+    A round counts only once its reviewed.N exists -- that record is placed
+    last -- and its records are matched to it by ordinal alone.
+    """
+    counts: dict[str, int] = {}
+    if not new:
+        return counts
+    yes_by = _by_ordinal(yes_records)
+    removed_by = _by_ordinal(removal_records)
+    for ordinal, paths in _by_ordinal(reviewed_records).items():
+        listed = _words_in(paths, new)
+        if not listed:
+            continue
+        classified = (_words_in(yes_by.get(ordinal, []), listed)
+                      | _words_in(removed_by.get(ordinal, []), listed))
+        for word in listed - classified:
+            counts[word] = counts.get(word, 0) + 1
+    return counts
+
+
+def _late_guard(counts: dict[str, int], force_verdicts: bool,
+                retry: str) -> None:
+    """Publication step 4: warn on each late verdict; fail without force."""
+    if not counts:
+        return
+    for word in sorted(counts):
+        log.warn(f"{word} was reviewed {counts[word]} times without a verdict")
+    if force_verdicts:
+        return
+    raise ValueError(f"{len(counts):,} words were reviewed earlier without a "
+                     f"verdict; rerun with --force-verdicts to record them\n"
+                     f"{_closing(retry)}")
+
+
+def publish_words(root: Path, stem: str, reviewed_input: Path, *,
+                  yes: Path | None, no: Path, force_verdicts: bool,
+                  retry: str, enex: Path | None = None) -> Publication:
+    """Publish one round's verdicts and rebuild the derived files.
+
+    `yes=None` records no YES verdicts and writes no yes.N. `retry` is the
+    caller's next step, which ends every validation and guard failure.
+    Validate, guard, stage and preflight everything, then place the round's
+    records -- reviewed.N last of them, as its commit record -- then the
+    derived files, the archived notes and the marker. An ordinary failure
+    leaves no durable record and no changed output.
+    """
     archive_name(stem)
+    reviewed_set = set(read_words(reviewed_input))
+    yes_set = set(read_words(yes)) if yes is not None else set()
+    no_set = set(read_words(no))
+    _check_verdicts(reviewed_input, yes, no, reviewed_set, yes_set, no_set,
+                    retry)
+
     dictionary = tree(root)
     fs.raise_if_not_file(dictionary.base)
     fs.raise_if_not_file(dictionary.small_base)
-    fs.raise_if_not_file(reviewed_input)
-    fs.raise_if_not_file(removals)
 
     removal_records = records(dictionary.removals, REMOVED)
     reviewed_records = records(dictionary.reviewed_inputs, REVIEWED)
-    ordinal = _next_ordinal(removal_records, reviewed_records)
+    yes_records = records(dictionary.reviewed_inputs, YES)
+    ordinal = _next_ordinal(removal_records, reviewed_records, yes_records)
+    yes_dst = (dictionary.reviewed_inputs / f"{stem}.{YES}.{ordinal}"
+               if yes is not None else None)
     removal_dst = dictionary.removals / f"{stem}.{REMOVED}.{ordinal}"
     reviewed_dst = dictionary.reviewed_inputs / f"{stem}.{REVIEWED}.{ordinal}"
     enex_dst = (dictionary.enex_archives / f"{stem}.{REVIEWED}.{ordinal}"
@@ -461,49 +666,69 @@ def publish_words(root: Path, stem: str, reviewed_input: Path,
         if enex_dst.exists() or enex_dst.is_symlink():
             raise fs.file_already_exists_error(enex_dst)
 
+    removal_paths = [path for _, path in removal_records]
+    yes_paths = [path for _, path in yes_records]
     with _staging(dictionary) as staging:
-        with _operation("submission normalization", reviewed_input, removals):
-            removal = setops.stage_merge([removals], removal_dst,
-                                         staging / "removal.archive")
-            reviewed = setops.stage_merge([reviewed_input], reviewed_dst,
-                                          staging / "reviewed.archive")
+        # Step 2: each verdict union, built once. removed.N holds every word
+        # this round ticked NO, standing NOs included, so each round's records
+        # say what that round decided.
+        removal = setops.stage_text(word_text(sorted(no_set)),
+                                    removal_dst, staging / "removal.archive")
+        no_prior, no_union = _record_union(staging, "removed", removal_paths,
+                                           removal.path)
+        prior_no = word_set(no_prior)
+        removed_words = sorted(no_set - prior_no)
+        new_removals = staging / "new.removals"
+        write_words(new_removals, removed_words)
+        yes_archive = None
+        if yes_dst is not None:
+            yes_archive = setops.stage_text(
+                word_text(sorted(yes_set)), yes_dst,
+                staging / "yes.archive")
+        yes_prior, yes_union = _record_union(
+            staging, "yes", yes_paths,
+            yes_archive.path if yes_archive is not None else None)
+        prior_yes = word_set(yes_prior)
 
-        recorded = [path for _, path in removal_records]
-        prior = staging / "prior.removed"
-        prospective = staging / "next.removed"
-        with _operation("removal union", *recorded):
-            _union(recorded, prior)
-            _union([*recorded, removal.path], prospective)
-        with _operation("removal delta", prior, prospective):
-            delta = setops.diff(prospective, prior, staging / "delta")
-        with _operation("removed-word intersection", delta, dictionary.base):
-            effective = setops.common(delta, dictionary.base,
+        _flip_guard(root, yes_set, no_set, prior_yes, prior_no, yes_paths,
+                    removal_paths, retry)
+        _late_guard(_late_verdicts((yes_set - prior_yes) | (no_set - prior_no),
+                                   reviewed_records, yes_records,
+                                   removal_records),
+                    force_verdicts, retry)
+
+        reviewed = setops.stage_text(
+            word_text(sorted(reviewed_set)), reviewed_dst,
+            staging / "reviewed.archive")
+        with _operation("removed-word intersection", new_removals,
+                        dictionary.base):
+            effective = setops.common(new_removals, dictionary.base,
                                       staging / "effective")
+        derived = _stage_all_derived(
+            dictionary, staging, no=no_union, yes=yes_union,
+            reviewed=[path for _, path in reviewed_records] + [reviewed.path])
 
-        derived = _stage_derived(dictionary, staging, prospective)
-        small_derived = _stage_small_derived(dictionary, staging, prospective)
-        reviewed_words = _stage_reviewed_words(
-            dictionary, staging,
-            [path for _, path in reviewed_records] + [reviewed.path])
-        batch = [Prepared(removal, replace=False),
-                 Prepared(reviewed, replace=False),
-                 Prepared(reviewed_words), Prepared(derived),
-                 Prepared(small_derived)]
+        archives = [Prepared(removal, replace=False),
+                    Prepared(reviewed, replace=False)]
+        if yes_archive is not None:
+            archives.insert(0, Prepared(yes_archive, replace=False))
+        batch = archives + derived.placements()
         _preflight(batch)
-        fs.raise_if_any_exist([removal_dst, reviewed_dst])
         if enex_dst is not None and (enex_dst.exists() or enex_dst.is_symlink()):
             raise fs.file_already_exists_error(enex_dst)
 
         result = Publication(
             ordinal=ordinal,
+            yes_dst=yes_dst,
             removal_dst=removal_dst,
             reviewed_dst=reviewed_dst,
             enex_dst=enex_dst,
-            submitted=fs.line_count(removal.path),
-            new_to_union=fs.line_count(delta),
+            reviewed=len(reviewed_set),
+            yes=len(yes_set),
+            no=len(no_set),
+            new_to_union=len(removed_words),
             effective=fs.line_count(effective),
-            count_lines=tuple(_report(root, dictionary, derived,
-                                      small_derived, reviewed_words)),
+            count_lines=tuple(_report(root, dictionary, derived)),
         )
         _commit(batch)
         if enex is not None:
@@ -514,64 +739,46 @@ def publish_words(root: Path, stem: str, reviewed_input: Path,
 
 
 def report_publication(root: Path, result: Publication) -> None:
-    log.success(f"{result.submitted} words submitted, "
+    log.success(f"{result.no} NO words submitted, "
                 f"{result.new_to_union} new to the removal union, "
                 f"{result.effective} newly removed from the dictionary")
     lead = f"recorded as generation {result.ordinal} "
-    print(f"{lead}-> {_relative(root, result.removal_dst)}")
-    print(f"{' ' * len(lead)}-> {_relative(root, result.reviewed_dst)}")
+    recorded = [result.yes_dst, result.removal_dst, result.reviewed_dst]
+    for index, path in enumerate(p for p in recorded if p is not None):
+        prefix = lead if index == 0 else " " * len(lead)
+        print(f"{prefix}-> {_relative(root, path)}")
     if result.enex_dst is not None:
         print(f"archived notes          -> {_relative(root, result.enex_dst)}/")
     for line in result.count_lines:
         print(line)
 
 
-def remove_words(root: Path, src: Path,
-                 reviewed_src: Path | None = None) -> None:
+def remove_words(root: Path, src: Path, reviewed_src: Path | None = None,
+                 force_verdicts: bool = False) -> None:
     """Record one round of word removals and rebuild the derived files.
 
     With reviewed_src, that file is the round's whole reviewed set -- kept and
-    removed words alike -- and is archived as the reviewed input in place of the
-    removals, as `complete words` archives its whole review. Every removed word
-    has to be in it, and a round whose removals all filter away -- or that
-    removes nothing -- is still recorded for the words it kept.
+    removed words alike -- and is archived as reviewed.N; its kept words get no
+    verdict. Without it, the removals are the whole reviewed set. Direct
+    removal records no YES verdicts, so it writes no yes.N.
 
-    Validate, allocate, prepare everything, preflight everything, archive,
-    publish derived outputs, mark. An ordinary failure therefore leaves no
-    durable record and no changed output. Once archives have landed they precede
-    the derived outputs, so a later `wf gen dict` can heal an interrupted
-    publication: a derived dictionary must never reflect a submission that
-    exists nowhere in its source records.
+    The submitted files go straight to publish_words, which normalizes them,
+    checks every removed word is in the reviewed set, and applies both verdict
+    guards: a word standing YES cannot be removed, and a word reviewed earlier
+    without a verdict needs --force-verdicts. A word already standing NO is
+    written to the new removed.N too, but changes nothing downstream.
 
     Neither this nor `gen dict` takes a target -- dict/ sits at the root and one
-    removal applies to every target -- and neither names a next command. It
-    cannot know whether a target is involved at all: the operator may have
-    removed a word to unblock one search, or to feed a filter no BEST target is
-    in play for. The report says what changed and stops there.
+    removal applies to every target -- and neither names a next command. The
+    report says what changed and stops there.
     """
-    words = read_words(src)
     stem = archive_stem(src)
-    reviewed_set = read_words(reviewed_src) if reviewed_src is not None else None
-    if reviewed_set is not None:
-        missing = sorted(set(words) - set(reviewed_set))
-        if missing:
-            raise ValueError(f"{len(missing):,} removed words are not in "
-                             f"{reviewed_src}:\n{listing(missing)}")
-    reviewed = fs.optional_file(config.reviewed_words(root))
-    with tempfile.TemporaryDirectory(prefix="wf-remove-words-") as tmp:
-        submission = Path(tmp) / "submission"
-        write_words(submission, words)
-        if reviewed is not None:
-            unreviewed = Path(tmp) / "unreviewed"
-            filtered = filter_reviewed_words(submission, reviewed, unreviewed)
-            if filtered.surviving_words == 0 and reviewed_set is None:
-                raise ValueError(f"no unreviewed words in {src}")
-            submission = unreviewed
-        reviewed_input = submission
-        if reviewed_set is not None:
-            reviewed_input = Path(tmp) / "reviewed"
-            write_words(reviewed_input, reviewed_set)
-        result = publish_words(root, stem, reviewed_input, submission)
+    reviewed_input = reviewed_src if reviewed_src is not None else src
+    named = src if reviewed_src is None else f"{src} or {reviewed_src}"
+    result = publish_words(
+        root, stem, reviewed_input, yes=None, no=src,
+        force_verdicts=force_verdicts,
+        retry=f"correct {named}, then rerun `wf remove words`")
     report_publication(root, result)
 
 
@@ -580,41 +787,38 @@ def gen_dict(root: Path) -> None:
 
     Idempotent, seconds, safe to run at any time. It is what the staleness row
     offers, and it is the second half of a retraction: there is no un-remove
-    command, so retracting a word means editing every generation file where it
+    command, so retracting a word means editing every removed.N file where it
     occurs, or deleting those files, and then running this.
 
-    `words.big` and `dict` are required inputs; `words.filtered` and
-    `dict.filtered` are optional prior destinations, so their absence is the
-    first-build case rather than a failure.
-    Nothing here walks the BEST status rows, so the command cannot -- and does
-    not -- recommend itself.
+    `words.big` and `dict` are required inputs; the derived files are optional
+    prior destinations, so their absence is the first-build case rather than a
+    failure. Nothing here walks the BEST status rows, so the command cannot --
+    and does not -- recommend itself.
     """
     dictionary = tree(root)
     fs.raise_if_not_file(dictionary.base)
     fs.raise_if_not_file(dictionary.small_base)
     recorded = [path for _, path in records(dictionary.removals, REMOVED)]
+    yes_recorded = [path for _, path in
+                    records(dictionary.reviewed_inputs, YES)]
     reviewed = [path for _, path in
                 records(dictionary.reviewed_inputs, REVIEWED)]
 
     with _staging(dictionary) as staging:
-        prospective = staging / "removed"
-        with _operation("removal union", *recorded):
-            _union(recorded, prospective)
-        reviewed_words = _stage_reviewed_words(dictionary, staging, reviewed)
-        derived = _stage_derived(dictionary, staging, prospective)
-        small_derived = _stage_small_derived(dictionary, staging, prospective)
-
-        batch = [Prepared(reviewed_words), Prepared(derived),
-                 Prepared(small_derived)]
+        no_union, _ = _record_union(staging, "removed", recorded)
+        yes_union, _ = _record_union(staging, "yes", yes_recorded)
+        derived = _stage_all_derived(dictionary, staging, no=no_union,
+                                     yes=yes_union, reviewed=reviewed)
+        batch = derived.placements()
         _preflight(batch)
 
-        counts = _report(root, dictionary, derived, small_derived,
-                         reviewed_words)
+        counts = _report(root, dictionary, derived)
         _commit(batch)
         _mark_generated(dictionary)
 
         log.success(f"Rebuilt the dictionaries from {len(recorded)} removal "
-                    f"generation(s) and {len(reviewed)} reviewed input(s)")
+                    f"generation(s), {len(yes_recorded)} YES record(s) and "
+                    f"{len(reviewed)} reviewed input(s)")
         for line in counts:
             print(line)
 
@@ -642,6 +846,9 @@ class RemoveWords(command.Action):
                        type=Path, action=_Once,
                        help="every word reviewed this round, kept or removed; "
                             "folded into reviewed.words")
+        p.add_argument("--force-verdicts", action="store_true",
+                       help="record NO verdicts for words reviewed earlier "
+                            "without a verdict")
         return p
 
     def run(self, command_text, opts, argv) -> int:
@@ -651,7 +858,8 @@ class RemoveWords(command.Action):
         if len(argv) > 1:
             return usage.invalid_argument(argv[1],
                                           self.format_help(command_text))
-        remove_words(opts.dir, Path(argv[0]), opts.reviewed_src)
+        remove_words(opts.dir, Path(argv[0]), opts.reviewed_src,
+                     opts.force_verdicts)
         return 0
 
 

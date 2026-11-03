@@ -1,5 +1,10 @@
 # A workflow-managed dictionary
 
+> Word notes now have two checkboxes, YES and NO, and `eval words` filters on
+> the classified words (`yes.words` and `no.words`) rather than on
+> `reviewed.words`. See `plans/dict-verdicts.md`, which supersedes the
+> one-checkbox notes and the reviewed-words filter described here.
+
 Supersedes `plans/managed-dict.md`. That plan and its review
 (`plans/managed-dict-review.md`) stay on disk; the review cites v1 by section
 and line, and the last section here says where each of its findings landed.

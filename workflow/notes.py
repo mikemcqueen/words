@@ -130,11 +130,7 @@ def create(paths: list[Path], yes_pairs: Path | None = None,
 
 
 def add_checked(parser: argparse.ArgumentParser) -> None:
-    """Add the initial checked-type option used by note creation.
-
-    With the one checkbox of a words review, NO is what `note` does anyway: it
-    is accepted and changes nothing.
-    """
+    """Add the initial checked-type option used by p2 note creation."""
     parser.add_argument(
         "--checked", type=str.upper, choices=("YES", "NO"), metavar="TYPE",
         help="initial checkbox type to check (YES or NO)")
@@ -243,19 +239,13 @@ class NotesWords(command.Action):
         super().__init__(summary="words   — recreate a dictionary review's notes",
                          positional="NAME")
 
-    def parser(self):
-        p = argparse.ArgumentParser(add_help=False)
-        add_checked(p)
-        return p
-
     def run(self, command_text, opts, argv) -> int:
-        rest = self.parse(opts, argv)
-        if not rest:
+        if not argv:
             return usage.missing_argument(self.format_help(command_text))
-        if len(rest) > 1:
-            return usage.invalid_argument(rest[1],
+        if len(argv) > 1:
+            return usage.invalid_argument(argv[1],
                                           self.format_help(command_text))
-        name = rest[0]
+        name = argv[0]
         bundle_name = names.check_name(name, "bundle name")
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)
@@ -267,7 +257,7 @@ class NotesWords(command.Action):
                     f"run `wf eval words {bundle_name}`")
             raise ValueError(f"no active words review: {bundle_name}")
         source = bundle.evaluated(ctx)
-        titles = make(source, opts, ONE_CHECKBOX,
+        titles = make(source, opts, TWO_CHECKBOXES,
                       f"wf notes words {bundle_name}")
         log.success(f"{len(titles)} note(s) recreated from {source.name}")
         return 0

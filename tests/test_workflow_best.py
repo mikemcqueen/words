@@ -61,6 +61,8 @@ class BestTests(unittest.TestCase):
         self._write(config.base_dictionary(root), "words\n", mtime)
         derived = self._write(config.dictionary(root), "words\n", mtime)
         self._write(config.reviewed_words(root), "", mtime)
+        self._write(config.yes_words(root), "", mtime)
+        self._write(config.no_words(root), "", mtime)
         for directory in (config.removals(root),
                           config.reviewed_inputs(root)):
             os.utime(directory, (mtime, mtime))

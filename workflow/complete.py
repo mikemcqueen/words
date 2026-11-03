@@ -151,7 +151,15 @@ class CompleteWords(command.Action):
         super().__init__(summary="words   — complete a dictionary word review",
                          positional="NAME")
 
+    def parser(self):
+        p = argparse.ArgumentParser(add_help=False)
+        p.add_argument("--force-verdicts", action="store_true",
+                       help="record verdicts for words reviewed earlier "
+                            "without a verdict")
+        return p
+
     def run(self, command_text, opts, argv) -> int:
+        argv = self.parse(opts, argv)
         if not argv:
             return usage.missing_argument(self.format_help(command_text))
         if len(argv) > 1:
@@ -169,7 +177,7 @@ class CompleteWords(command.Action):
         # which words_close unlinks it first, for this reason -- fails here
         # rather than being retrieved, extracted, and published again.
         steps.run_steps([p2_retrieve, words_extract], ctx)
-        words_publish.run_step(ctx)
+        words_publish.run_step(ctx, opts.force_verdicts)
         try:
             words_close.run_step(ctx)
         except (OSError, ValueError):

@@ -274,6 +274,10 @@ def _dictionary_event(root: Path) -> Event | None:
             details.append(detail)
         else:
             details.append("removal record was deleted")
+        yes = tree.reviewed_inputs / f"{stem}.{dictionary.YES}.{ordinal}"
+        if yes.exists():
+            fs.raise_if_not_file(yes)
+            details.append(f"YES: {fs.line_count(yes)} words")
 
     reference_ns = marker_ns
     removal_times = [tree.removals.stat().st_mtime_ns]

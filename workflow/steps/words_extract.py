@@ -1,6 +1,5 @@
-"""Extract and validate the checked/unchecked partition of a word review."""
+"""Extract and validate the YES/NO/undecided partition of a word review."""
 
-import filecmp
 import subprocess
 import tempfile
 
@@ -11,7 +10,7 @@ from workflow.steps import p2_retrieve
 
 
 NAME = "extract"
-KINDS = ("yes", "no", "all", "input.words")
+KINDS = ("yes", "no", "input.words")
 
 
 def artifact(ctx, kind: str) -> Path:
@@ -45,42 +44,42 @@ def _parse(enex: list[Path], note_type: str, directory: Path) -> Path:
     for index, part in enumerate(enex):
         raw = directory / f"{index}.{note_type}.raw"
         with raw.open("w") as output:
+            # --two-checkboxes makes a row count only when it carries both
+            # boxes, so NONE is a row with neither ticked, not a one-box row.
             subprocess.run(["note", "--parse-file", str(part), "--type",
-                            note_type, "--lines"], stdout=output, check=True)
+                            note_type, "--lines", "--two-checkboxes"],
+                           stdout=output, check=True)
         parsed.append(_normalize(raw, directory / f"{index}.{note_type}.words"))
     return setops.merge(parsed, directory / note_type.lower())
 
 
 def validate_results(reviewed_input: Path, yes: Path, no: Path,
-                     all_words: Path, overlap: Path,
-                     bundle_name: str = "NAME") -> None:
-    """Require YES and NO to be an exact disjoint partition of input."""
-    setops.merge([yes, no], all_words)
-    setops.common(yes, no, overlap)
-    same_input = filecmp.cmp(all_words, reviewed_input, shallow=False)
-    has_overlap = fs.line_count(overlap) != 0
-    if same_input and not has_overlap:
+                     undecided: Path, bundle_name: str = "NAME") -> None:
+    """Require YES, NO and undecided to partition the evaluated input."""
+    reviewed = dictionary.word_set(reviewed_input)
+    yes_set, no_set = dictionary.word_set(yes), dictionary.word_set(no)
+    undecided_set = dictionary.word_set(undecided)
+    conflicting, extra_verdicts = dictionary.verdict_errors(reviewed, yes_set,
+                                                            no_set)
+    listed = yes_set | no_set | undecided_set
+    extra = sorted(set(extra_verdicts) | (undecided_set - reviewed))
+    missing = sorted(reviewed - listed)
+    if not conflicting and not extra and not missing:
         return
 
-    directory = all_words.parent
-    missing = setops.diff(reviewed_input, all_words, directory / "missing")
-    extra = setops.diff(all_words, reviewed_input, directory / "extra")
-    failures = []
-    if not same_input:
-        failures.append("YES/NO union differs from the evaluated input")
-    if has_overlap:
-        failures.append("words are marked both checked and unchecked")
-    conflicts = overlap.read_text().splitlines()
-    shown = ""
-    if conflicts:
-        shown = f"\nConflicting words:\n{dictionary.listing(conflicts)}"
+    sections = []
+    for label, words in (("ticked both YES and NO", conflicting),
+                         ("ticked but not in the evaluated input", extra),
+                         ("missing from the notes", missing)):
+        if words:
+            sections.append(f"{label}:\n{dictionary.listing(words)}")
     raise ValueError(
-        f"invalid dictionary review partition: {'; '.join(failures)}\n"
-        f"input {fs.line_count(reviewed_input):,}, "
-        f"YES {fs.line_count(yes):,}, NO {fs.line_count(no):,}; "
-        f"missing {fs.line_count(missing):,}, extra {fs.line_count(extra):,}, "
-        f"conflicting {fs.line_count(overlap):,}.{shown}\n"
-        f"Correct the checkbox review notes in the note application, then run "
+        f"invalid dictionary review partition\n"
+        f"input {len(reviewed):,}, YES {len(yes_set):,}, NO {len(no_set):,}, "
+        f"undecided {len(undecided_set):,}; conflicting {len(conflicting):,}, "
+        f"extra {len(extra):,}, missing {len(missing):,}\n"
+        + "\n".join(sections) + "\n"
+        f"Correct the review notes in the note application, then run "
         f"`wf -f complete words {bundle_name}`.")
 
 
@@ -94,16 +93,13 @@ def run_step(ctx) -> None:
         reviewed_input = _normalize(bundle.evaluated(ctx),
                                     scratch / "input.words")
         yes = _parse(enex, "YES", scratch)
-        no = _parse(enex, "NONE", scratch)
-        all_words = scratch / "all"
-        overlap = scratch / "both"
-        validate_results(reviewed_input, yes, no, all_words, overlap,
-                         ctx.bundle_name)
+        no = _parse(enex, "NO", scratch)
+        undecided = _parse(enex, "NONE", scratch)
+        validate_results(reviewed_input, yes, no, undecided, ctx.bundle_name)
 
         staged = {
             "yes": yes,
             "no": no,
-            "all": all_words,
             "input.words": reviewed_input,
         }
         for kind, path in staged.items():

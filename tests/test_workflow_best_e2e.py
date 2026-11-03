@@ -34,9 +34,13 @@ class BestEndToEndTests(unittest.TestCase):
         derived = config.dictionary(self.root)
         derived.write_text("words\n")
         config.reviewed_words(self.root).write_text("")
+        config.yes_words(self.root).write_text("")
+        config.no_words(self.root).write_text("")
         generation.mark_generated(derived)
         for path in (config.base_dictionary(self.root), derived,
                      config.reviewed_words(self.root),
+                     config.yes_words(self.root),
+                     config.no_words(self.root),
                      generation.stamp(derived),
                      config.removals(self.root),
                      config.reviewed_inputs(self.root)):
@@ -302,7 +306,7 @@ class BestEndToEndTests(unittest.TestCase):
         junk = self.root / "junk.txt"
         junk.write_text("  1234 banana\n")
         stdout, _ = self._wf("remove", "words", str(junk))
-        self.assertIn("1 words submitted, 1 new to the removal union, "
+        self.assertIn("1 NO words submitted, 1 new to the removal union, "
                       "1 newly removed from the dictionary", stdout)
         derived = config.dictionary(self.root)
         self.assertEqual("apple\ncherry\n", derived.read_text())

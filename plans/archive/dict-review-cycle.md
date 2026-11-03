@@ -1,5 +1,10 @@
 # Dictionary word review cycle
 
+> Word notes now have two checkboxes, YES and NO, and `eval words` filters on
+> the classified words (`yes.words` and `no.words`) rather than on
+> `reviewed.words`. See `plans/dict-verdicts.md`, which supersedes the
+> one-checkbox notes and the reviewed-words filter described here.
+
 ## Summary
 
 Add a root-global manual review lifecycle for dictionary words:

@@ -195,6 +195,8 @@ BIG_DICTIONARY_NAME = "words.filtered"
 SMALL_DICTIONARY_BASE_NAME = "dict"
 SMALL_DICTIONARY_NAME = "dict.filtered"
 REVIEWED_WORDS_NAME = "reviewed.words"
+YES_WORDS_NAME = "yes.words"
+NO_WORDS_NAME = "no.words"
 
 
 @dataclass(frozen=True)
@@ -346,6 +348,24 @@ def reviewed_words(root_dir: Path) -> Path:
     it returns to the top of every candidate listing for ever.
     """
     return path(root_dir, ["dict", "done"]) / REVIEWED_WORDS_NAME
+
+
+def yes_words(root_dir: Path) -> Path:
+    """The union of every round's YES verdicts: .wf/dict/done/yes.words.
+
+    Derived from dict/done/in/*.yes.N by `wf gen dict` and every publication;
+    `wf init` does not create it.
+    """
+    return path(root_dir, ["dict", "done"]) / YES_WORDS_NAME
+
+
+def no_words(root_dir: Path) -> Path:
+    """The union of every round's NO verdicts: .wf/dict/done/no.words.
+
+    Derived from dict/removed/*.removed.N, the same union words.filtered
+    subtracts. Not the hand-placed dict/no.words, which nothing here touches.
+    """
+    return path(root_dir, ["dict", "done"]) / NO_WORDS_NAME
 
 
 def stable_mtime(parts: list[str]) -> bool:

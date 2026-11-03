@@ -91,6 +91,8 @@ class RowTests(unittest.TestCase):
         self._write(config.small_base_dictionary(root), "words\n", mtime)
         self._write(config.small_dictionary(root), "words\n", mtime)
         self._write(config.reviewed_words(root), "", mtime)
+        self._write(config.yes_words(root), "", mtime)
+        self._write(config.no_words(root), "", mtime)
         for directory in (config.removals(root),
                           config.reviewed_inputs(root)):
             os.utime(directory, (mtime, mtime))

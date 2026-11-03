@@ -627,6 +627,10 @@ class Inputs:
         reasons = []
         if fs.optional_file(config.reviewed_words(root)) is None:
             reasons.append("reviewed words missing")
+        if fs.optional_file(config.yes_words(root)) is None:
+            reasons.append("YES words missing")
+        if fs.optional_file(config.no_words(root)) is None:
+            reasons.append("NO words missing")
         if _newer_entry(config.removals(root), generated):
             reasons.append("removals changed")
         if _newer_entry(config.reviewed_inputs(root), generated):

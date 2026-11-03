@@ -182,15 +182,11 @@ class EvalWords(command.Action):
 
     def check(self, opts) -> None:
         """What must hold before anything is opened; see `Eval.check`."""
-        reviewed = config.reviewed_words(opts.dir)
-        if not reviewed.is_file():
-            raise ValueError(f"dictionary reviewed words not generated: {reviewed}; "
-                             f"run `wf gen dict`")
-
-    def parser(self):
-        p = argparse.ArgumentParser(add_help=False)
-        notes.add_checked(p)
-        return p
+        for classified in (config.yes_words(opts.dir),
+                           config.no_words(opts.dir)):
+            if not classified.is_file():
+                raise ValueError(f"dictionary verdicts not generated: "
+                                 f"{classified}; run `wf gen dict`")
 
     def run(self, command_text, opts, argv) -> int:
         rest = self.parse(opts, argv)
@@ -202,7 +198,7 @@ class EvalWords(command.Action):
 
         self.check(opts)
         bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", rest[0])
-        reviewed = config.reviewed_words(opts.dir)
+        classified = [config.yes_words(opts.dir), config.no_words(opts.dir)]
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)
 
@@ -223,17 +219,17 @@ class EvalWords(command.Action):
             with tempfile.NamedTemporaryFile(
                     mode="w", prefix="wf-eval-words-", delete=False) as tmp:
                 prepared = Path(tmp.name)
-            result = dictionary.filter_reviewed_words(selected, reviewed,
-                                                      prepared)
+            result = dictionary.filter_classified_words(selected, classified,
+                                                        prepared)
             if result.surviving_words == 0:
-                raise ValueError(f"no unreviewed words in {selected}")
+                raise ValueError(f"no unclassified words in {selected}")
             if retained is None:
                 presentation = prepared if result.filtered else selected
                 surviving, filtering = result.surviving_words, result.filtered
             else:
                 surviving, filtering = len(dictionary.read_words(retained)), True
                 if surviving == 0:
-                    raise ValueError(f"no unreviewed words in {retained}")
+                    raise ValueError(f"no unclassified words in {retained}")
                 presentation = retained
             logical_presentation = (Path(f"{bundle_name}.filtered")
                                     if filtering else selected)
@@ -252,7 +248,7 @@ class EvalWords(command.Action):
                 prepared = None
             source = bundle.begin(ctx, selected)
             presentation = bundle.evaluated(ctx)
-            notes.make(presentation, opts, notes.ONE_CHECKBOX,
+            notes.make(presentation, opts, notes.TWO_CHECKBOXES,
                        f"wf notes words {bundle_name}")
         finally:
             if prepared is not None:
