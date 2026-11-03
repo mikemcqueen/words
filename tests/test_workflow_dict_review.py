@@ -365,15 +365,18 @@ class DictionaryReviewTests(unittest.TestCase):
         for extra in ((), ("-f",)):
             with self.subTest(extra=extra):
                 with self.assertRaisesRegex(ValueError,
-                                            "rerun with --force-verdicts"):
+                                            "Run `wf complete words "
+                                            "--force-verdicts second` to "
+                                            "accept these verdicts\nor correct "
+                                            "the notes"):
                     self.complete(fake, *extra, name="second")
         self.assertEqual(["first.removed.1"],
                          [p.name for p in config.removals(self.root).iterdir()])
 
-        code, stdout, stderr = self.complete(fake, "-f", name="second",
+        code, stdout, stderr = self.complete(fake, name="second",
                                              flags=("--force-verdicts",))
         self.assertEqual(0, code, stderr)
-        self.assertIn("banana was reviewed 1 times without a verdict", stderr)
+        self.assertIn("banana NO was reviewed 1 time without a verdict", stderr)
         self.assertEqual("banana\n", config.no_words(self.root).read_text())
 
     def test_invalid_partition_places_no_results_or_dictionary_record(self):

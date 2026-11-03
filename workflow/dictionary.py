@@ -646,27 +646,38 @@ def _late_verdicts(new: set[str], reviewed_records, yes_records,
     return counts
 
 
-def _late_guard(counts: dict[str, int], force_verdicts: bool,
-                retry: str) -> None:
-    """Publication step 4: warn on each late verdict; fail without force."""
+def _late_guard(counts: dict[str, int], yes_set: set[str],
+                force_verdicts: bool, retry: str, accept: str) -> None:
+    """Publication step 4: warn on each late verdict; fail without force.
+
+    Each warning names the verdict this round gives the word; a word not in
+    `yes_set` was ticked NO. `accept` is the command that records them.
+    """
     if not counts:
         return
     for word in sorted(counts):
-        log.warn(f"{word} was reviewed {counts[word]} times without a verdict")
+        verdict = "YES" if word in yes_set else "NO"
+        times = "time" if counts[word] == 1 else "times"
+        log.warn(f"{word} {verdict} was reviewed {counts[word]} {times} "
+                 f"without a verdict")
     if force_verdicts:
         return
     raise ValueError(f"{len(counts):,} words were reviewed earlier without a "
-                     f"verdict; rerun with --force-verdicts to record them\n"
-                     f"{_closing(retry)}")
+                     f"verdict\nno dictionary records were changed\n"
+                     f"Run `{accept}` to accept these verdicts\n"
+                     f"or {retry}")
 
 
 def publish_words(root: Path, stem: str, reviewed_input: Path, *,
                   yes: Path | None, no: Path, force_verdicts: bool,
-                  retry: str, enex: Path | None = None) -> Publication:
+                  retry: str, accept: str,
+                  enex: Path | None = None) -> Publication:
     """Publish one round's verdicts and rebuild the derived files.
 
     `yes=None` records no YES verdicts and writes no yes.N. `retry` is the
-    caller's next step, which ends every validation and guard failure.
+    caller's next step, which ends every validation and guard failure;
+    `accept` is the caller's command with --force-verdicts, offered first when
+    the late-verdict guard fails.
     Validate, guard, stage and preflight everything, then place the round's
     records -- reviewed.N last of them, as its commit record -- then the
     derived files, the archived notes and the marker. An ordinary failure
@@ -730,7 +741,7 @@ def publish_words(root: Path, stem: str, reviewed_input: Path, *,
         _late_guard(_late_verdicts((yes_set - prior_yes) | (no_set - prior_no),
                                    reviewed_records, yes_records,
                                    removal_records),
-                    force_verdicts, retry)
+                    yes_set, force_verdicts, retry, accept)
 
         reviewed = setops.stage_text(
             word_text(sorted(reviewed_set)), reviewed_dst,
@@ -813,8 +824,17 @@ def remove_words(root: Path, src: Path, reviewed_src: Path | None = None,
     result = publish_words(
         root, stem, reviewed_input, yes=None, no=src,
         force_verdicts=force_verdicts,
-        retry=f"correct {named}, then rerun `wf remove words`")
+        retry=f"correct {named}, then rerun `wf remove words`",
+        accept=_remove_command(src, reviewed_src) + " --force-verdicts")
     report_publication(root, result)
+
+
+def _remove_command(src: Path, reviewed_src: Path | None) -> str:
+    """The `wf remove words` command line that submitted these files."""
+    command_text = f"wf remove words {src}"
+    if reviewed_src is not None:
+        command_text += f" --reviewed {reviewed_src}"
+    return command_text
 
 
 def gen_dict(root: Path) -> None:

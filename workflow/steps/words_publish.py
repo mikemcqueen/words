@@ -30,6 +30,7 @@ def run_step(ctx, force_verdicts: bool = False) -> None:
         force_verdicts=force_verdicts,
         retry=(f"correct the notes in the note application, then run "
                f"`wf -f complete words {ctx.bundle_name}`"),
+        accept=f"wf complete words --force-verdicts {ctx.bundle_name}",
         enex=p2_retrieve.enex_dir(ctx))
     undecided = result.reviewed - result.yes - result.no
     log.success(f"{result.reviewed} words reviewed: {result.yes} YES, "

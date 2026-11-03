@@ -370,7 +370,11 @@ class DictionaryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError,
                                     "1 words were reviewed earlier without a "
-                                    "verdict; rerun with --force-verdicts"):
+                                    "verdict\nno dictionary records were "
+                                    "changed\nRun `wf remove words "
+                                    ".*junk.txt --force-verdicts` to accept "
+                                    "these verdicts\nor correct .*junk.txt, "
+                                    "then rerun `wf remove words`"):
             self._remove("junk.txt", "cherry\n")
         self.assertEqual([], list(self.removals.iterdir()))
 
@@ -378,7 +382,7 @@ class DictionaryTests(unittest.TestCase):
             "-d", str(self.root), "remove", "words",
             str(self._submission("junk.txt", "cherry\n")), "--force-verdicts")
         self.assertEqual(0, code, stderr)
-        self.assertIn("cherry was reviewed 1 times without a verdict", stderr)
+        self.assertIn("cherry NO was reviewed 1 time without a verdict", stderr)
         self.assertNotIn("cherry", self._lines(self.derived))
         self.assertEqual(["cherry"], self._lines(config.no_words(self.root)))
 

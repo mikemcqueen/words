@@ -94,8 +94,9 @@ nothing here reads it.
   standing verdict. Nothing overrides it. To turn a NO into a YES, take the
   word out of those `removed.N` records and run `wf gen dict` first.
 - a **late verdict**: a new verdict for a word earlier rounds reviewed without
-  one. Each such word prints `WORD was reviewed N times without a verdict`,
-  and the command fails unless `--force-verdicts` is given. Re-recording a
+  one. Each such word prints `WORD YES was reviewed N times without a
+  verdict` (or `NO`, the verdict this round gives it), and the command fails
+  unless `--force-verdicts` is given. Re-recording a
   standing verdict the same way never warns.
 
 A failed guard changes no dictionary record. For `complete words`, correct the
