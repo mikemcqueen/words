@@ -284,6 +284,20 @@ class P2RecipeTests(unittest.TestCase):
             self._complete("--dry-run")
         self.assertEqual([], self._lines("no"))
 
+    def test_a_yes_pair_holding_a_removed_word_is_refused(self):
+        (config.removals(self.root) / "junk.removed.1").write_text("beta\n")
+        config.no_words(self.root).write_text("beta\n")
+        self._scope("s8")
+        for extra in ((), ("--dry-run",)):
+            with self.subTest(extra=extra):
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "hold a word classified NO in the dictionary: "
+                        r"beta,five \(beta: dict/removed/junk.removed.1\)"):
+                    self._complete(*extra)
+        self.assertEqual([], self._lines("yes", "s8"))
+        self.assertEqual([], self._lines("no", "s8"))
+
     def test_dry_run_says_how_to_fetch_edited_notes(self):
         _, _, stderr = self._complete("--dry-run")
         self.assertIn(f"2 notes cached; `wf -f complete p2 "

@@ -180,12 +180,13 @@ class EvalWords(command.Action):
         super().__init__(summary="words   — evaluate dictionary words for manual review",
                          positional="NAME")
 
-    def check(self, opts) -> list[Path]:
+    def check(self, opts) -> tuple[set[str], set[str]]:
         """What must hold before anything is opened; see `Eval.check`.
 
-        Returns the verdict files the source is filtered by.
+        Returns what the source is filtered by: the words with a verdict, and
+        the words in a classified YES pair.
         """
-        return dictionary.classified_files(opts.dir)
+        return dictionary.unreviewable_words(opts.dir)
 
     def run(self, command_text, opts, argv) -> int:
         rest = self.parse(opts, argv)
@@ -195,7 +196,7 @@ class EvalWords(command.Action):
             return usage.invalid_argument(rest[1],
                                           self.format_help(command_text))
 
-        classified = self.check(opts)
+        verdicts, in_yes_pairs = self.check(opts)
         bundle_name, selected = bundle.resolve_queued(opts.dir, "dict", rest[0])
         ctx = context.Context(root=opts.dir, phase="dict", force=opts.force,
                               bundle_name=bundle_name)
@@ -217,8 +218,8 @@ class EvalWords(command.Action):
             with tempfile.NamedTemporaryFile(
                     mode="w", prefix="wf-eval-words-", delete=False) as tmp:
                 prepared = Path(tmp.name)
-            result = dictionary.filter_classified_words(selected, classified,
-                                                        prepared)
+            result = dictionary.filter_classified_words(
+                selected, verdicts, in_yes_pairs, prepared)
             if result.surviving_words == 0:
                 raise ValueError(f"no unclassified words in {selected}")
             if retained is None:
@@ -253,6 +254,9 @@ class EvalWords(command.Action):
                 prepared.unlink(missing_ok=True)
 
         log.info(f"{result.source_words} source words")
+        if result.yes_pair_words:
+            log.info(f"{result.yes_pair_words} words skipped for being in "
+                     f"classified YES pairs")
         if filtering:
             log.info(f"{surviving} filtered words")
         log.success(f"{surviving} words ready for manual review: "

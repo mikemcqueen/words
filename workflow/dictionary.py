@@ -46,6 +46,7 @@ COUNT_PREFIX = re.compile(r"^ *[0-9]+ ")
 # what stops a --pairs slice pasted by mistake from folding a row with a space
 # in it into a generation that then never matches anything.
 WORD = re.compile(r"[a-z]+")
+LETTER = re.compile(r"[a-z]")
 
 REMOVED = "removed"
 REVIEWED = "reviewed"
@@ -208,10 +209,98 @@ class FilterResult:
     source_words: int
     surviving_words: int
     filtered_words: int
+    # Of filtered_words, those dropped only for being in a YES pair.
+    yes_pair_words: int = 0
 
     @property
     def filtered(self) -> bool:
         return self.filtered_words != 0
+
+
+# ------------------------------------------------- words in classified pairs
+#
+# The dictionary is global, so a word removed from it is gone for every
+# sentence. A word in any standing YES pair -- global or any sentence's --
+# must therefore never be removed, and a pair holding a removed word must
+# never be classified YES. Word review drops such words before they are shown,
+# publication refuses them as NO, and pair classification refuses the pairs.
+# Nothing is classified YES on the pair's behalf.
+
+
+def is_csv_pair(line: str) -> bool:
+    """Whether line is one `word,word` pair: exactly two comma-separated
+    fields, each nonempty, with no whitespace at either end and at least one
+    a-z letter. A word may hold other characters, such as a space (`nathan
+    hale`), an apostrophe (`ain't`) or an ampersand (`usc&gs`)."""
+    fields = line.split(",")
+    return len(fields) == 2 and all(
+        field and field == field.strip() and LETTER.search(field)
+        for field in fields)
+
+
+def pair_words(path: Path, number: int, line: str) -> list[str]:
+    """The two words of line `number` of path; none for a blank line.
+
+    Refuses a line that is not a pair, naming the file and line.
+    """
+    if not line.strip():
+        return []
+    if not is_csv_pair(line):
+        raise ValueError(
+            f"invalid pair in {path} at line {number}: expected exactly two "
+            f"nonempty comma-separated words, each with an a-z letter and no "
+            f"surrounding whitespace; got {line!r}")
+    return line.split(",")
+
+
+def yes_pairs_by_word(root: Path) -> dict[str, list[tuple[str, Path]]]:
+    """Each word in a standing YES pair, with every (pair, file) holding it."""
+    held: dict[str, list[tuple[str, Path]]] = {}
+    for path in config.yes_pair_files(root):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            for word in pair_words(path, number, line):
+                held.setdefault(word, []).append((line, path))
+    return held
+
+
+def removed_records(root: Path, words: set[str]) -> dict[str, list[Path]]:
+    """Each of words with the removed.N records holding it, so a refusal can
+    name the file to edit."""
+    held: dict[str, list[Path]] = {}
+    for _, path in records(config.removals(root), REMOVED):
+        for word in sorted(word_set(path) & words):
+            held.setdefault(word, []).append(path)
+    return held
+
+
+def removed_word_pairs(root: Path, src: Path) -> list[str]:
+    """src's pairs that hold a word classified NO, each naming the word and
+    its removed.N records.
+
+    Checked against dict/done/no.words, the same NO words `eval words` skips,
+    so a retraction counts once `wf gen dict` has rebuilt it. A missing
+    no.words means no word has been removed yet.
+    """
+    no_words = config.no_words(root)
+    removed = word_set(no_words) if no_words.is_file() else set()
+    hits_by_line = []
+    for number, line in enumerate(src.read_text().splitlines(), 1):
+        hits = [word for word in pair_words(src, number, line)
+                if word in removed]
+        if hits:
+            hits_by_line.append((line, hits))
+    if not hits_by_line:
+        return []
+    held = removed_records(
+        root, {word for _, hits in hits_by_line for word in hits})
+    found = []
+    for line, hits in hits_by_line:
+        where = "; ".join(
+            f"{word}: " + ", ".join(_relative(root, path)
+                                    for path in held.get(word, [no_words]))
+            for word in hits)
+        found.append(f"{line} ({where})")
+    return sorted(set(found))
 
 
 def classified_files(root: Path) -> list[Path]:
@@ -253,11 +342,22 @@ def unclassified_rows(source: Path, classified: set[str]):
                                    and identity not in classified)
 
 
-def filter_classified_words(source: Path, classified: list[Path],
+def unreviewable_words(root: Path) -> tuple[set[str], set[str]]:
+    """(words with a verdict, words in a YES pair): what word review skips.
+
+    Shared by `eval words` and `submit words --separate`, so the parts submit
+    cuts are the parts eval sees.
+    """
+    return (classified_set(classified_files(root)),
+            set(yes_pairs_by_word(root)))
+
+
+def filter_classified_words(source: Path, verdicts: set[str],
+                            in_yes_pairs: set[str],
                             staged: Path) -> FilterResult:
     """Write unclassified presentation rows in order without moving source."""
-    known = classified_set(classified)
-    source_words = surviving = filtered_count = 0
+    known = verdicts | in_yes_pairs
+    source_words = surviving = filtered_count = yes_pair_count = 0
     with staged.open("w") as outgoing:
         for line, identity, kept in unclassified_rows(source, known):
             if identity is None:
@@ -265,10 +365,13 @@ def filter_classified_words(source: Path, classified: list[Path],
             source_words += 1
             if not kept:
                 filtered_count += 1
+                if identity not in verdicts:
+                    yes_pair_count += 1
                 continue
             outgoing.write(line.rstrip("\r\n") + "\n")
             surviving += 1
-    return FilterResult(source_words, surviving, filtered_count)
+    return FilterResult(source_words, surviving, filtered_count,
+                        yes_pair_count)
 
 
 def verdict_errors(reviewed, yes, no) -> tuple[list[str], list[str]]:
@@ -609,6 +712,33 @@ def _flip_guard(root: Path, yes_set: set[str], no_set: set[str],
     raise ValueError("\n".join(sections) + "\n" + _closing(retry))
 
 
+def _yes_pair_guard(root: Path, no_set: set[str], retry: str) -> None:
+    """Publication step 1b: a word in a standing YES pair is never removed.
+
+    Checked against the pairs as they stand now, not as they stood when the
+    review was opened, so a pair classified YES in between still counts.
+    """
+    held = yes_pairs_by_word(root)
+    words = sorted(no_set & held.keys())
+    if not words:
+        return
+    rows = [(word, pair, _relative(root, path))
+            for word in words for pair, path in held[word]]
+    limit = 20
+    shown = rows[:limit]
+    word_width = max(len(row[0]) for row in shown)
+    pair_width = max(len(row[1]) for row in shown)
+    lines = [f"  {word.ljust(word_width)}  {pair.ljust(pair_width)}  {path}"
+             for word, pair, path in shown]
+    if len(rows) > limit:
+        lines.append(f"  ... and {len(rows) - limit:,} more")
+    raise ValueError(
+        f"cannot record {len(words):,} NO words that are in classified YES "
+        f"pairs:\n" + "\n".join(lines) + "\n"
+        f"to remove such a word, take its pairs out of the yes.pairs files "
+        f"listed beside it first\n" + _closing(retry))
+
+
 def _by_ordinal(found: list[tuple[int, Path]]) -> dict[int, list[Path]]:
     grouped: dict[int, list[Path]] = {}
     for ordinal, path in found:
@@ -689,6 +819,7 @@ def publish_words(root: Path, stem: str, reviewed_input: Path, *,
     no_set = set(read_words(no))
     _check_verdicts(reviewed_input, yes, no, reviewed_set, yes_set, no_set,
                     retry)
+    _yes_pair_guard(root, no_set, retry)
 
     dictionary = tree(root)
     fs.raise_if_not_file(dictionary.base)

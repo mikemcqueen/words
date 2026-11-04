@@ -501,6 +501,60 @@ class ClassifyTests(unittest.TestCase):
         for pair in pairs:
             self.assertIn(pair, stderr)
 
+    def _removed(self, *words):
+        text = "".join(f"{word}\n" for word in words)
+        (config.removals(self.root) / "junk.removed.1").write_text(text)
+        config.no_words(self.root).write_text(text)
+
+    def test_yes_is_refused_for_a_pair_holding_a_removed_word(self):
+        self._removed("map")
+        for flags in ((), ("-s", "3")):
+            with self.subTest(flags=flags):
+                src = fx.write_pairs(self.root / "y.pairs",
+                                     ["cheese,map", "ham,egg"])
+                code, _, stderr = fx.run_wf("-d", str(self.root), "classify",
+                                            "yes", *flags, str(src))
+                self.assertEqual(1, code)
+                self.assertIn("1 input pair(s) hold a word classified NO in "
+                              "the dictionary: cheese,map "
+                              "(map: dict/removed/junk.removed.1)", stderr)
+        self.assertEqual("", self._aggregate("yes").read_text())
+        self.assertEqual(
+            "", config.classified(self.root, "yes", "s3").read_text())
+
+    def test_retraction_counts_once_gen_dict_rebuilds_no_words(self):
+        self._removed("map")
+        (config.removals(self.root) / "junk.removed.1").write_text("")
+        code, _, stderr = self._classify("yes", "y.pairs", ["cheese,map"])
+        self.assertEqual(1, code)
+        self.assertIn("cheese,map (map: dict/done/no.words)", stderr)
+        config.no_words(self.root).write_text("")
+        code, _, stderr = self._classify("yes", "y.pairs", ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+
+    def test_yes_refuses_a_line_that_is_not_a_pair(self):
+        # With no no.pairs, pcomm never runs, so only the removed-word check
+        # reads src.
+        self._aggregate("no").unlink()
+        self._removed("map")
+        for line in ("map", "cheese,map,x", "cheese, map", "cheese,'"):
+            with self.subTest(line=line):
+                with self.assertRaisesRegex(
+                        ValueError, f"invalid pair in .*y.pairs at line 1"):
+                    self._classify("yes", "y.pairs", [line])
+        self.assertEqual("", self._aggregate("yes").read_text())
+
+    def test_yes_accepts_words_with_spaces_and_apostrophes(self):
+        self._removed("map")
+        code, _, stderr = self._classify(
+            "yes", "y.pairs", ["nathan hale,ain't", "aaron,usc&gs"])
+        self.assertEqual(0, code, stderr)
+
+    def test_no_may_hold_a_removed_word(self):
+        self._removed("map")
+        code, _, stderr = self._classify("no", "n.pairs", ["cheese,map"])
+        self.assertEqual(0, code, stderr)
+
     def test_conflicts_are_sampled_by_default(self):
         pairs = ["a,one", "b,two", "c,three", "d,four", "e,five"]
         fx.write_pairs(self._aggregate("yes"), pairs)

@@ -291,6 +291,17 @@ def classified(root_dir: Path, kind: str, sentence: str | None = None) -> Path:
     return path(root_dir, _classified_parts(kind, sentence)) / f"{kind}.pairs"
 
 
+def yes_pair_files(root_dir: Path) -> list[Path]:
+    """Every standing YES pair set: the global one, then each sentence's.
+
+    Only the exact name counts, so a set renamed aside (yes.pairs.old) stops
+    counting. Sets that do not exist yet are left out.
+    """
+    files = [classified(root_dir, "yes")]
+    files += [classified(root_dir, "yes", sentence) for sentence in SENTENCES]
+    return [path for path in files if path.is_file()]
+
+
 def base_dictionary(root_dir: Path) -> Path:
     """The hand-placed base: .wf/dict/words.big.
 

@@ -29,7 +29,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
-from workflow import command, config, fs, log, usage
+from workflow import command, config, dictionary, fs, log, usage
 
 
 # The verdict each kind contradicts. Recording both for one pair is a mistake
@@ -113,6 +113,17 @@ def conflict(root: Path, kind: str, src: Path,
         pairs = contradictions(src, other)
         if pairs:
             return contradiction_message(kind, pairs, scope, show_all)
+    if kind == "yes":
+        # The dictionary is global, so a removed word is checked whatever
+        # the scope.
+        pairs = dictionary.removed_word_pairs(root, src)
+        if pairs:
+            return (listing(f"Cannot classify YES: {len(pairs)} input "
+                            f"pair(s) hold a word classified NO in the "
+                            f"dictionary", pairs, show_all)
+                    + "\nto retract the NO, take the word out of the "
+                      "removed.N records named, run `wf gen dict`, then "
+                      "retry")
     return None
 
 

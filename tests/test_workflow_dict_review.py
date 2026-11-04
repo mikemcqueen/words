@@ -413,6 +413,64 @@ class DictionaryReviewTests(unittest.TestCase):
             dictionary.remove_words(self.root, bad)
 
 
+    # ------------------------------------------------ words in YES pairs
+
+    def _yes_pairs(self, pairs, sentence=None, name="yes.pairs"):
+        path = config.classified(self.root, "yes", sentence).with_name(name)
+        path.write_text("".join(f"{pair}\n" for pair in pairs))
+
+    def test_eval_skips_words_in_global_and_sentence_yes_pairs(self):
+        self._yes_pairs(["apple,pie"])
+        self._yes_pairs(["tree,cherry"], "s3")
+        self._yes_pairs(["banana,split"], "s4", name="yes.pairs.old")
+        self.submit(" 8 apple\n 7 banana\n 6 cherry\n 5 date\n")
+        with mock.patch.object(notes, "make", return_value=[]):
+            code, stdout, stderr = self.run_cli("eval", "words", self.NAME)
+        self.assertEqual(0, code, stderr)
+        filtered = (config.path(self.root, ["dict", "eval"]) / self.NAME
+                    / f"{self.NAME}.filtered")
+        self.assertEqual(" 7 banana\n 5 date\n", filtered.read_text())
+        self.assertIn("2 words skipped for being in classified YES pairs",
+                      stdout + stderr)
+
+    def test_separate_cuts_by_the_same_yes_pair_rule(self):
+        self._yes_pairs(["wa,pie"], "s2")
+        source = self.root / "ranked.words"
+        source.write_text("wa\nwb\nwc\n")
+        with mock.patch.object(notes, "CHUNK_SIZE", 1):
+            code, _, stderr = self.run_cli(
+                "submit", "words", str(source), "--as", "big", "--separate")
+        self.assertEqual(0, code, stderr)
+        queued = config.path(self.root, ["dict", "queued"])
+        self.assertEqual(["wa\nwb\n", "wc\n"],
+                         [(queued / n).read_text() for n in self._queued()])
+
+    def test_complete_refuses_a_no_word_in_a_yes_pair_classified_since_eval(self):
+        self.submit("banana\napple\n")
+        self.evaluate()
+        self._yes_pairs(["banana,split"], "s2")
+        derived = config.dictionary(self.root).read_text()
+        fake = FakeWordNotes({"aa": {"yes": ["apple"], "no": ["banana"]}})
+        with self.assertRaisesRegex(
+                ValueError,
+                "cannot record 1 NO words that are in classified YES pairs:\n"
+                "  banana  banana,split  classified/s2/yes/yes.pairs\n"):
+            self.complete(fake)
+        self.assertEqual([], list(config.removals(self.root).iterdir()))
+        self.assertEqual(derived, config.dictionary(self.root).read_text())
+        self.assertTrue((config.path(self.root, ["dict", "eval"])
+                         / self.NAME).is_dir())
+
+    def test_remove_words_refuses_a_word_in_a_yes_pair(self):
+        self._yes_pairs(["pie,cherry"])
+        junk = self.root / "junk.words"
+        junk.write_text("cherry\n")
+        with self.assertRaisesRegex(
+                ValueError, "  cherry  pie,cherry  classified/yes/yes.pairs"):
+            self.run_cli("remove", "words", str(junk))
+        self.assertEqual([], list(config.removals(self.root).iterdir()))
+
+
 class WordValidationTests(unittest.TestCase):
     def test_content_equality_not_equal_counts_controls_validation(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -87,15 +87,8 @@ class SubmitP2(Submit):
                         pair = raw.rstrip("\n")
                         if not pair.strip():
                             continue
-                        fields = pair.split(",")
-                        if (len(fields) != 2 or
-                                any(not field or field != field.strip()
-                                    for field in fields)):
-                            raise ValueError(
-                                f"invalid pair in {src} at line {line_number}: "
-                                f"expected exactly two nonempty comma-separated "
-                                f"fields with no surrounding whitespace; got "
-                                f"{pair!r}")
+                        # Refuses a line that is not a pair.
+                        dictionary.pair_words(src, line_number, pair)
                         tmp.write(f"{pair}\n")
             return prepared
         except BaseException:
@@ -108,8 +101,7 @@ P1 = Submit(phase="p1", label="pairs",           positional="PAIRS-FILE")
 P2 = SubmitP2(phase="p2", label="review-candidate", positional="PAIRS-FILE")
 
 
-def separate_parts(src: Path, classified: list[Path],
-                   size: int) -> list[str]:
+def separate_parts(src: Path, known: set[str], size: int) -> list[str]:
     """Cut src into contiguous, unchanged slices of at most `size` words left
     unreviewed.
 
@@ -119,7 +111,6 @@ def separate_parts(src: Path, classified: list[Path],
     src unchanged, in its ranked order. Rows after the last unclassified word
     stay in the last slice, so no slice is left with nothing to review.
     """
-    known = dictionary.classified_set(classified)
     parts: list[list[str]] = [[]]
     count = surviving = 0
     for line, _, kept in dictionary.unclassified_rows(src, known):
@@ -192,8 +183,9 @@ class SubmitWords(command.Action):
         queued_dir = config.path(opts.dir, ["dict", "queued"])
 
         if separate:
-            classified = dictionary.classified_files(opts.dir)
-            parts = separate_parts(src, classified, notes.CHUNK_SIZE)
+            verdicts, in_yes_pairs = dictionary.unreviewable_words(opts.dir)
+            parts = separate_parts(src, verdicts | in_yes_pairs,
+                                   notes.CHUNK_SIZE)
         else:
             parts = None
         queued = separate_names(chosen, len(parts) if parts else 1)
