@@ -469,7 +469,7 @@ class DictionaryTests(unittest.TestCase):
         code, stdout, stderr = self._gen()
         self.assertEqual(0, code, stderr)
         self.assertEqual(SMALL, self.small_derived.read_text())
-        self.assertIn("dict.filtered 2 -> 3", stdout)
+        self.assertIn("dict.filtered 2 -> 3 (+1)\n", stdout)
 
     def test_the_reviewed_archive_shares_the_stem_and_the_generation(self):
         self._base()
@@ -585,7 +585,7 @@ class DictionaryTests(unittest.TestCase):
         _, stdout, _ = self._gen()
         self.assertEqual(["apple", "banana", "fig"], self._lines(self.derived))
         # An equal count with different bytes is a move, and renders as one.
-        self.assertIn("words.filtered 3 -> 3", stdout)
+        self.assertIn("words.filtered 3 -> 3\n", stdout)
         self.assertNotIn("words.filtered 3 (unchanged)", stdout)
 
     def test_the_report_names_both_archives_under_one_generation(self):

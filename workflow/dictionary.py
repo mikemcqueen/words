@@ -607,7 +607,9 @@ def _count_line(label: str, staged: setops.Staged) -> str:
         return f"{label} {after} (new)"
     if not staged.replaced:
         return f"{label} {before} (unchanged)"
-    return f"{label} {before} -> {after}"
+    if after == before:
+        return f"{label} {before} -> {after}"
+    return f"{label} {before} -> {after} ({after - before:+})"
 
 
 def _report(root: Path, tree: Tree, derived: Derived) -> list[str]:
