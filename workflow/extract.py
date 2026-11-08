@@ -70,6 +70,7 @@ class ExtractYes(command.Action):
 
         code = steps.run_steps(STEPS, ctx)
         if code == 0:
+            assert ctx.dest is not None
             log.success(f"Saved {fs.line_count(ctx.dest):,} YES pairs "
                         f"to {ctx.dest}")
         return code

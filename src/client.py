@@ -7,92 +7,14 @@ import argparse
 import json
 import math
 import os
-import re
 import sys
 import time
-from pathlib import Path
 
 import httpx
 
 from src.common import add_inference_args, parse_on_off
 from src.model import is_gpt
 
-def parse_nginx_upstream(config_path=None):
-    """Parse nginx upstream block to extract server topology.
-
-    Returns dict with:
-      servers: list of {ip, port, max_conns, name}
-      queue_size: int (0 if no queue)
-      total_capacity: sum(max_conns) + queue_size
-    Or None if config not found/unparseable.
-    """
-    if config_path:
-        candidates = [Path(config_path)]
-    else:
-        candidates = [
-            Path("/etc/nginx/sites-available/gpu_cluster"),
-            Path("/etc/nginx/sites-enabled/gpu_cluster"),
-        ]
-
-    text = None
-    for p in candidates:
-        try:
-            text = p.read_text()
-            break
-        except (OSError, PermissionError):
-            continue
-    if text is None:
-        return None
-
-    # Extract upstream block
-    m = re.search(r'upstream\s+gpu_cluster\s*\{([^}]+)\}', text, re.DOTALL)
-    if not m:
-        return None
-    block = m.group(1)
-
-    servers = []
-    for line in block.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('#') or not stripped.startswith('server '):
-            continue
-        sm = re.match(r'server\s+([\d.]+):(\d+)\s*(.*)', stripped)
-        if not sm:
-            continue
-        ip, port = sm.group(1), int(sm.group(2))
-        rest = sm.group(3)
-        max_conns = 0
-        mc = re.search(r'max_conns=(\d+)', rest)
-        if mc:
-            max_conns = int(mc.group(1))
-        # Extract comment name (e.g. "# JUNIPER")
-        name = SERVER_IPS.get(ip)
-        if not name:
-            cm = re.search(r'#\s*(\S+)', rest)
-            if cm:
-                name = cm.group(1).lower()
-        servers.append({'ip': ip, 'port': port, 'max_conns': max_conns, 'name': name})
-
-    if not servers:
-        return None
-
-    queue_size = 0
-    for line in block.splitlines():
-        stripped = line.strip()
-        if stripped.startswith('#'):
-            continue
-        qm = re.match(r'queue\s+(\d+)', stripped)
-        if qm:
-            queue_size = int(qm.group(1))
-
-    total = sum(s['max_conns'] for s in servers) + queue_size
-    return {
-        'servers': servers,
-        'queue_size': queue_size,
-        'total_capacity': total,
-    }
-
-
-#https://dashscope-us.aliyuncs.com/compatible-mode/v1
 def host_path_prefix(host: str) -> str:
     if "dashscope-us" in host.lower() or "dashscope-intl" in host.lower():
         return "/compatible-mode"
@@ -151,58 +73,6 @@ def get_compact_server_name(host: str) -> str:
         assert len(labels) > 1
         return labels[1]
     return labels[0]
-
-
-def get_max_concurrent(host: str, port: int, nginx_config=None):
-    """Auto-detect max-concurrent from nginx config.
-
-    If host is localhost:80 (nginx), returns total_capacity.
-    If host is a specific backend server, returns that server's max_conns.
-    Returns None if nginx config not found or host not in config.
-    """
-    upstream = parse_nginx_upstream(nginx_config)
-    if not upstream:
-        return None
-
-    # Going through nginx — use total capacity
-    bare = host.split("://", 1)[-1]
-    if bare == "127.0.0.1" and port == 80:
-        return upstream['total_capacity'], upstream
-
-    # Targeting a specific server — find its max_conns
-    ip = bare
-    for s in upstream['servers']:
-        if s['ip'] == ip or s['name'] == bare:
-            return s['max_conns'], upstream
-
-    return None
-
-
-def auto_detect_max_concurrent(args):
-    """Auto-detect max-concurrent from nginx config, mutating args in place."""
-    nginx_config = getattr(args, 'nginx_config', None)
-    result = get_max_concurrent(args.host, args.port, nginx_config)
-    if not result:
-        return
-    mc, upstream = result
-    user_set_mc = '--max-concurrent' in sys.argv or '--mc' in sys.argv
-    if not user_set_mc:
-        args.max_concurrent = mc
-        server_name = get_server_name(args.host)
-        if server_name == "localhost":
-            server_desc = ", ".join(
-                f"{s['name'] or s['ip']}:{s['max_conns']}"
-                for s in upstream['servers']
-            )
-            print(f"nginx: auto-set --max-concurrent={mc} "
-                  f"({len(upstream['servers'])} servers: {server_desc}, "
-                  f"queue={upstream['queue_size']})")
-        else:
-            print(f"nginx: auto-set --max-concurrent={mc} "
-                  f"(from {server_name} max_conns)")
-    elif args.max_concurrent > upstream['total_capacity']:
-        print(f"Warning: --max-concurrent={args.max_concurrent} exceeds "
-              f"nginx capacity ({upstream['total_capacity']})")
 
 
 async def run_concurrent(items, process_fn, args):
@@ -330,17 +200,6 @@ def add_inference_options(payload: dict, args) -> dict:
     return payload
 
 
-"""
-# for nginix upstream
-def _extract_upstream(response) -> str | None:
-    addr = response.headers.get("x-upstream-addr")
-    if not addr:
-        return None
-    ip = addr.split(":")[0]
-    return SERVER_IPS.get(ip, addr)
-"""
-
-
 def query_models(host: str, port: int, key: str | None) -> list[dict]:
     if is_decisions_host(host):
         return [{"id": DECISIONS_MODEL, "owned_by": "openai"}]
@@ -395,7 +254,7 @@ def use_responses(model_id: str):
     return model_id.lower().startswith("gpt")
 
 
-async def _post_decisions(client: httpx.AsyncClient, args, request: dict, label=None) -> dict[str, dict]:
+async def _post_decisions(client: httpx.AsyncClient, args, request: dict, label=None) -> dict[str | None, dict]:
     """POST a decisions request and return its answers keyed by question name.
 
     Raises ValueError (including the body) unless every question got a refusal
@@ -514,7 +373,6 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, labe
 
     response = await _post_with_retry(client, url, headers=headers, json=payload, label=label, quiet=getattr(args, "quiet", False))
 
-    #upstream = _extract_upstream(response)
     if args.verbose:
         print(json.dumps(response.json(), indent=2))
 
@@ -529,6 +387,4 @@ async def send_openai_request(client: httpx.AsyncClient, args, prompt: str, labe
         del payload["message"]
         response = message["content"]
         del message["content"]
-        #if upstream:
-        #payload['upstream'] = upstream
     return response, message, payload

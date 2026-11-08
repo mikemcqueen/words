@@ -159,13 +159,13 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
     # empty result reported as success -- which is what it did for the
     # single-file callers this function absorbed.
     readable = 0
-    best = {} if dedupe else None
-    sampled = [] if sample is not None else None
+    best: dict[str, float] = {}
+    sampled: list[str] | None = [] if sample is not None else None
     seen = 0
 
     def emit(pair):
         nonlocal seen
-        if sampled is None:
+        if sampled is None or sample is None:
             out_file.write(pair + "\n")
             return
         seen += 1
@@ -223,7 +223,7 @@ def filter_results(paths, yes: bool, out_file, pairs_path: str | None = None,
         out_file.writelines(pair + "\n" for pair in sampled)
     if pair_set is None:
         return None
-    return [_oriented_pair(key, reversed_flags[index])
+    return [_oriented_pair(key, bool(reversed_flags[index]))
             for key, index in pair_set.items() if not found[index]]
 
 

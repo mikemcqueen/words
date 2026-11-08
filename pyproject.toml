@@ -10,3 +10,4 @@ follow_imports = "silent"
 
 [tool.pyright]
 exclude = ["wt"]
+reportPossiblyUnboundVariable = false

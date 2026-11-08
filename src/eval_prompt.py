@@ -326,7 +326,6 @@ Examples:
     else:
         args.system_prompt_filename = None
 
-    #auto_detect_max_concurrent(args)
 
     args.model_id = resolve_model_id(args)
     args.llamacpp = is_llamacpp_backend(args.host, args.port, args.key)

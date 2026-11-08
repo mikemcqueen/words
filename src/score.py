@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+from collections.abc import Callable
 import json
 import signal
 import sys
@@ -25,7 +26,7 @@ from src.common import (load_expected_pairs, load_eval_results, parse_yesno_resp
 
 TokenLabel = namedtuple("TokenLabel", ["token", "label"])
 
-METHODS = {}
+METHODS: dict[str, Callable] = {}
 
 def method(name):
     def decorator(fn):

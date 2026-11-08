@@ -396,10 +396,10 @@ def _anchor_filter_3(c_idx, anchor_indices):
         if ai == c_idx:
             continue
         if ai > c_idx:
-            return True, None
+            return True, []
         ab_required.append(ai)
     if len(ab_required) > 2:
-        return True, None
+        return True, []
     return False, ab_required
 
 
@@ -638,7 +638,7 @@ def print_discovery_ensemble(args, files, anchor_keys=frozenset()):
     keys = list(files.keys())
     for k in anchor_keys:
         assert k in keys, f"anchor key {k!r} not in discovered files"
-    if anchor_keys and args.n_way is not None:
+    if anchor_keys:
         assert len(anchor_keys) <= args.n_way, \
             f"can't anchor on {len(anchor_keys)} keys with n_way={args.n_way}"
     exp_vec, yes_vecs, dirs, n_pairs = _build_vecs(files)

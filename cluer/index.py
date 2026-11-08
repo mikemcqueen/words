@@ -11,9 +11,10 @@ import tempfile
 import uuid
 from array import array
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice, repeat
 from pathlib import Path
+from typing import Any, BinaryIO
 
 import numpy as np
 
@@ -148,7 +149,7 @@ def build(data_path: Path, index_path: Path, replace: bool = False) -> None:
             )
 
             next_ref = 0
-            bigrams = array("Q")
+            bigram_keys = array("Q")
             for clue_id, offset, clue, refs_offset, nrefs in scan(data):
                 clue_off[clue_id] = offset
                 ref_start[clue_id] = next_ref
@@ -163,8 +164,8 @@ def build(data_path: Path, index_path: Path, replace: bool = False) -> None:
                     postings[pos] = clue_id
                     cursors[word_id] = pos + 1
                 for first, second in adjacent_words(clue):
-                    bigrams.append(bigram_key(word_ids[first], word_ids[second]))
-            bigrams = np.unique(np.frombuffer(bigrams, dtype=np.uint64))
+                    bigram_keys.append(bigram_key(word_ids[first], word_ids[second]))
+            bigrams = np.unique(np.frombuffer(bigram_keys, dtype=np.uint64))
             np.save(staging / "bigrams.npy", bigrams)
             ref_start[clue_count] = next_ref
             if not np.array_equal(cursors, starts[1:]):
@@ -256,12 +257,12 @@ def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]
             and (np.diff(positions) > 1).all()
         )
         return ids, well_formed
-    ids = []
+    id_pairs = []
     for query_line in queries:
         parts = query_line.lower().split(b",")
-        ids.append((word_ids.get(parts[0], -1), word_ids.get(parts[1], -1))
+        id_pairs.append((word_ids.get(parts[0], -1), word_ids.get(parts[1], -1))
                    if len(parts) == 2 else (-1, -1))
-    return np.array(ids, dtype=np.int64).reshape(-1, 2), False
+    return np.array(id_pairs, dtype=np.int64).reshape(-1, 2), False
 
 
 def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
@@ -288,7 +289,8 @@ def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
     keys = first << np.uint64(32) | second
     if not forward:
         keys = np.concatenate((keys, second << np.uint64(32) | first))
-    found = known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0)
+    found = np.asarray(
+        known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0))
     if invert:
         found = ~found
     matches = [queries[i] for i in np.flatnonzero(found[:end])]
@@ -329,7 +331,7 @@ def threaded_results(chunks, threads: int, function, *args):
     At most 2 * threads chunks are read ahead, so memory stays bounded.
     """
     with ThreadPoolExecutor(threads) as pool:
-        pending = deque()
+        pending: deque[Future] = deque()
         try:
             for chunk in chunks:
                 pending.append(pool.submit(function, chunk, *args))
@@ -428,13 +430,14 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
           adjacent: bool = False, exact: bool = False,
           forward: bool = False, sorted_input: bool = False,
           threads: int = 1, invert: bool = False) -> None:
+    query_bytes = (query_text or "").encode("utf-8")
     if (adjacent and input_path is None
-            and ADJACENT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
+            and ADJACENT_QUERY.fullmatch(query_bytes) is None):
         raise ValueError(
             f"two words required for --adjacent: {query_text!r}"
         )
     if (exact and input_path is None
-            and EXACT_QUERY.fullmatch(query_text.encode("utf-8")) is None):
+            and EXACT_QUERY.fullmatch(query_bytes) is None):
         raise ValueError("one or two words required for --exact")
     validate_index(data_path, index_path)
     tokens = (index_path / "tokens.txt").read_bytes().splitlines()
@@ -456,8 +459,9 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     lead_id = None
     lead_neighbors = b""
 
+    source: BinaryIO | tuple[bytes]
     if input_path is None:
-        source = (query_text.encode("utf-8"),)
+        source = (query_bytes,)
     else:
         source = sys.stdin.buffer if input_path == "-" else open(input_path, "rb")
     try:
@@ -501,11 +505,11 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     words = set(parts)
                     lead_word = parts[0]
                     if adjacent:
-                        phrases = {(parts[0], parts[1])}
+                        adjacent_phrases = {(parts[0], parts[1])}
                         if not forward:
-                            phrases.add((parts[1], parts[0]))
+                            adjacent_phrases.add((parts[1], parts[0]))
                     elif len(parts) == 1:
-                        phrases = (parts[0],)
+                        phrases: tuple[bytes, ...] = (parts[0],)
                     else:
                         orders = [(parts[0], parts[1])]
                         if not forward:
@@ -525,12 +529,12 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     if not all(word in word_ids for word in ordered_words):
                         ordered_words = clean_words(raw_query)
                     words = set(ordered_words)
-                    lead_word = ordered_words[0] if ordered_words else None
+                    lead_word = ordered_words[0] if ordered_words else b""
                 if not words or any(word not in word_ids for word in words):
                     continue
                 if adjacent:
                     if not any(bigram_key(word_ids[first], word_ids[second])
-                               in bigrams for first, second in phrases):
+                               in bigrams for first, second in adjacent_phrases):
                         continue
                 elif sorted_input and len(words) == 2:
                     # Consecutive lines usually share a lead word, so its
@@ -578,7 +582,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         if clue.lower() not in phrases:
                             continue
                     elif adjacent:
-                        if phrases.isdisjoint(adjacent_words(clue)):
+                        if adjacent_phrases.isdisjoint(adjacent_words(clue)):
                             continue
                     elif forward:
                         clue_words = iter(clean_words(clue))
@@ -592,7 +596,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         printed_query = True
                     if input_path is not None and not show_results:
                         break
-                    decoded_refs = [
+                    decoded_refs: list[dict[str, Any]] = [
                         {"answer": answers[int(ref) >> 1].decode("latin-1"),
                          "bit": int(ref) & 1}
                         for ref in refs[ref_start[clue_id] : ref_start[clue_id + 1]]
@@ -611,7 +615,7 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
             if unmatched is not None:
                 print(unmatched.decode("utf-8", errors="replace"))
     finally:
-        if input_path not in (None, "-"):
+        if not isinstance(source, tuple) and source is not sys.stdin.buffer:
             source.close()
 
 
@@ -638,7 +642,7 @@ def query_answer(data_path: Path, index_path: Path, answer_text: str,
             clue_id = int(clue_id)
             offset = int(clue_off[clue_id])
             clue = data[offset + 1 : offset + 1 + data[offset]].decode("latin-1")
-            decoded_refs = [
+            decoded_refs: list[dict[str, Any]] = [
                 {"answer": answers[int(ref) >> 1].decode("latin-1"),
                  "bit": int(ref) & 1}
                 for ref in refs[ref_start[clue_id] : ref_start[clue_id + 1]]

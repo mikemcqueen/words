@@ -98,10 +98,12 @@ def main():
             lp_data = payload.get("logprobs")
             # TODO: for alibaba's qwen (at least) (NOTE: also in evalpair.py)
             #lp_data = message.get("logprobs")
+            assert lp_data is not None
             top_logprobs = lp_data.get("content", [{}])[0].get("top_logprobs", [])
         elif isinstance(message, dict):
             lp_data = message.get("logprobs")
             #print(f"lpdata[0]: {json.dumps(lp_data[0], indent=2)}")
+            assert lp_data is not None
             top_logprobs = lp_data[0].get("top_logprobs", [])
             #print(f"top_logprobs: {json.dumps(top_logprobs, indent=2)}")
 

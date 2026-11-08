@@ -99,7 +99,8 @@ def opposing(root: Path, kind: str,
     other = OPPOSITE[kind]
     if sentence is None:
         return [(config.classified(root, other), None)]
-    sets = [(config.classified(root, other, sentence), sentence)]
+    sets: list[tuple[Path, str | None]] = [
+        (config.classified(root, other, sentence), sentence)]
     if kind == "no":
         sets.append((config.classified(root, other), None))
     return sets

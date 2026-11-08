@@ -183,7 +183,6 @@ Examples:
                         help="Directory for result files (default: results/)")
     parser.add_argument('--max-concurrent', '--mc', type=int, default=1,
                         help="Max concurrent requests (default: 1)")
-    #parser.add_argument('--nginx-config', type=str, help='Path to nginx upstream config (auto-detected if omitted)')
     parser.add_argument('-n', '--num-pairs', type=int, metavar='N',
                         help='Process at most N pairs from pair-file')
     parser.add_argument('--tag', type=str,
@@ -335,6 +334,7 @@ async def process_pairs_async(ctx: str | None, pairs, orders, args, writer=None,
         if predicates:
             result = await process_predicates_async(client, orig_pair, predicates, orders, args)
         else:
+            assert ctx is not None
             result = await process_pair_async(client, ctx, orig_pair, orders, args)
         return (seq, *result)
 
@@ -454,7 +454,6 @@ def handle_results(args, retry_map=None, writer=None):
 
 def main():
     args = parse_args()
-    #auto_detect_max_concurrent(args)
     args.model_id = resolve_model_id(args)
     args.llamacpp = is_llamacpp_backend(args.host, args.port, args.key)
     print(f"Model: {args.model_id} Gemma={is_gemma(args.model_id)} llamacpp={args.llamacpp}")
@@ -478,6 +477,7 @@ def main():
             print(f"\n=== Prompt: {current_pid} ===")
 
         if args.llamacpp:
+            assert ctx is not None
             send_anchor_prefix(args, ctx)
 
         # When --save, count existing results and resume from where we left off
@@ -498,6 +498,7 @@ def main():
         try:
             if not args.logprobs:
                 print(f"Thinking: {args.thinking}")
+                assert ctx is not None
                 retry_map = asyncio.run(classify_pairs_async(ctx, pairs, args, writer))
             else:
                 orders = ["fwd", "rvs"]

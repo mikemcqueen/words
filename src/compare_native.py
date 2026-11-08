@@ -28,4 +28,5 @@ def _require_native() -> None:
 def iter_projected_blocks(files_list, chunk_size=100):
     """Return a native iterator over compact projected blocks."""
     _require_native()
+    assert ProjectedAlignedJsonlReader is not None
     return ProjectedAlignedJsonlReader(files_list, chunk_size)

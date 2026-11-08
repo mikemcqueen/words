@@ -760,6 +760,8 @@ class Inputs:
         # the sentence target does, so dfs.best would repeat dfs.seed.
         if not self.refine_applicable:
             return []
+        if self.seed is None:
+            raise FileNotFoundError(f"seed missing: {self.target.seed_glob}")
         dfs_best = self.dfs("best")
         if not dfs_best.exists():
             return ["missing"]
