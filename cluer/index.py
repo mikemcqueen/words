@@ -14,7 +14,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from itertools import islice, repeat
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Callable
 
 import numpy as np
 
@@ -22,8 +22,11 @@ import numpy as np
 DEFAULT_DATA = Path(__file__).parent / "data" / "cluedata"
 DEFAULT_INDEX = Path(__file__).parent / "data" / "index"
 WORD = re.compile(rb"[a-z0-9]+")
-ADJACENT_QUERY = re.compile(rb"[A-Za-z0-9]+ [A-Za-z0-9]+")
-ADJACENT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+,[A-Za-z0-9]+")
+# An -j part: one or more words separated by single spaces.
+ADJACENT_PART = rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)*"
+ADJACENT_QUERY = re.compile(
+    rb"[A-Za-z0-9]+ [A-Za-z0-9]+|" + ADJACENT_PART + rb"," + ADJACENT_PART)
+ADJACENT_FILE_QUERY = re.compile(ADJACENT_PART + rb"," + ADJACENT_PART)
 EXACT_QUERY = re.compile(rb"[A-Za-z0-9]+(?: [A-Za-z0-9]+)?")
 EXACT_FILE_QUERY = re.compile(rb"[A-Za-z0-9]+(?:,[A-Za-z0-9]+)?")
 FORMAT_VERSION = 4
@@ -44,6 +47,35 @@ def adjacent_words(text: bytes) -> list[tuple[bytes, bytes]]:
     """Return consecutive clean_words pairs, as make-index sees them."""
     words = clean_words(text)
     return list(zip(words, words[1:]))
+
+
+def adjacent_runs(query_line: bytes, separator: bytes, forward: bool
+                  ) -> list[tuple[bytes, ...]]:
+    """Return the word runs an -j query line matches, or [] if malformed.
+
+    The line has two parts split on separator, and each part has words
+    split on single spaces. The runs are the first part's words followed by
+    the second's and, unless forward, the second's followed by the first's.
+    """
+    parts = query_line.lower().split(separator)
+    if len(parts) != 2:
+        return []
+    first, second = (tuple(part.split(b" ")) for part in parts)
+    return [first + second] if forward else [first + second, second + first]
+
+
+def contains_run(words: list[bytes], run: tuple[bytes, ...]) -> bool:
+    """Return whether run occurs as consecutive words in words."""
+    size = len(run)
+    return any(tuple(words[i : i + size]) == run
+               for i in range(len(words) - size + 1))
+
+
+def run_bigram_keys(run: tuple[bytes, ...], word_ids: dict[bytes, int]
+                    ) -> list[int]:
+    """Return the bigram keys of each pair of consecutive words in run."""
+    return [bigram_key(word_ids[first], word_ids[second])
+            for first, second in zip(run, run[1:])]
 
 
 def bigram_key(first: int, second: int) -> int:
@@ -216,6 +248,19 @@ def intersect(small: np.ndarray, big: np.ndarray) -> np.ndarray:
     return small[valid & (big[np.minimum(pos, len(big) - 1)] == small)]
 
 
+def clues_with_all(ids: list[int], starts: list[int], postings: np.ndarray
+                   ) -> np.ndarray:
+    """Return the ids of clues that contain every word id in ids."""
+    ids = sorted(ids, key=lambda i: starts[i + 1] - starts[i])
+    matches = postings[starts[ids[0]] : starts[ids[0] + 1]]
+    for word_id in ids[1:]:
+        matches = intersect(
+            matches, postings[starts[word_id] : starts[word_id + 1]])
+        if not len(matches):
+            break
+    return matches
+
+
 def in_sorted(keys: np.ndarray, table: np.ndarray) -> np.ndarray:
     """Return a mask of which keys occur in the sorted array table."""
     # Looking up sorted keys walks table in order, which is much faster
@@ -266,24 +311,31 @@ def adjacent_ids(queries: list[bytes], word_ids: dict[bytes, int]
 
 
 def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
-                   bigrams: np.ndarray, forward: bool, invert: bool = False
+                   bigrams: np.ndarray, forward: bool,
+                   phrase_found: Callable[[bytes], bool],
+                   invert: bool = False
                    ) -> tuple[list[bytes], bytes | None]:
     """Return (matching query lines, first malformed line or None).
 
     Matches are only those before the malformed line. With invert, the
-    query lines returned are those that do not match.
+    query lines returned are those that do not match. Lines with a part of
+    more than one word are checked with phrase_found.
     """
     queries = [line.rstrip(b"\r\n") for line in lines]
     ids, well_formed = adjacent_ids(queries, word_ids)
     known = (ids >= 0).all(axis=1)
     end = len(queries)
+    phrase_lines = []
     if not well_formed:
         # Known words are all [a-z0-9]+, so the regex check is only needed
-        # for lines with an unknown part.
+        # for lines with an unknown part. A part with a space is never a
+        # known word.
         for i in np.flatnonzero(~known):
             if ADJACENT_FILE_QUERY.fullmatch(queries[i]) is None:
                 end = i
                 break
+            if b" " in queries[i]:
+                phrase_lines.append(i)
     first = ids[:, 0].astype(np.uint64)
     second = ids[:, 1].astype(np.uint64)
     keys = first << np.uint64(32) | second
@@ -291,6 +343,8 @@ def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
         keys = np.concatenate((keys, second << np.uint64(32) | first))
     found = np.asarray(
         known & in_sorted(keys, bigrams).reshape(-1, len(queries)).any(axis=0))
+    for i in phrase_lines:
+        found[i] = phrase_found(queries[i])
     if invert:
         found = ~found
     matches = [queries[i] for i in np.flatnonzero(found[:end])]
@@ -299,6 +353,7 @@ def adjacent_chunk(lines: list[bytes], word_ids: dict[bytes, int],
 
 def print_adjacent_queries(source, word_ids: dict[bytes, int],
                            bigrams: np.ndarray, forward: bool,
+                           phrase_found: Callable[[bytes], bool],
                            threads: int = 1, invert: bool = False) -> None:
     """Print -f -j query lines whose two words are adjacent in some clue.
 
@@ -310,11 +365,13 @@ def print_adjacent_queries(source, word_ids: dict[bytes, int],
     """
     chunks = iter(lambda: list(islice(source, ADJACENT_CHUNK)), [])
     if threads == 1:
-        results = (adjacent_chunk(lines, word_ids, bigrams, forward, invert)
+        results = (adjacent_chunk(lines, word_ids, bigrams, forward,
+                                  phrase_found, invert)
                    for lines in chunks)
     else:
         results = threaded_results(chunks, threads, adjacent_chunk,
-                                   word_ids, bigrams, forward, invert)
+                                   word_ids, bigrams, forward, phrase_found,
+                                   invert)
     for matches, bad_line in results:
         if matches:
             print(b"\n".join(matches).decode("utf-8", errors="replace"))
@@ -465,14 +522,35 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
     else:
         source = sys.stdin.buffer if input_path == "-" else open(input_path, "rb")
     try:
-        if chunked:
-            print_adjacent_queries(source, word_ids,
-                                   np.load(index_path / "bigrams.npy"), forward,
-                                   threads, invert)
-            return
         with data_path.open("rb") as stream, mmap.mmap(
             stream.fileno(), 0, access=mmap.ACCESS_READ
         ) as data:
+            if chunked:
+                sorted_bigrams = np.load(index_path / "bigrams.npy")
+
+                def phrase_found(query_line: bytes) -> bool:
+                    """Return whether a well-formed -f -j line matches."""
+                    runs = adjacent_runs(query_line, b",", forward)
+                    if not all(word in word_ids for word in runs[0]):
+                        return False
+                    runs = [run for run in runs if in_sorted(
+                        np.array(run_bigram_keys(run, word_ids),
+                                 dtype=np.uint64), sorted_bigrams).all()]
+                    if not runs:
+                        return False
+                    for clue_id in clues_with_all(
+                            [word_ids[word] for word in set(runs[0])],
+                            starts, postings).tolist():
+                        offset = int(clue_off[clue_id])
+                        clue_words = clean_words(
+                            data[offset + 1 : offset + 1 + data[offset]])
+                        if any(contains_run(clue_words, run) for run in runs):
+                            return True
+                    return False
+
+                print_adjacent_queries(source, word_ids, sorted_bigrams,
+                                       forward, phrase_found, threads, invert)
+                return
             # With invert, the previous line is printed when the next one
             # starts (or the input ends) unless a match cleared it.
             unmatched = None
@@ -481,34 +559,41 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                     print(unmatched.decode("utf-8", errors="replace"))
                 raw_query = line.rstrip(b"\r\n")
                 unmatched = raw_query if invert else None
-                if adjacent or exact:
+                if adjacent:
+                    # A command-line QUERY may use a comma instead of a space.
+                    separator = (b" " if input_path is None
+                                 and b"," not in raw_query else b",")
+                    runs = adjacent_runs(raw_query, separator, forward)
+                    # Known words are all [a-z0-9]+, so the regex check is
+                    # only needed for lines with an unknown word.
+                    if not (runs and all(word in word_ids
+                                         for word in runs[0])):
+                        pattern = (ADJACENT_QUERY if input_path is None
+                                   else ADJACENT_FILE_QUERY)
+                        if pattern.fullmatch(raw_query) is None:
+                            raise ValueError(
+                                "two words required for --adjacent: "
+                                f"{raw_query.decode('utf-8', errors='replace')!r}"
+                            )
+                        continue
+                    words = set(runs[0])
+                    lead_word = runs[0][0]
+                elif exact:
                     separator = b" " if input_path is None else b","
                     parts = raw_query.lower().split(separator)
                     # Known words are all [a-z0-9]+, so the regex check is
                     # only needed for lines with an unknown part.
-                    if not ((len(parts) == 2 or exact and len(parts) == 1)
+                    if not (len(parts) in (1, 2)
                             and all(part in word_ids for part in parts)):
-                        if exact:
-                            pattern = (EXACT_QUERY if input_path is None
-                                       else EXACT_FILE_QUERY)
-                            error = "one or two words required for --exact"
-                        else:
-                            pattern = (ADJACENT_QUERY if input_path is None
-                                       else ADJACENT_FILE_QUERY)
-                            error = (
-                                "two words required for --adjacent: "
-                                f"{raw_query.decode('utf-8', errors='replace')!r}"
-                            )
+                        pattern = (EXACT_QUERY if input_path is None
+                                   else EXACT_FILE_QUERY)
                         if pattern.fullmatch(raw_query) is None:
-                            raise ValueError(error)
+                            raise ValueError(
+                                "one or two words required for --exact")
                         continue
                     words = set(parts)
                     lead_word = parts[0]
-                    if adjacent:
-                        adjacent_phrases = {(parts[0], parts[1])}
-                        if not forward:
-                            adjacent_phrases.add((parts[1], parts[0]))
-                    elif len(parts) == 1:
+                    if len(parts) == 1:
                         phrases: tuple[bytes, ...] = (parts[0],)
                     else:
                         orders = [(parts[0], parts[1])]
@@ -533,8 +618,10 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                 if not words or any(word not in word_ids for word in words):
                     continue
                 if adjacent:
-                    if not any(bigram_key(word_ids[first], word_ids[second])
-                               in bigrams for first, second in adjacent_phrases):
+                    runs = [run for run in runs
+                            if all(key in bigrams for key in
+                                   run_bigram_keys(run, word_ids))]
+                    if not runs:
                         continue
                 elif sorted_input and len(words) == 2:
                     # Consecutive lines usually share a lead word, so its
@@ -555,16 +642,8 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         else:
                             print(raw_query.decode("utf-8", errors="replace"))
                         continue
-                ids = sorted((word_ids[word] for word in words),
-                             key=lambda i: starts[i + 1] - starts[i])
-                first = ids[0]
-                matches = postings[starts[first] : starts[first + 1]]
-                for word_id in ids[1:]:
-                    matches = intersect(
-                        matches, postings[starts[word_id] : starts[word_id + 1]]
-                    )
-                    if not len(matches):
-                        break
+                matches = clues_with_all([word_ids[word] for word in words],
+                                         starts, postings)
                 if not len(matches):
                     continue
                 if query_only:
@@ -582,11 +661,13 @@ def query(data_path: Path, index_path: Path, input_path: str | None,
                         if clue.lower() not in phrases:
                             continue
                     elif adjacent:
-                        if adjacent_phrases.isdisjoint(adjacent_words(clue)):
+                        clue_words = clean_words(clue)
+                        if not any(contains_run(clue_words, run)
+                                   for run in runs):
                             continue
                     elif forward:
-                        clue_words = iter(clean_words(clue))
-                        if not all(word in clue_words for word in ordered_words):
+                        remaining = iter(clean_words(clue))
+                        if not all(word in remaining for word in ordered_words):
                             continue
                     if invert:
                         unmatched = None

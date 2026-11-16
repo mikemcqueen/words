@@ -3,6 +3,7 @@
 
     python cluer/query_index.py "new york"
     python cluer/query_index.py -j "new york"
+    python cluer/query_index.py -j "new york,city"
     python cluer/query_index.py -f terms.txt
     python cluer/query_index.py -f terms.txt --forward
     python cluer/query_index.py -f terms.txt -r
@@ -18,14 +19,17 @@ can occur anywhere in a clue, in any order. -f prints each input query that
 matches at least one clue; -r also prints its matching clues after the query.
 -v instead prints each input query that matches no clue, including queries
 with a word that is not in the index; it cannot be used with -r.
-With -j, QUERY must be two alphanumeric words separated by one space, or each
-FILE line must be two such words separated by a comma. Only clues where the
-two words are adjacent, in either order, match. As in nutrimatic's
-make-index, apostrophes are deleted and any other run of characters that are
-not letters or digits separates words, so dont,stop matches "Don't stop",
-teal,lamp matches '"Blue Teal" lamp', and wood,wood does not match
-"Firewood wood".
-With -e, QUERY and FILE lines take one or two words, separated as with -j.
+With -j, QUERY and each FILE line are two parts separated by a comma, and
+each part is one or more alphanumeric words separated by single spaces. QUERY
+may instead be two words separated by one space. Only clues where the two
+parts are adjacent, in either order, match: "new york,city" matches
+"New York City" and "City New York" but not "New city York". As in
+nutrimatic's make-index, apostrophes are deleted and any other run of
+characters that are not letters or digits separates words, so dont,stop
+matches "Don't stop", teal,lamp matches '"Blue Teal" lamp', and wood,wood
+does not match "Firewood wood".
+With -e, QUERY takes one or two words separated by one space, and FILE lines
+one or two words separated by a comma.
 The entire clue, ignoring case, must be the word, or the two words in either
 order joined by one space or hyphen, and nothing else. So -e "new york"
 matches "New York" and "York-New" but not "New York!" or "A New York".
@@ -70,7 +74,7 @@ def main() -> None:
     parser.add_argument("-v", "--invert-match", action="store_true",
                         help="with -f, print queries that match no clue")
     parser.add_argument("-j", "--adjacent", action="store_true",
-                        help="require two words adjacent in either order")
+                        help="require two parts adjacent in either order")
     parser.add_argument("-e", "--exact", action="store_true",
                         help="match the entire clue to one or two words")
     parser.add_argument("--forward", action="store_true",

@@ -210,6 +210,99 @@ class CluerIndexTests(unittest.TestCase):
                 "'\"Blue Teal\" lamp' -> APPLE",
             ])
 
+    def test_adjacent_phrase_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "cluedata"
+            index = root / "index"
+            terms = root / "terms.txt"
+            data.write_bytes(cluedata(
+                ["APPLE"],
+                [(clue, [0]) for clue in (
+                    "New York City", "City of New York", "New city York",
+                    "The New York Times",
+                )],
+            ))
+            result = self.run_tool("build_index.py", "--data", data,
+                                   "--index", index)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            def adjacent(*args):
+                return self.run_tool("query_index.py", "-j", *args,
+                                     "--data", data, "--index", index)
+
+            def clues(result):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return [line.split(" ", 1)[1] for line in
+                        result.stdout.splitlines()]
+
+            self.assertEqual(clues(adjacent("new york,city")),
+                             ["'New York City' -> APPLE"])
+            self.assertEqual(clues(adjacent("City,New York")),
+                             ["'New York City' -> APPLE"])
+            self.assertEqual(clues(adjacent("city,new york", "--forward")), [])
+            self.assertEqual(clues(adjacent("york,new")),
+                             ["'New York City' -> APPLE",
+                              "'City of New York' -> APPLE",
+                              "'The New York Times' -> APPLE"])
+            for query in ("new york city", "new york,", "new  york,city",
+                          "new york,city,times", "new-york,city"):
+                result = adjacent(query)
+                self.assertEqual(result.returncode, 1, query)
+                self.assertIn(f"two words required for --adjacent: {query!r}",
+                              result.stderr)
+
+            # "the new city" has the bigrams "the new" and "new city", but
+            # in different clues.
+            terms.write_text(
+                "new york,city\ncity,new york\nyork,new\nnew york,times\n"
+                "new,york times\nyork city,new\nthe new,city\n"
+                "new york,zzz\nof,new york\n"
+            )
+            matches = ["new york,city", "city,new york", "york,new",
+                       "new york,times", "new,york times", "york city,new",
+                       "of,new york"]
+            for threads in ("1", "2"):
+                result = adjacent("-f", terms, "--threads", threads)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), matches)
+
+                result = adjacent("-f", terms, "-v", "--threads", threads)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(),
+                                 ["the new,city", "new york,zzz"])
+
+            result = adjacent("-f", terms, "--forward")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(),
+                             ["new york,city", "new york,times",
+                              "new,york times", "of,new york"])
+
+            result = adjacent("-f", terms, "-r", "--forward")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual([line.split(" ", 1)[1] if line.startswith("0x")
+                              else line for line in
+                              result.stdout.splitlines()], [
+                "new york,city", "'New York City' -> APPLE",
+                "new york,times", "'The New York Times' -> APPLE",
+                "new,york times", "'The New York Times' -> APPLE",
+                "of,new york", "'City of New York' -> APPLE",
+            ])
+
+            bad_terms = root / "bad_terms.txt"
+            for bad in ("new  york,city", "new york ,city", " new,city",
+                        "new york,city,times", "new york city"):
+                bad_terms.write_text(f"of,new york\n{bad}\nnew york,city\n")
+                for args in ((), ("-r",)):
+                    result = adjacent("-f", bad_terms, *args)
+                    self.assertEqual(result.returncode, 1, bad)
+                    self.assertEqual(result.stdout.splitlines()[:1],
+                                     ["of,new york"])
+                    self.assertNotIn("new york,city", result.stdout)
+                    self.assertIn(
+                        f"two words required for --adjacent: {bad!r}",
+                        result.stderr)
+
     def test_build_and_stream_queries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
