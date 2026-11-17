@@ -12,6 +12,7 @@ import uuid
 from array import array
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from itertools import islice, repeat
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
@@ -470,15 +471,47 @@ def neighbors(word_id: int, starts: list[int], postings: np.ndarray,
     return mask.tobytes()
 
 
+def _format_mtime_ns(mtime_ns: int) -> str:
+    """Return mtime_ns as local time with nanoseconds, plus the raw value."""
+    stamp = datetime.fromtimestamp(mtime_ns // 1_000_000_000).astimezone()
+    return (f"{stamp:%Y-%m-%d %H:%M:%S}.{mtime_ns % 1_000_000_000:09d} "
+            f"{stamp:%z} ({mtime_ns} ns)")
+
+
+def _rebuild_hint(data_path: Path, index_path: Path) -> str:
+    return (f"rebuild with: python cluer/build_index.py --data {data_path} "
+            f"--index {index_path} --replace")
+
+
 def validate_index(data_path: Path, index_path: Path) -> None:
-    metadata = json.loads((index_path / "metadata.json").read_text())
+    metadata_path = index_path / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
     source_stat = data_path.stat()
-    if metadata["version"] != FORMAT_VERSION:
-        raise ValueError("unsupported index version; rebuild the index")
-    if (metadata["source_size"], metadata["source_mtime_ns"]) != (
-        source_stat.st_size, source_stat.st_mtime_ns
-    ):
-        raise ValueError("index does not match cluedata; rebuild the index")
+    version = metadata.get("version")
+    if version != FORMAT_VERSION:
+        raise ValueError(
+            f"unsupported index version in {metadata_path}: index has "
+            f"version {version!r}, this code reads version {FORMAT_VERSION}; "
+            + _rebuild_hint(data_path, index_path))
+    differences = []
+    if metadata["source_size"] != source_stat.st_size:
+        change = source_stat.st_size - metadata["source_size"]
+        differences.append(
+            f"  size:  index built from {metadata['source_size']} bytes, "
+            f"cluedata is now {source_stat.st_size} bytes ({change:+d})")
+    if metadata["source_mtime_ns"] != source_stat.st_mtime_ns:
+        direction = ("newer" if source_stat.st_mtime_ns
+                     > metadata["source_mtime_ns"] else "older")
+        differences.append(
+            "  mtime: index built from "
+            f"{_format_mtime_ns(metadata['source_mtime_ns'])},\n"
+            "         cluedata is now "
+            f"{_format_mtime_ns(source_stat.st_mtime_ns)} ({direction})")
+    if differences:
+        raise ValueError(
+            f"index does not match cluedata\n  index:    {index_path}\n"
+            f"  cluedata: {data_path}\n" + "\n".join(differences) + "\n"
+            + _rebuild_hint(data_path, index_path))
 
 
 def query(data_path: Path, index_path: Path, input_path: str | None,
